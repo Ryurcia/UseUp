@@ -10,7 +10,7 @@ final class MockRecipeGenerator: RecipeGenerating {
             throw RecipeGenerationError.noIngredients
         }
 
-        try await Task.sleep(for: .milliseconds(Int.random(in: 800...1400)))
+        try await Task.sleep(for: .seconds(3))
 
         let uniqueIngredients = Array(Set(cleaned)).sorted()
         let templates = recipeTemplates(for: uniqueIngredients)
@@ -19,7 +19,7 @@ final class MockRecipeGenerator: RecipeGenerating {
             let macros = estimateMacros(
                 for: template.ingredientsUsed,
                 servings: template.servings,
-                dietary: options.dietaryPreference
+                dietary: options.dietType
             )
 
             return Recipe(
@@ -124,7 +124,7 @@ final class MockRecipeGenerator: RecipeGenerating {
     private func estimateMacros(
         for ingredients: [RecipeIngredient],
         servings: Int,
-        dietary: GenerationOptions.DietaryPreference
+        dietary: GenerationOptions.DietType
     ) -> Macros {
         let proteinBoosters = Set(["chicken breast", "eggs", "greek yogurt", "black beans", "tofu"])
         let carbBoosters = Set(["rice", "potatoes", "pasta", "beans", "tomatoes"])

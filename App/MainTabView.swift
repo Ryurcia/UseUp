@@ -28,13 +28,22 @@ enum Tab: Int, CaseIterable {
     }
 }
 
+struct AddButtonFramePreferenceKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        value = nextValue()
+    }
+}
+
 struct MainTabView: View {
     let recipeGenerator: RecipeGenerating
+    @EnvironmentObject private var session: AppSession
     @State private var selectedTab: Tab = .pantry
     @State private var slideDirection: Edge = .trailing
     @State private var showGenerate = false
     @State private var requestPantryAdd = false
     @State private var addMenuExpanded = false
+    @State private var addButtonFrame: CGRect = .zero
 
     var body: some View {
         ZStack {
@@ -86,9 +95,26 @@ struct MainTabView: View {
                 )
             }
         }
+        .coordinateSpace(name: "mainTab")
+        .onPreferenceChange(AddButtonFramePreferenceKey.self) { frame in
+            addButtonFrame = frame
+        }
+        .overlay {
+            if session.tutorialStep > 0 && addButtonFrame != .zero {
+                TutorialOverlayView(
+                    addButtonFrame: addButtonFrame,
+                    onDismiss: { session.dismissTutorial() }
+                )
+                .transition(.opacity)
+            }
+        }
         .sheet(isPresented: $showGenerate) {
             NavigationStack {
-                GenerateView(recipeGenerator: recipeGenerator)
+                GenerateView(recipeGenerator: recipeGenerator) {
+                    showGenerate = false
+                    selectedTab = .pantry
+                    requestPantryAdd = true
+                }
             }
         }
     }
@@ -163,6 +189,15 @@ private struct FloatingTabBar: View {
                             .shadow(color: DS.ColorToken.accent.opacity(0.3), radius: 8, x: 0, y: 4)
                     )
             }
+            .background(
+                GeometryReader { geo in
+                    Color.clear
+                        .preference(
+                            key: AddButtonFramePreferenceKey.self,
+                            value: geo.frame(in: .global)
+                        )
+                }
+            )
         }
     }
 

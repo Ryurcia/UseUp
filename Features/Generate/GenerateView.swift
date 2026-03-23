@@ -3,9 +3,11 @@ import SwiftUI
 struct GenerateView: View {
     @EnvironmentObject private var pantryStore: PantryStore
     @EnvironmentObject private var savedRecipesStore: SavedRecipesStore
+    @EnvironmentObject private var session: AppSession
     @Environment(\.dismiss) private var dismiss
 
     let recipeGenerator: RecipeGenerating
+    var onAddToPantry: (() -> Void)?
 
     @State private var selectedIngredientIDs: Set<UUID> = []
     @State private var searchText = ""
@@ -56,6 +58,8 @@ struct GenerateView: View {
                 ingredientSelectionView
             case .options:
                 optionsView
+            case .loading:
+                generatingView
             case .results:
                 resultsView
             }
@@ -76,6 +80,10 @@ struct GenerateView: View {
                 selectedCategories: $selectedCategories
             )
             .presentationDetents([.large])
+        }
+        .onAppear {
+            options.dietType = session.currentUserDietaryPreference
+            options.dietaryRestrictions = session.currentUserDietaryRestrictions
         }
         .onChange(of: searchText) { _, newValue in
             searchDebounceTask?.cancel()
@@ -159,6 +167,25 @@ struct GenerateView: View {
                     .appTextStyle(.bodySM)
                     .foregroundStyle(DS.ColorToken.textSecondary)
                     .multilineTextAlignment(.center)
+
+                Button {
+                    if let onAddToPantry {
+                        onAddToPantry()
+                    } else {
+                        dismiss()
+                    }
+                } label: {
+                    HStack(spacing: DS.Spacing.space1) {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.system(size: 16))
+                        Text("Add to Pantry")
+                            .font(.custom("Satoshi Variable", size: 15).weight(.semibold))
+                    }
+                    .foregroundStyle(DS.ColorToken.primary)
+                }
+                .buttonStyle(.plain)
+                .padding(.top, DS.Spacing.space3)
+
                 Spacer()
             } else if filteredIngredients.isEmpty {
                 Spacer()
@@ -305,39 +332,99 @@ struct GenerateView: View {
                         }
                     }
 
-                    // Dietary preference
+                    // Diet type
                     VStack(alignment: .leading, spacing: DS.Spacing.space2) {
-                        Text("Dietary Preference")
-                            .appTextStyle(.caption)
-                            .foregroundStyle(DS.ColorToken.textSecondary)
-
                         HStack(spacing: DS.Spacing.space2) {
-                            ForEach(GenerationOptions.DietaryPreference.allCases) { pref in
+                            Text("Diet Type")
+                                .appTextStyle(.caption)
+                                .foregroundStyle(DS.ColorToken.textSecondary)
+
+                            if session.currentUserDietaryPreference != .any {
+                                Text("Using your preferred diet")
+                                    .font(.custom("Satoshi Variable", size: 12))
+                                    .foregroundStyle(DS.ColorToken.textTertiary)
+                            }
+                        }
+
+                        FlowLayout(spacing: DS.Spacing.space2) {
+                            ForEach(GenerationOptions.DietType.allCases) { dietType in
                                 Button {
-                                    options.dietaryPreference = pref
+                                    options.dietType = dietType
                                 } label: {
-                                    Text(pref.rawValue)
+                                    Text(dietType.rawValue)
                                         .font(.custom("Satoshi Variable", size: 14))
                                         .foregroundStyle(
-                                            options.dietaryPreference == pref ? .white : DS.ColorToken.textSecondary
+                                            options.dietType == dietType ? .white : DS.ColorToken.textSecondary
                                         )
-                                        .frame(maxWidth: .infinity)
-                                        .frame(height: 44)
+                                        .padding(.horizontal, DS.Spacing.space3)
+                                        .padding(.vertical, DS.Spacing.space2)
                                         .background(
-                                            options.dietaryPreference == pref
+                                            options.dietType == dietType
                                                 ? DS.ColorToken.primary
                                                 : DS.ColorToken.bgSecondary
                                         )
                                         .overlay(
-                                            RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
+                                            Capsule()
                                                 .stroke(
-                                                    options.dietaryPreference == pref
+                                                    options.dietType == dietType
                                                         ? Color.clear
                                                         : DS.ColorToken.borderDefault,
                                                     lineWidth: 1
                                                 )
                                         )
-                                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                                        .clipShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+
+                    // Dietary restrictions
+                    VStack(alignment: .leading, spacing: DS.Spacing.space2) {
+                        HStack(spacing: DS.Spacing.space2) {
+                            Text("Dietary Restrictions")
+                                .appTextStyle(.caption)
+                                .foregroundStyle(DS.ColorToken.textSecondary)
+
+                            if !session.currentUserDietaryRestrictions.isEmpty {
+                                Text("From your profile")
+                                    .font(.custom("Satoshi Variable", size: 12))
+                                    .foregroundStyle(DS.ColorToken.textTertiary)
+                            }
+                        }
+
+                        FlowLayout(spacing: DS.Spacing.space2) {
+                            ForEach(GenerationOptions.DietaryRestriction.allCases) { restriction in
+                                let isSelected = options.dietaryRestrictions.contains(restriction)
+                                Button {
+                                    if isSelected {
+                                        options.dietaryRestrictions.remove(restriction)
+                                    } else {
+                                        options.dietaryRestrictions.insert(restriction)
+                                    }
+                                } label: {
+                                    Text(restriction.rawValue)
+                                        .font(.custom("Satoshi Variable", size: 14))
+                                        .foregroundStyle(
+                                            isSelected ? .white : DS.ColorToken.textSecondary
+                                        )
+                                        .padding(.horizontal, DS.Spacing.space3)
+                                        .padding(.vertical, DS.Spacing.space2)
+                                        .background(
+                                            isSelected
+                                                ? DS.ColorToken.primary
+                                                : DS.ColorToken.bgSecondary
+                                        )
+                                        .overlay(
+                                            Capsule()
+                                                .stroke(
+                                                    isSelected
+                                                        ? Color.clear
+                                                        : DS.ColorToken.borderDefault,
+                                                    lineWidth: 1
+                                                )
+                                        )
+                                        .clipShape(Capsule())
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -346,53 +433,25 @@ struct GenerateView: View {
 
                     // Max time
                     VStack(alignment: .leading, spacing: DS.Spacing.space2) {
-                        Text("Max Cooking Time")
-                            .appTextStyle(.caption)
-                            .foregroundStyle(DS.ColorToken.textSecondary)
-
                         HStack {
-                            Text("\(options.maxTimeMinutes) min")
-                                .font(.custom("Satoshi Variable", size: 16))
-                                .foregroundStyle(DS.ColorToken.textPrimary)
-
+                            Text("Max Cooking Time")
+                                .appTextStyle(.caption)
+                                .foregroundStyle(DS.ColorToken.textSecondary)
                             Spacer()
-
-                            HStack(spacing: DS.Spacing.space3) {
-                                Button {
-                                    if options.maxTimeMinutes > 10 { options.maxTimeMinutes -= 5 }
-                                } label: {
-                                    Image(systemName: "minus")
-                                        .font(.system(size: 14, weight: .semibold))
-                                        .foregroundStyle(options.maxTimeMinutes <= 10 ? DS.ColorToken.textTertiary : DS.ColorToken.textPrimary)
-                                        .frame(width: 36, height: 36)
-                                        .background(DS.ColorToken.bgTertiary)
-                                        .clipShape(Circle())
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(options.maxTimeMinutes <= 10)
-
-                                Button {
-                                    if options.maxTimeMinutes < 60 { options.maxTimeMinutes += 5 }
-                                } label: {
-                                    Image(systemName: "plus")
-                                        .font(.system(size: 14, weight: .semibold))
-                                        .foregroundStyle(options.maxTimeMinutes >= 60 ? DS.ColorToken.textTertiary : DS.ColorToken.textPrimary)
-                                        .frame(width: 36, height: 36)
-                                        .background(DS.ColorToken.bgTertiary)
-                                        .clipShape(Circle())
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(options.maxTimeMinutes >= 60)
-                            }
+                            Text("\(options.maxTimeMinutes) min")
+                                .font(.custom("Satoshi Variable", size: 14).weight(.medium))
+                                .foregroundStyle(DS.ColorToken.textPrimary)
                         }
-                        .padding(.horizontal, DS.Spacing.space3)
-                        .frame(height: 48)
-                        .background(DS.ColorToken.bgSecondary)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
-                                .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
+
+                        Slider(
+                            value: Binding(
+                                get: { Double(options.maxTimeMinutes) },
+                                set: { options.maxTimeMinutes = Int(($0 / 5).rounded()) * 5 }
+                            ),
+                            in: 10...60,
+                            step: 5
                         )
-                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                        .tint(DS.ColorToken.primary)
                     }
 
                     // Cuisine
@@ -495,11 +554,7 @@ struct GenerateView: View {
                     .padding(.top, DS.Spacing.space3)
             }
 
-            if isLoading {
-                Spacer()
-                ProgressView("Generating recipes...")
-                Spacer()
-            } else if recipes.isEmpty {
+            if recipes.isEmpty {
                 Spacer()
                 Text("No recipes generated.")
                     .appTextStyle(.bodySM)
@@ -559,59 +614,105 @@ struct GenerateView: View {
     }
 
     private func recipeCard(_ recipe: Recipe) -> some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.space2) {
-            HStack {
-                Text(recipe.title)
-                    .appTextStyle(.heading3)
-                    .foregroundStyle(DS.ColorToken.textPrimary)
-                    .lineLimit(1)
-
-                Spacer()
-
-                Button {
-                    savedRecipesStore.toggleSaved(recipe)
-                } label: {
-                    Image(systemName: savedRecipesStore.isSaved(recipe) ? "bookmark.fill" : "bookmark")
-                        .font(.system(size: 18))
-                        .foregroundStyle(
-                            savedRecipesStore.isSaved(recipe)
-                                ? DS.ColorToken.primary
-                                : DS.ColorToken.textTertiary
-                        )
+        VStack(spacing: 0) {
+            // Gradient header
+            Color.clear
+                .aspectRatio(16/9, contentMode: .fit)
+                .background(
+                    LinearGradient(
+                        colors: [DS.ColorToken.primary, DS.ColorToken.accent],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay(alignment: .topLeading) {
+                    AIGeneratedBadge()
+                        .padding(8)
                 }
-                .buttonStyle(.plain)
-            }
 
-            Text(recipe.summary)
-                .appTextStyle(.bodySM)
+            VStack(alignment: .leading, spacing: DS.Spacing.space2) {
+                HStack {
+                    Text(recipe.title)
+                        .appTextStyle(.heading3)
+                        .foregroundStyle(DS.ColorToken.textPrimary)
+                        .lineLimit(1)
+
+                    Spacer()
+
+                    Button {
+                        savedRecipesStore.toggleSaved(recipe)
+                    } label: {
+                        Image(systemName: savedRecipesStore.isSaved(recipe) ? "bookmark.fill" : "bookmark")
+                            .font(.system(size: 18))
+                            .foregroundStyle(
+                                savedRecipesStore.isSaved(recipe)
+                                    ? DS.ColorToken.primary
+                                    : DS.ColorToken.textTertiary
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Text(recipe.summary)
+                    .appTextStyle(.bodySM)
+                    .foregroundStyle(DS.ColorToken.textSecondary)
+                    .lineLimit(2)
+
+                HStack(spacing: DS.Spacing.space3) {
+                    Label("\(recipe.timeMinutes) min", systemImage: "clock")
+                    Label("\(recipe.macros.calories) cal", systemImage: "flame")
+                    Label("\(recipe.macros.proteinG)g protein", systemImage: "bolt.heart")
+                }
+                .appTextStyle(.caption)
                 .foregroundStyle(DS.ColorToken.textSecondary)
-                .lineLimit(2)
-
-            HStack(spacing: DS.Spacing.space3) {
-                Label("\(recipe.timeMinutes) min", systemImage: "clock")
-                Label("\(recipe.macros.calories) cal", systemImage: "flame")
-                Label("\(recipe.macros.proteinG)g protein", systemImage: "bolt.heart")
             }
-            .appTextStyle(.caption)
-            .foregroundStyle(DS.ColorToken.textSecondary)
+            .padding(.horizontal, DS.Spacing.space3)
+            .padding(.vertical, DS.Spacing.space3)
         }
-        .padding(.horizontal, DS.Spacing.space3)
-        .padding(.vertical, DS.Spacing.space3)
         .background(DS.ColorToken.bgSecondary)
+        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous)
                 .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
         )
-        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous))
         .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 2)
+    }
+
+    // MARK: - Loading
+
+    private var generatingView: some View {
+        VStack(spacing: DS.Spacing.space4) {
+            Spacer()
+
+            ProgressView()
+                .controlSize(.large)
+                .tint(DS.ColorToken.primary)
+
+            Text("Generating recipes...")
+                .font(.custom("CalSans-Regular", size: 20))
+                .kerning(0)
+                .foregroundStyle(DS.ColorToken.textPrimary)
+
+            Text("Finding the best dishes from your ingredients")
+                .font(.custom("Satoshi Variable", size: 15))
+                .foregroundStyle(DS.ColorToken.textSecondary)
+                .multilineTextAlignment(.center)
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, DS.Spacing.space5)
     }
 
     // MARK: - Generation
 
     @MainActor
     private func runGeneration() async {
-        isLoading = true
         errorText = nil
+
+        withAnimation(.easeInOut(duration: 0.25)) {
+            step = .loading
+        }
 
         let names = pantryStore.ingredients
             .filter { selectedIngredientIDs.contains($0.id) }
@@ -628,9 +729,10 @@ struct GenerateView: View {
         } catch {
             recipes = []
             errorText = error.localizedDescription
+            withAnimation(.easeInOut(duration: 0.25)) {
+                step = .results
+            }
         }
-
-        isLoading = false
     }
 }
 
@@ -639,12 +741,14 @@ struct GenerateView: View {
 private enum GenerateStep {
     case selectIngredients
     case options
+    case loading
     case results
 
     var title: String {
         switch self {
         case .selectIngredients: return "Select Ingredients"
         case .options: return "Recipe Options"
+        case .loading: return "Generating"
         case .results: return "Generated Recipes"
         }
     }

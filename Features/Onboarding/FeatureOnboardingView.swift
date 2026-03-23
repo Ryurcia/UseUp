@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 
 #Preview("Feature Onboarding") {
     PreviewContainer(authenticated: false) {
@@ -13,21 +14,24 @@ struct FeatureOnboardingView: View {
     private let pages: [OnboardingPage] = [
         OnboardingPage(
             icon: "refrigerator.fill",
+            imageName: "STOCK",
             title: "Your Pantry",
-            description: "Add ingredients you have at home. Keep track of everything in your kitchen in one place.",
+            description: "Track everything in your kitchen in one place.",
             color: DS.ColorToken.primary
         ),
         OnboardingPage(
-            icon: "exclamationmark.triangle.fill",
-            title: "Know When Things Are About to Go Bad",
-            description: "Get notified before your ingredients expire so you can use them up in time and reduce waste.",
-            color: DS.ColorToken.warning
+            icon: "wand.and.stars",
+            imageName: "PLATES",
+            title: "Generate Recipes",
+            description: "Turn leftovers into delicious meals with AI.",
+            color: DS.ColorToken.accent
         ),
         OnboardingPage(
-            icon: "wand.and.stars",
-            title: "Generate Recipes",
-            description: "Turn your leftovers into delicious meals. We'll suggest recipes based on what's already in your pantry.",
-            color: DS.ColorToken.accent
+            icon: "exclamationmark.triangle.fill",
+            imageName: "EXPIRE",
+            title: "Know Before It Expires",
+            description: "Get notified before ingredients go bad.",
+            color: DS.ColorToken.warning
         ),
     ]
 
@@ -38,7 +42,7 @@ struct FeatureOnboardingView: View {
             // Page content
             TabView(selection: $currentPage) {
                 ForEach(Array(pages.enumerated()), id: \.offset) { index, page in
-                    pageView(page)
+                    pageView(page, index: index)
                         .tag(index)
                 }
             }
@@ -59,29 +63,49 @@ struct FeatureOnboardingView: View {
             Spacer()
 
             // Footer
-            VStack(spacing: DS.Spacing.space3) {
-                Button {
-                    if currentPage < pages.count - 1 {
-                        withAnimation(DS.Motion.easeOut) {
-                            currentPage += 1
-                        }
-                    } else {
-                        session.completeFeatureOnboarding()
-                    }
-                } label: {
-                    Text(currentPage < pages.count - 1 ? "Next" : "Let's Go")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(PrimaryButtonStyle(size: .lg, fullWidth: true))
-
+            Group {
                 if currentPage < pages.count - 1 {
-                    Button {
-                        session.completeFeatureOnboarding()
-                    } label: {
-                        Text("Skip")
-                            .frame(maxWidth: .infinity)
+                    HStack {
+                        Button {
+                            session.completeFeatureOnboarding()
+                        } label: {
+                            Text("Skip")
+                        }
+                        .buttonStyle(SecondaryButtonStyle(size: .lg))
+
+                        Spacer()
+
+                        Button {
+                            withAnimation(DS.Motion.easeOut) {
+                                currentPage += 1
+                            }
+                        } label: {
+                            Image(systemName: "arrow.right")
+                        }
+                        .buttonStyle(PrimaryButtonStyle(size: .lg))
                     }
-                    .buttonStyle(SecondaryButtonStyle(size: .lg, fullWidth: true))
+                } else {
+                    VStack(spacing: DS.Spacing.space3) {
+                        Button {
+                            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { _, _ in
+                                DispatchQueue.main.async {
+                                    session.completeFeatureOnboarding()
+                                }
+                            }
+                        } label: {
+                            Text("Enable Notifications")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(PrimaryButtonStyle(size: .lg, fullWidth: true))
+
+                        Button {
+                            session.completeFeatureOnboarding()
+                        } label: {
+                            Text("Maybe Later")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(SecondaryButtonStyle(size: .lg))
+                    }
                 }
             }
             .padding(.horizontal, DS.Spacing.space5)
@@ -90,16 +114,25 @@ struct FeatureOnboardingView: View {
         .background(DS.ColorToken.bgPrimary)
     }
 
-    private func pageView(_ page: OnboardingPage) -> some View {
+    private func pageView(_ page: OnboardingPage, index: Int) -> some View {
         VStack(spacing: DS.Spacing.space5) {
-            ZStack {
-                Circle()
-                    .fill(page.color.opacity(0.12))
-                    .frame(width: 100, height: 100)
+            if let imageName = page.imageName,
+               let uiImage = UIImage(named: imageName) {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(height: 200)
+                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg))
+            } else {
+                ZStack {
+                    Circle()
+                        .fill(page.color.opacity(0.12))
+                        .frame(width: 100, height: 100)
 
-                Image(systemName: page.icon)
-                    .font(.system(size: 40, weight: .medium))
-                    .foregroundStyle(page.color)
+                    Image(systemName: page.icon)
+                        .font(.system(size: 40, weight: .medium))
+                        .foregroundStyle(page.color)
+                }
             }
 
             VStack(spacing: DS.Spacing.space3) {
@@ -116,6 +149,9 @@ struct FeatureOnboardingView: View {
                     .frame(maxWidth: 300)
             }
         }
+        .opacity(currentPage == index ? 1 : 0)
+        .offset(y: currentPage == index ? 0 : 12)
+        .animation(.easeOut(duration: 0.4), value: currentPage)
         .frame(maxWidth: .infinity)
         .padding(.horizontal, DS.Spacing.space5)
     }
@@ -123,6 +159,7 @@ struct FeatureOnboardingView: View {
 
 private struct OnboardingPage {
     let icon: String
+    var imageName: String? = nil
     let title: String
     let description: String
     let color: Color

@@ -46,8 +46,7 @@ struct AuthView: View {
                     }
                     .padding(.horizontal, DS.Spacing.space5)
                     .padding(.top, DS.Spacing.space2)
-
-                    Spacer(minLength: 0)
+                    .padding(.bottom, DS.Spacing.space6)
 
                     VStack(alignment: .leading, spacing: DS.Spacing.space4) {
                         Text("Enter Your Phone Number")
@@ -195,10 +194,49 @@ struct AuthBackButtonStyle: ButtonStyle {
     }
 }
 
-struct NicknameOnboardingView: View {
+struct ProfileOnboardingContainerView: View {
     @EnvironmentObject private var session: AppSession
+    @State private var currentStep = 1
     @State private var username = ""
     @State private var displayName = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            OnboardingProgressBar(progress: Double(currentStep) / 2.0)
+                .padding(.horizontal, DS.Spacing.space4)
+                .padding(.top, DS.Spacing.space3)
+
+            Group {
+                if currentStep == 1 {
+                    NicknameOnboardingView(
+                        username: $username,
+                        displayName: $displayName,
+                        onContinue: {
+                            withAnimation(.easeInOut(duration: 0.3)) {
+                                currentStep = 2
+                            }
+                        }
+                    )
+                    .transition(.push(from: .trailing))
+                } else {
+                    DietaryPreferenceOnboardingView(
+                        nickname: username,
+                        displayName: displayName
+                    )
+                    .transition(.push(from: .trailing))
+                }
+            }
+        }
+        .background(DS.ColorToken.bgPrimary)
+        .toolbar(.hidden, for: .navigationBar)
+    }
+}
+
+struct NicknameOnboardingView: View {
+    @EnvironmentObject private var session: AppSession
+    @Binding var username: String
+    @Binding var displayName: String
+    var onContinue: () -> Void
     @State private var isLoading = false
 
     private var canContinue: Bool {
@@ -208,71 +246,102 @@ struct NicknameOnboardingView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.space4) {
-            Spacer(minLength: 0)
+        VStack(spacing: 0) {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: DS.Spacing.space4) {
+                    Text("Set Up Your Profile")
+                        .font(.custom("CalSans-Regular", size: 32))
+                        .kerning(0)
+                        .foregroundStyle(DS.ColorToken.textPrimary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, DS.Spacing.space6)
 
-            Text("Set Up Your Profile")
-                .font(.custom("CalSans-Regular", size: 32))
-                .kerning(0)
-                .foregroundStyle(DS.ColorToken.textPrimary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: DS.Spacing.space1) {
+                        Text("Username")
+                            .font(.custom("CalSans-Regular", size: 14))
+                            .kerning(0)
+                            .foregroundStyle(DS.ColorToken.textPrimary)
 
-            VStack(alignment: .leading, spacing: DS.Spacing.space1) {
-                Text("Username")
-                    .font(.custom("CalSans-Regular", size: 14))
-                    .kerning(0)
-                    .foregroundStyle(DS.ColorToken.textPrimary)
-
-                TextField("Choose a unique username", text: $username)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .textFieldStyle(AppInputFieldStyle(size: .md))
-            }
-
-            VStack(alignment: .leading, spacing: DS.Spacing.space1) {
-                Text("Display Name")
-                    .font(.custom("CalSans-Regular", size: 14))
-                    .kerning(0)
-                    .foregroundStyle(DS.ColorToken.textPrimary)
-
-                TextField("What should we call you?", text: $displayName)
-                    .textFieldStyle(AppInputFieldStyle(size: .md))
-            }
-
-            if let error = session.nicknameError {
-                Text(error)
-                    .appTextStyle(.bodySM)
-                    .foregroundStyle(DS.ColorToken.error)
-                    .padding(.horizontal, DS.Spacing.space3)
-                    .padding(.vertical, DS.Spacing.space2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(DS.ColorToken.errorLight)
-                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
-            }
-
-            Button {
-                Task {
-                    isLoading = true
-                    await session.completeNicknameOnboarding(nickname: username, displayName: displayName)
-                    isLoading = false
-                }
-            } label: {
-                HStack(spacing: DS.Spacing.space2) {
-                    if isLoading {
-                        ProgressView()
-                            .tint(.white)
+                        TextField("Choose a unique username", text: $username)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .textFieldStyle(AppInputFieldStyle(size: .md))
                     }
-                    Text("Continue")
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(PrimaryButtonStyle(size: .lg, fullWidth: true))
-            .disabled(!canContinue)
 
-            Spacer(minLength: 0)
+                    VStack(alignment: .leading, spacing: DS.Spacing.space1) {
+                        Text("Display Name")
+                            .font(.custom("CalSans-Regular", size: 14))
+                            .kerning(0)
+                            .foregroundStyle(DS.ColorToken.textPrimary)
+
+                        TextField("What should we call you?", text: $displayName)
+                            .textFieldStyle(AppInputFieldStyle(size: .md))
+                    }
+
+                    if let error = session.nicknameError {
+                        Text(error)
+                            .appTextStyle(.bodySM)
+                            .foregroundStyle(DS.ColorToken.error)
+                            .padding(.horizontal, DS.Spacing.space3)
+                            .padding(.vertical, DS.Spacing.space2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(DS.ColorToken.errorLight)
+                            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                    }
+                }
+                .padding(.horizontal, DS.Spacing.space4)
+            }
+
+            // Pinned bottom button
+            VStack(spacing: 0) {
+                Button {
+                    Task {
+                        isLoading = true
+                        let cleaned = username.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let available = try? await session.profileService.isNicknameAvailable(cleaned, excludingUserId: nil)
+                        isLoading = false
+                        if available == false {
+                            session.nicknameError = "This nickname is already taken."
+                        } else {
+                            session.nicknameError = nil
+                            onContinue()
+                        }
+                    }
+                } label: {
+                    HStack(spacing: DS.Spacing.space2) {
+                        if isLoading {
+                            ProgressView()
+                                .tint(.white)
+                        }
+                        Text("Continue")
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(PrimaryButtonStyle(size: .lg, fullWidth: true))
+                .disabled(!canContinue)
+            }
+            .padding(.horizontal, DS.Spacing.space4)
+            .padding(.bottom, DS.Spacing.space4)
         }
-        .padding(DS.Spacing.space4)
-        .background(DS.ColorToken.bgPrimary)
-        .toolbar(.hidden, for: .navigationBar)
+    }
+}
+
+struct OnboardingProgressBar: View {
+    let progress: Double
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(DS.ColorToken.bgSecondary)
+                    .frame(height: 4)
+
+                Capsule()
+                    .fill(DS.ColorToken.primary)
+                    .frame(width: geo.size.width * progress, height: 4)
+                    .animation(.easeInOut(duration: 0.3), value: progress)
+            }
+        }
+        .frame(height: 4)
     }
 }

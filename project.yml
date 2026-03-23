@@ -3,6 +3,9 @@ options:
   bundleIdPrefix: com.ryleurcia
   deploymentTarget:
     iOS: "17.0"
+configFiles:
+  Debug: Secrets.xcconfig
+  Release: Secrets.xcconfig
 configs:
   Debug: debug
   Release: release

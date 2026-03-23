@@ -18,6 +18,17 @@ enum Cuisine: String, CaseIterable, Identifiable, Hashable {
     case other = "Other"
 
     var id: String { rawValue }
+
+    /// The lowercase case name stored in the Supabase `cuisine_type` enum.
+    var databaseValue: String { String(describing: self) }
+
+    /// Reverse lookup from a database string to the Swift case.
+    init?(databaseValue: String) {
+        guard let match = Cuisine.allCases.first(where: { $0.databaseValue == databaseValue }) else {
+            return nil
+        }
+        self = match
+    }
 }
 
 struct Recipe: Identifiable, Hashable {
@@ -36,10 +47,13 @@ struct Recipe: Identifiable, Hashable {
     var sources: [SourceLink]
     var isUserShared: Bool
     var imageData: Data?
+    var imagePath: String?
     var cuisine: Cuisine
     var createdBy: String?
+    var createdByName: String?
     var rating: Double
     var review: String?
+    var isAIGenerated: Bool
 
     init(
         id: UUID = UUID(),
@@ -54,10 +68,13 @@ struct Recipe: Identifiable, Hashable {
         sources: [SourceLink],
         isUserShared: Bool = false,
         imageData: Data? = nil,
+        imagePath: String? = nil,
         cuisine: Cuisine = .other,
         createdBy: String? = nil,
+        createdByName: String? = nil,
         rating: Double = 0,
-        review: String? = nil
+        review: String? = nil,
+        isAIGenerated: Bool = false
     ) {
         self.id = id
         self.title = title
@@ -71,9 +88,12 @@ struct Recipe: Identifiable, Hashable {
         self.sources = sources
         self.isUserShared = isUserShared
         self.imageData = imageData
+        self.imagePath = imagePath
         self.cuisine = cuisine
         self.createdBy = createdBy
+        self.createdByName = createdByName
         self.rating = rating
         self.review = review
+        self.isAIGenerated = isAIGenerated
     }
 }

@@ -96,8 +96,10 @@ struct OTPVerificationView: View {
             focusedIndex = 0
         }
         .fullScreenCover(isPresented: $showNicknameOnboarding) {
-            NicknameOnboardingView()
-                .environmentObject(session)
+            NavigationStack {
+                ProfileOnboardingContainerView()
+                    .environmentObject(session)
+            }
         }
     }
 
@@ -120,20 +122,27 @@ struct OTPVerificationView: View {
             .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
             .focused($focusedIndex, equals: index)
             .onChange(of: otpDigits[index]) { _, newValue in
-                // Only allow single digit
-                if newValue.count > 1 {
-                    // Handle paste: distribute digits across fields
-                    let digits = newValue.filter(\.isNumber)
-                    if digits.count > 1 {
-                        distributePastedCode(digits, startingAt: index)
-                        return
-                    }
-                    otpDigits[index] = String(newValue.suffix(1))
+                // Filter non-numeric characters
+                let filtered = newValue.filter(\.isNumber)
+                if filtered != newValue {
+                    otpDigits[index] = filtered
+                    return
+                }
+
+                // Handle paste: distribute digits across fields
+                if filtered.count > 1 {
+                    distributePastedCode(filtered, startingAt: index)
+                    return
                 }
 
                 // Auto-advance to next field
-                if !newValue.isEmpty && index < 5 {
+                if !filtered.isEmpty && index < 5 {
                     focusedIndex = index + 1
+                }
+
+                // Continuous backspace: move focus to previous cell
+                if filtered.isEmpty && index > 0 {
+                    focusedIndex = index - 1
                 }
             }
     }

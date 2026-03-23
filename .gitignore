@@ -3,6 +3,10 @@
 *.xcodeproj/project.xcworkspace/xcuserdata/
 *.xcworkspace/xcuserdata/
 xcuserdata/
+*.xcworkspace/contents.xcworkspacedata
+*.xcodeproj/project.xcworkspace/
+*.xcscmblueprint
+*.xccheckout
 
 # Build
 build/
@@ -11,16 +15,40 @@ DerivedData/
 *.ipa
 *.dSYM.zip
 *.dSYM
+*.hmap
+*.o
+*.d
+*.dia
+*.swiftdeps
+*.swiftdeps~
+*.swiftconstvalues
+
+# Archives
+*.xcarchive
+
+# Playgrounds
+timeline.xctimeline
+playground.xcworkspace
 
 # macOS
 .DS_Store
 *.swp
 *~
+.Trashes
+._*
 
 # Dependencies
 Pods/
 Carthage/
 .build/
+*.resolved
+
+# Swift Package Manager
+.swiftpm/
+Package.resolved
+
+# CocoaPods
+Podfile.lock
 
 # Various settings
 *.pbxuser
@@ -32,6 +60,32 @@ Carthage/
 *.perspectivev3
 !default.perspectivev3
 *.moved-aside
+
+# Provisioning
+*.mobileprovision
+*.provisionprofile
+
+# Crashlytics
+com.crashlytics.css
+crashlytics-hierarchical.properties
+crashlytics.properties
+fabric.properties
+
+# Code Injection
+iOSInjectionProject/
+
+# Fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output
+
+# XcodeGen
+xcodegen-bin/
+xcodegen.zip
+
+# Secrets
+Secrets.xcconfig
 
 # Claude
 .claude/

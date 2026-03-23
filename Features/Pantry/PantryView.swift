@@ -257,7 +257,11 @@ struct PantryView: View {
                     .font(.custom("Satoshi Variable", size: 18))
                     .foregroundStyle(DS.ColorToken.textSecondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
+            }
 
+            if expiringSoonItems.isEmpty {
+                emptyExpiringCard
+            } else {
                 expiringCard
             }
         }
@@ -297,6 +301,33 @@ struct PantryView: View {
             }
         }
         .padding(DS.Spacing.space4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(DS.ColorToken.bgTertiary)
+        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.xxl, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.Radius.xxl, style: .continuous)
+                .stroke(DS.ColorToken.primary.opacity(0.25), lineWidth: 1.5)
+        )
+    }
+
+    private var emptyExpiringCard: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.space3) {
+            HStack {
+                Image(systemName: "clock.badge.exclamationmark")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(DS.ColorToken.primary)
+                Text("USE THESE UP")
+                    .font(.custom("Satoshi Variable", size: 13).weight(.bold))
+                    .tracking(0.5)
+                    .foregroundStyle(DS.ColorToken.primary)
+            }
+
+            Text("Nothing is going bad yet — you're all good!")
+                .appTextStyle(.bodySM)
+                .foregroundStyle(DS.ColorToken.textSecondary)
+        }
+        .padding(DS.Spacing.space4)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(DS.ColorToken.bgTertiary)
         .clipShape(RoundedRectangle(cornerRadius: DS.Radius.xxl, style: .continuous))
         .overlay(
@@ -494,9 +525,9 @@ private struct ExpandableIngredientRow: View {
 
             if isExpanded {
                 HStack(spacing: DS.Spacing.space3) {
-                    actionButton(label: "Use", icon: "minus.circle", color: DS.ColorToken.accent, action: onUse)
-                    actionButton(label: "Edit", icon: "pencil", color: DS.ColorToken.info, action: onEdit)
-                    actionButton(label: "Delete", icon: "trash", color: DS.ColorToken.error, action: onDelete)
+                    actionButton(label: "Use", icon: "minus.circle", style: .filled, action: onUse)
+                    actionButton(label: "Edit", icon: "pencil", style: .outlined, action: onEdit)
+                    actionButton(label: "Delete", icon: "trash", style: .destructive, action: onDelete)
                 }
                 .padding(.horizontal, DS.Spacing.space4)
                 .padding(.top, DS.Spacing.space3)
@@ -515,19 +546,52 @@ private struct ExpandableIngredientRow: View {
         .onTapGesture(perform: onTap)
     }
 
-    private func actionButton(label: String, icon: String, color: Color, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+    private enum ActionButtonStyle {
+        case filled      // Solid accent background, white text
+        case outlined    // Border only, no fill
+        case destructive // Tinted red background
+    }
+
+    private func actionButton(label: String, icon: String, style: ActionButtonStyle, action: @escaping () -> Void) -> some View {
+        let foreground: Color
+        let background: Color
+        let border: Color?
+
+        switch style {
+        case .filled:
+            foreground = .white
+            background = DS.ColorToken.accent
+            border = nil
+        case .outlined:
+            foreground = DS.ColorToken.textSecondary
+            background = .clear
+            border = DS.ColorToken.borderDefault
+        case .destructive:
+            foreground = DS.ColorToken.error
+            background = DS.ColorToken.error.opacity(0.1)
+            border = nil
+        }
+
+        return Button(action: action) {
             HStack(spacing: DS.Spacing.space1) {
                 Image(systemName: icon)
                     .font(.system(size: 13, weight: .semibold))
                 Text(label)
                     .font(.custom("Satoshi Variable", size: 14).weight(.semibold))
             }
-            .foregroundStyle(color)
+            .foregroundStyle(foreground)
             .frame(maxWidth: .infinity)
             .frame(height: 40)
-            .background(color.opacity(0.1))
+            .background(background)
             .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
+            .overlay(
+                Group {
+                    if let border {
+                        RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
+                            .stroke(border, lineWidth: 1)
+                    }
+                }
+            )
         }
         .buttonStyle(.plain)
     }

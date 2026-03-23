@@ -85,16 +85,24 @@ final class PantryStore: ObservableObject {
     @Published private(set) var isLoading = false
     @Published var error: String?
 
+    var userId: UUID?
+    private var lastFetchedAt: Date?
     private let client = SupabaseManager.client
 
-    private func getUserId() async -> UUID? {
-        try? await client.auth.session.user.id
+    private func getUserId() -> UUID? { userId }
+
+    func clearForSignOut() {
+        userId = nil
+        ingredients = []
+        lastFetchedAt = nil
+        error = nil
     }
 
     // MARK: - Fetch
 
     func fetchIngredients() async {
-        guard let userId = await getUserId() else { return }
+        if let last = lastFetchedAt, Date().timeIntervalSince(last) < 60, !ingredients.isEmpty { return }
+        guard let userId = getUserId() else { return }
         isLoading = true
         error = nil
 
@@ -108,6 +116,8 @@ final class PantryStore: ObservableObject {
                 .value
 
             ingredients = rows.map { $0.toIngredient() }
+            lastFetchedAt = Date()
+            rescheduleNotifications()
         } catch {
             self.error = error.localizedDescription
         }
@@ -142,7 +152,7 @@ final class PantryStore: ObservableObject {
         ingredients.insert(tempIngredient, at: 0)
 
         Task {
-            guard let userId = await getUserId() else {
+            guard let userId = getUserId() else {
                 ingredients.removeAll { $0.id == tempIngredient.id }
                 return
             }
@@ -169,6 +179,7 @@ final class PantryStore: ObservableObject {
                    let index = ingredients.firstIndex(where: { $0.id == tempIngredient.id }) {
                     ingredients[index] = row.toIngredient()
                 }
+                rescheduleNotifications()
             } catch {
                 // Rollback optimistic insert
                 ingredients.removeAll { $0.id == tempIngredient.id }
@@ -222,6 +233,7 @@ final class PantryStore: ObservableObject {
                     .update(update)
                     .eq("id", value: id.uuidString)
                     .execute()
+                rescheduleNotifications()
             } catch {
                 // Rollback
                 if let idx = ingredients.firstIndex(where: { $0.id == id }) {
@@ -247,6 +259,7 @@ final class PantryStore: ObservableObject {
                         .update(["amount": newAmount])
                         .eq("id", value: id.uuidString)
                         .execute()
+                    rescheduleNotifications()
                 } catch {
                     if let idx = ingredients.firstIndex(where: { $0.id == id }) {
                         ingredients[idx] = previous
@@ -272,6 +285,7 @@ final class PantryStore: ObservableObject {
                     .delete()
                     .eq("id", value: id.uuidString)
                     .execute()
+                rescheduleNotifications()
             } catch {
                 // Rollback
                 ingredients.insert(removed, at: min(index, ingredients.count))
@@ -284,6 +298,14 @@ final class PantryStore: ObservableObject {
         let idsToRemove = offsets.map { ingredients[$0].id }
         for id in idsToRemove {
             deleteIngredient(id: id)
+        }
+    }
+
+    // MARK: - Notifications
+
+    private func rescheduleNotifications() {
+        Task {
+            await ExpirationNotificationScheduler.rescheduleAll(for: ingredients)
         }
     }
 

@@ -18,14 +18,46 @@ private enum RecipeTab: String, CaseIterable {
 
 final class RecipeImageCache {
     static let shared = RecipeImageCache()
-    private let cache = NSCache<NSString, UIImage>()
 
-    func image(for id: UUID) -> UIImage? {
-        cache.object(forKey: id.uuidString as NSString)
+    private let fullCache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 80
+        cache.totalCostLimit = 50 * 1024 * 1024 // 50 MB
+        return cache
+    }()
+
+    private let thumbCache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 150
+        cache.totalCostLimit = 20 * 1024 * 1024 // 20 MB
+        return cache
+    }()
+
+    func image(for id: UUID, thumbnail: Bool = false) -> UIImage? {
+        let key = id.uuidString as NSString
+        return thumbnail ? thumbCache.object(forKey: key) : fullCache.object(forKey: key)
     }
 
-    func setImage(_ image: UIImage, for id: UUID) {
-        cache.setObject(image, forKey: id.uuidString as NSString)
+    func setImage(_ image: UIImage, for id: UUID, thumbnail: Bool = false, cost: Int = 0) {
+        let key = id.uuidString as NSString
+        if thumbnail {
+            thumbCache.setObject(image, forKey: key, cost: cost)
+        } else {
+            fullCache.setObject(image, forKey: key, cost: cost)
+        }
+    }
+
+    static func generateThumbnail(from data: Data, maxPixelSize: Int = 800) -> UIImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true
+        ]
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+        return UIImage(cgImage: cgImage)
     }
 }
 
@@ -34,7 +66,16 @@ final class RecipeImageCache {
 struct CachedRecipeImage: View {
     let recipeID: UUID
     let imageData: Data?
+    let imagePath: String?
+    let thumbnail: Bool
     @State private var uiImage: UIImage?
+
+    init(recipeID: UUID, imageData: Data?, imagePath: String? = nil, thumbnail: Bool = false) {
+        self.recipeID = recipeID
+        self.imageData = imageData
+        self.imagePath = imagePath
+        self.thumbnail = thumbnail
+    }
 
     private static let placeholder: UIImage? = {
         guard let path = Bundle.main.path(forResource: "food", ofType: "jpg") else { return nil }
@@ -61,21 +102,77 @@ struct CachedRecipeImage: View {
             }
         }
         .task(id: recipeID) {
-            if let cached = RecipeImageCache.shared.image(for: recipeID) {
+            // 1. Check in-memory cache
+            if let cached = RecipeImageCache.shared.image(for: recipeID, thumbnail: thumbnail) {
                 uiImage = cached
                 return
             }
-            guard let data = imageData else {
-                uiImage = nil
+
+            // 2. Check disk cache
+            if let path = imagePath, !path.isEmpty {
+                let diskData = thumbnail
+                    ? RecipeImageDiskCache.loadThumb(for: path)
+                    : RecipeImageDiskCache.load(for: path)
+                if let diskData {
+                    let id = recipeID
+                    let isThumbnail = thumbnail
+                    let decoded = await Task.detached {
+                        UIImage(data: diskData)
+                    }.value
+                    if let decoded {
+                        RecipeImageCache.shared.setImage(decoded, for: id, thumbnail: isThumbnail, cost: diskData.count)
+                        withAnimation(.easeIn(duration: 0.2)) { uiImage = decoded }
+                    }
+                    return
+                }
+            }
+
+            // 3. Try local imageData
+            if let data = imageData {
+                let id = recipeID
+                let isThumbnail = thumbnail
+                let decoded = await Task.detached {
+                    isThumbnail
+                        ? RecipeImageCache.generateThumbnail(from: data)
+                        : UIImage(data: data)
+                }.value
+                if let decoded {
+                    RecipeImageCache.shared.setImage(decoded, for: id, thumbnail: isThumbnail)
+                    withAnimation(.easeIn(duration: 0.2)) { uiImage = decoded }
+                }
                 return
             }
-            let id = recipeID
-            let decoded = await Task.detached {
-                UIImage(data: data)
-            }.value
-            if let decoded {
-                RecipeImageCache.shared.setImage(decoded, for: id)
-                uiImage = decoded
+
+            // 4. Download from Supabase storage
+            if let path = imagePath, !path.isEmpty {
+                let id = recipeID
+                let isThumbnail = thumbnail
+                do {
+                    let data = try await SupabaseManager.client.storage
+                        .from("recipe-images")
+                        .download(path: path)
+
+                    // Save full image to disk
+                    RecipeImageDiskCache.save(data, for: path)
+
+                    // Generate and save thumbnail
+                    if let thumbImage = RecipeImageCache.generateThumbnail(from: data),
+                       let thumbData = thumbImage.jpegData(compressionQuality: 0.7) {
+                        RecipeImageDiskCache.saveThumb(thumbData, for: path)
+                    }
+
+                    let decoded = await Task.detached {
+                        isThumbnail
+                            ? RecipeImageCache.generateThumbnail(from: data)
+                            : UIImage(data: data)
+                    }.value
+                    if let decoded {
+                        RecipeImageCache.shared.setImage(decoded, for: id, thumbnail: isThumbnail, cost: data.count)
+                        withAnimation(.easeIn(duration: 0.2)) { uiImage = decoded }
+                    }
+                } catch {
+                    // Fall through to placeholder
+                }
             }
         }
     }
@@ -91,9 +188,23 @@ private struct RecipeCard: View {
             Color.clear
                 .aspectRatio(4/3, contentMode: .fit)
                 .overlay {
-                    CachedRecipeImage(recipeID: recipe.id, imageData: recipe.imageData)
+                    if recipe.isAIGenerated && recipe.imageData == nil && recipe.imagePath == nil {
+                        LinearGradient(
+                            colors: [DS.ColorToken.primary, DS.ColorToken.accent],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    } else {
+                        CachedRecipeImage(recipeID: recipe.id, imageData: recipe.imageData, imagePath: recipe.imagePath, thumbnail: true)
+                    }
                 }
                 .clipped()
+                .overlay(alignment: .topLeading) {
+                    if recipe.isAIGenerated {
+                        AIGeneratedBadge()
+                            .padding(8)
+                    }
+                }
                 .overlay(alignment: .bottomLeading) {
                     Text("\(recipe.timeMinutes) min")
                         .font(.custom("Satoshi Variable", size: 11).weight(.bold))
@@ -164,6 +275,7 @@ struct RecipesView: View {
     @State private var maxPrepTime: Int?
     @State private var selectedIngredients: Set<String> = []
     @State private var cachedCommunityCategories: [RecipeCategory] = []
+    @State private var navigateToCategory: RecipeCategory?
 
     private var hasActiveFilters: Bool {
         selectedCuisine != nil || maxPrepTime != nil || !selectedIngredients.isEmpty
@@ -201,11 +313,11 @@ struct RecipesView: View {
     }
 
     private var filteredCommunityRecipes: [Recipe] {
-        applyFilters(savedRecipesStore.sharedRecipes)
+        applyFilters(savedRecipesStore.communityRecipes)
     }
 
     private var filteredYourRecipes: [Recipe] {
-        applyFilters(savedRecipesStore.sharedRecipes.filter { $0.isUserShared })
+        applyFilters(savedRecipesStore.sharedRecipes)
     }
 
     private var filteredSavedRecipes: [Recipe] {
@@ -257,7 +369,7 @@ struct RecipesView: View {
                 selectedCuisine: $selectedCuisine,
                 maxPrepTime: $maxPrepTime,
                 selectedIngredients: $selectedIngredients,
-                allRecipes: savedRecipesStore.sharedRecipes + savedRecipesStore.savedRecipes,
+                allRecipes: savedRecipesStore.communityRecipes + savedRecipesStore.savedRecipes,
                 pantryIngredients: pantryStore.ingredients
             )
         }
@@ -270,6 +382,9 @@ struct RecipesView: View {
         .navigationDestination(item: $navigateToRecipe) { recipe in
             RecipeDetailView(recipe: recipe)
         }
+        .navigationDestination(item: $navigateToCategory) { category in
+            CategoryRecipesView(category: category)
+        }
         .onChange(of: searchText) { _, newValue in
             searchDebounceTask?.cancel()
             searchDebounceTask = Task {
@@ -277,6 +392,9 @@ struct RecipesView: View {
                 guard !Task.isCancelled else { return }
                 debouncedSearch = newValue
             }
+        }
+        .task {
+            await savedRecipesStore.fetchRecipes()
         }
         .onAppear {
             cachedCommunityCategories = buildCategories(from: filteredCommunityRecipes)
@@ -413,7 +531,10 @@ struct RecipesView: View {
 
     // MARK: - Categorized Community View
 
-    private struct RecipeCategory: Identifiable {
+    struct RecipeCategory: Identifiable, Hashable {
+        static func == (lhs: RecipeCategory, rhs: RecipeCategory) -> Bool { lhs.title == rhs.title }
+        func hash(into hasher: inout Hasher) { hasher.combine(title) }
+
         var id: String { title }
         let title: String
         let icon: String
@@ -469,12 +590,25 @@ struct RecipesView: View {
                                     Text(category.title)
                                         .appTextStyle(.heading3)
                                         .foregroundStyle(DS.ColorToken.textPrimary)
+
+                                    Spacer()
+
+                                    if category.recipes.count > 5 {
+                                        Button {
+                                            navigateToCategory = category
+                                        } label: {
+                                            Text("See More")
+                                                .font(.custom("Satoshi Variable", size: 13).weight(.medium))
+                                                .foregroundStyle(DS.ColorToken.primary)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
                                 }
                                 .padding(.horizontal, DS.Spacing.space5)
 
                                 ScrollView(.horizontal, showsIndicators: false) {
                                     LazyHStack(spacing: DS.Spacing.space3) {
-                                        ForEach(category.recipes) { recipe in
+                                        ForEach(category.recipes.prefix(5)) { recipe in
                                             Button {
                                                 selectedRecipe = recipe
                                             } label: {
@@ -549,9 +683,15 @@ struct RecipesView: View {
 
 private struct RecipePreviewSheet: View {
     @EnvironmentObject private var savedRecipesStore: SavedRecipesStore
+    @EnvironmentObject private var pantryStore: PantryStore
     @Environment(\.dismiss) private var dismiss
     let recipe: Recipe
     let onViewFull: () -> Void
+
+    private var pantryMatchCount: Int {
+        let pantryNames = Set(pantryStore.ingredients.map { $0.name.lowercased() })
+        return recipe.ingredientsUsed.filter { pantryNames.contains($0.name.lowercased()) }.count
+    }
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -566,7 +706,7 @@ private struct RecipePreviewSheet: View {
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: DS.Spacing.space6) {
                         // Recipe image
-                        CachedRecipeImage(recipeID: recipe.id, imageData: recipe.imageData)
+                        CachedRecipeImage(recipeID: recipe.id, imageData: recipe.imageData, imagePath: recipe.imagePath, thumbnail: true)
                             .frame(height: 200)
                             .frame(maxWidth: .infinity)
                             .clipped()
@@ -601,11 +741,11 @@ private struct RecipePreviewSheet: View {
                             }
                         }
 
-                        if let createdBy = recipe.createdBy {
+                        if let displayName = recipe.createdByName ?? recipe.createdBy {
                             HStack(spacing: DS.Spacing.space1) {
                                 Image(systemName: "person.circle.fill")
                                     .font(.system(size: 12))
-                                Text("Created by \(createdBy)")
+                                Text("Created by \(displayName)")
                             }
                             .appTextStyle(.caption)
                             .foregroundStyle(DS.ColorToken.textTertiary)
@@ -636,6 +776,18 @@ private struct RecipePreviewSheet: View {
                                     Text("+\(recipe.ingredientsUsed.count - 5) more")
                                         .appTextStyle(.bodySM)
                                         .foregroundStyle(DS.ColorToken.textTertiary)
+                                }
+
+                                if pantryMatchCount > 0 {
+                                    HStack(spacing: DS.Spacing.space1) {
+                                        Image(systemName: "checkmark.seal.fill")
+                                            .font(.system(size: 12))
+                                            .foregroundStyle(DS.ColorToken.success)
+                                        Text("You have \(pantryMatchCount) of \(recipe.ingredientsUsed.count) ingredients")
+                                            .appTextStyle(.bodySM)
+                                            .foregroundStyle(DS.ColorToken.success)
+                                    }
+                                    .padding(.top, DS.Spacing.space1)
                                 }
                             }
                         }

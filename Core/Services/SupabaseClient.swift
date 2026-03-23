@@ -7,6 +7,7 @@ enum SupabaseManager {
 
     static let client = SupabaseClient(
         supabaseURL: supabaseURL,
-        supabaseKey: supabaseAnonKey
+        supabaseKey: supabaseAnonKey,
+        options: .init(auth: .init(emitLocalSessionAsInitialSession: true))
     )
 }

@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import Supabase
 
 struct Profile: Codable {
@@ -6,6 +7,8 @@ struct Profile: Codable {
     var nickname: String?
     var displayName: String?
     var avatarPath: String?
+    var dietaryPreference: String?
+    var dietaryRestrictions: String?
     var createdAt: Date?
     var updatedAt: Date?
 
@@ -14,6 +17,8 @@ struct Profile: Codable {
         case nickname
         case displayName = "display_name"
         case avatarPath = "avatar_path"
+        case dietaryPreference = "dietary_preference"
+        case dietaryRestrictions = "dietary_restrictions"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
@@ -44,6 +49,10 @@ protocol ProfileServicing {
     func isNicknameAvailable(_ nickname: String, excludingUserId: UUID?) async throws -> Bool
     func createProfile(nickname: String, displayName: String, userId: UUID) async throws -> Profile
     func updateNickname(_ nickname: String, userId: UUID) async throws -> Profile
+    func uploadAvatar(imageData: Data, userId: UUID, oldAvatarPath: String?) async throws -> String
+    func fetchAvatarData(avatarPath: String) async throws -> Data
+    func updateDietaryPreference(_ preference: String, userId: UUID) async throws -> Profile
+    func updateDietaryRestrictions(_ restrictions: String, userId: UUID) async throws -> Profile
 }
 
 final class SupabaseProfileService: ProfileServicing {
@@ -99,15 +108,6 @@ final class SupabaseProfileService: ProfileServicing {
     }
 
     func updateNickname(_ nickname: String, userId: UUID) async throws -> Profile {
-        // Check cooldown using updated_at
-        if let current = try await fetchProfile(userId: userId),
-           let lastUpdated = current.updatedAt {
-            let daysSince = Calendar.current.dateComponents([.day], from: lastUpdated, to: Date()).day ?? 0
-            if daysSince < Self.cooldownDays {
-                throw ProfileError.nicknameCooldown(daysRemaining: Self.cooldownDays - daysSince)
-            }
-        }
-
         // Check uniqueness
         let available = try await isNicknameAvailable(nickname, excludingUserId: userId)
         guard available else {
@@ -124,6 +124,63 @@ final class SupabaseProfileService: ProfileServicing {
 
         guard let updated = rows.first else {
             throw ProfileError.unknown("Failed to save nickname. Please try again.")
+        }
+        return updated
+    }
+
+    func uploadAvatar(imageData: Data, userId: UUID, oldAvatarPath: String?) async throws -> String {
+        guard let compressedData = UIImage(data: imageData)?.jpegData(compressionQuality: 0.7) else {
+            throw ProfileError.unknown("Failed to compress image.")
+        }
+
+        // Delete old avatar if one exists
+        if let oldPath = oldAvatarPath, !oldPath.isEmpty {
+            _ = try? await client.storage.from("profile-photos").remove(paths: [oldPath])
+        }
+
+        let fileName = "\(userId.uuidString.lowercased())/\(UUID().uuidString.lowercased()).jpg"
+        try await client.storage
+            .from("profile-photos")
+            .upload(fileName, data: compressedData, options: .init(contentType: "image/jpeg"))
+
+        // Update avatar_path in profiles table
+        try await client
+            .from("profiles")
+            .update(["avatar_path": fileName])
+            .eq("id", value: userId.uuidString)
+            .execute()
+
+        return fileName
+    }
+
+    func fetchAvatarData(avatarPath: String) async throws -> Data {
+        try await client.storage.from("profile-photos").download(path: avatarPath)
+    }
+
+    func updateDietaryPreference(_ preference: String, userId: UUID) async throws -> Profile {
+        let rows: [Profile] = try await client
+            .from("profiles")
+            .update(["dietary_preference": preference])
+            .eq("id", value: userId.uuidString)
+            .select()
+            .execute()
+            .value
+        guard let updated = rows.first else {
+            throw ProfileError.unknown("Failed to save dietary preference.")
+        }
+        return updated
+    }
+
+    func updateDietaryRestrictions(_ restrictions: String, userId: UUID) async throws -> Profile {
+        let rows: [Profile] = try await client
+            .from("profiles")
+            .update(["dietary_restrictions": restrictions])
+            .eq("id", value: userId.uuidString)
+            .select()
+            .execute()
+            .value
+        guard let updated = rows.first else {
+            throw ProfileError.unknown("Failed to save dietary restrictions.")
         }
         return updated
     }
@@ -144,5 +201,21 @@ final class MockProfileService: ProfileServicing {
 
     func updateNickname(_ nickname: String, userId: UUID) async throws -> Profile {
         Profile(id: userId, nickname: nickname, updatedAt: Date())
+    }
+
+    func uploadAvatar(imageData: Data, userId: UUID, oldAvatarPath: String?) async throws -> String {
+        "mock/avatar.jpg"
+    }
+
+    func fetchAvatarData(avatarPath: String) async throws -> Data {
+        Data()
+    }
+
+    func updateDietaryPreference(_ preference: String, userId: UUID) async throws -> Profile {
+        Profile(id: userId, nickname: "Chef", dietaryPreference: preference, updatedAt: Date())
+    }
+
+    func updateDietaryRestrictions(_ restrictions: String, userId: UUID) async throws -> Profile {
+        Profile(id: userId, nickname: "Chef", dietaryRestrictions: restrictions, updatedAt: Date())
     }
 }

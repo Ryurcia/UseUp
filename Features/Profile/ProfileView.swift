@@ -18,7 +18,11 @@ struct ProfileView: View {
     @EnvironmentObject private var session: AppSession
     @State private var selectedPeriod: StatPeriod = .week
 
-    private var displayName: String {
+    private var profileDisplayName: String {
+        if let name = session.currentUserDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !name.isEmpty {
+            return name
+        }
         if let nickname = session.currentUserNickname?.trimmingCharacters(in: .whitespacesAndNewlines),
            !nickname.isEmpty {
             return nickname
@@ -52,15 +56,17 @@ struct ProfileView: View {
                             .foregroundStyle(DS.ColorToken.accent)
                     }
 
-                    Text(displayName)
+                    Text(profileDisplayName)
                         .font(.custom("CalSans-Regular", size: 28))
                         .foregroundStyle(DS.ColorToken.textPrimary)
 
-                    if let phone = session.currentUserPhone {
-                        Text(phone)
-                            .appTextStyle(.bodySM)
-                            .foregroundStyle(DS.ColorToken.textTertiary)
+                    if let nickname = session.currentUserNickname?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !nickname.isEmpty {
+                        Text("@\(nickname)")
+                            .font(.custom("Satoshi Variable", size: 15).weight(.medium))
+                            .foregroundStyle(DS.ColorToken.textSecondary)
                     }
+
 
                     NavigationLink {
                         EditProfileView()
@@ -210,6 +216,8 @@ struct EditProfileView: View {
     @EnvironmentObject private var session: AppSession
     @Environment(\.dismiss) private var dismiss
     @State private var nicknameText = ""
+    @State private var selectedDietType: GenerationOptions.DietType = .any
+    @State private var selectedRestrictions: Set<GenerationOptions.DietaryRestriction> = []
     @State private var showImagePicker = false
     @State private var selectedImage: UIImage?
     @State private var isSaving = false
@@ -217,6 +225,14 @@ struct EditProfileView: View {
     private var nicknameChanged: Bool {
         let cleaned = nicknameText.trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned != (session.currentUserNickname ?? "")
+    }
+
+    private var dietChanged: Bool {
+        selectedDietType != session.currentUserDietaryPreference
+    }
+
+    private var restrictionsChanged: Bool {
+        selectedRestrictions != session.currentUserDietaryRestrictions
     }
 
     private var cooldownMessage: String? {
@@ -315,6 +331,97 @@ struct EditProfileView: View {
                     }
                 }
 
+                // Dietary Preference
+                VStack(alignment: .leading, spacing: DS.Spacing.space2) {
+                    Text("Dietary Preference")
+                        .font(.custom("CalSans-Regular", size: 14))
+                        .foregroundStyle(DS.ColorToken.textPrimary)
+
+                    FlowLayout(spacing: DS.Spacing.space2) {
+                        ForEach(GenerationOptions.DietType.allCases) { dietType in
+                            Button {
+                                selectedDietType = dietType
+                            } label: {
+                                Text(dietType.rawValue)
+                                    .font(.custom("Satoshi Variable", size: 14))
+                                    .foregroundStyle(
+                                        selectedDietType == dietType ? .white : DS.ColorToken.textSecondary
+                                    )
+                                    .padding(.horizontal, DS.Spacing.space3)
+                                    .padding(.vertical, DS.Spacing.space2)
+                                    .background(
+                                        selectedDietType == dietType
+                                            ? DS.ColorToken.primary
+                                            : DS.ColorToken.bgSecondary
+                                    )
+                                    .overlay(
+                                        Capsule()
+                                            .stroke(
+                                                selectedDietType == dietType
+                                                    ? Color.clear
+                                                    : DS.ColorToken.borderDefault,
+                                                lineWidth: 1
+                                            )
+                                    )
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+
+                    Text("This is used as your default diet when generating recipes.")
+                        .appTextStyle(.caption)
+                        .foregroundStyle(DS.ColorToken.textTertiary)
+                }
+
+                // Dietary Restrictions
+                VStack(alignment: .leading, spacing: DS.Spacing.space2) {
+                    Text("Dietary Restrictions")
+                        .font(.custom("CalSans-Regular", size: 14))
+                        .foregroundStyle(DS.ColorToken.textPrimary)
+
+                    FlowLayout(spacing: DS.Spacing.space2) {
+                        ForEach(GenerationOptions.DietaryRestriction.allCases) { restriction in
+                            let isSelected = selectedRestrictions.contains(restriction)
+                            Button {
+                                if isSelected {
+                                    selectedRestrictions.remove(restriction)
+                                } else {
+                                    selectedRestrictions.insert(restriction)
+                                }
+                            } label: {
+                                Text(restriction.rawValue)
+                                    .font(.custom("Satoshi Variable", size: 14))
+                                    .foregroundStyle(
+                                        isSelected ? .white : DS.ColorToken.textSecondary
+                                    )
+                                    .padding(.horizontal, DS.Spacing.space3)
+                                    .padding(.vertical, DS.Spacing.space2)
+                                    .background(
+                                        isSelected
+                                            ? DS.ColorToken.primary
+                                            : DS.ColorToken.bgSecondary
+                                    )
+                                    .overlay(
+                                        Capsule()
+                                            .stroke(
+                                                isSelected
+                                                    ? Color.clear
+                                                    : DS.ColorToken.borderDefault,
+                                                lineWidth: 1
+                                            )
+                                    )
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+
+                    Text("These are applied by default when generating recipes.")
+                        .appTextStyle(.caption)
+                        .foregroundStyle(DS.ColorToken.textTertiary)
+                }
+
                 // Save button
                 Button {
                     save()
@@ -347,31 +454,50 @@ struct EditProfileView: View {
         }
         .onAppear {
             nicknameText = session.currentUserNickname ?? ""
+            selectedDietType = session.currentUserDietaryPreference
+            selectedRestrictions = session.currentUserDietaryRestrictions
             session.nicknameError = nil
         }
     }
 
     private func save() {
-        if let selectedImage, let data = selectedImage.jpegData(compressionQuality: 0.8) {
-            session.profileImageData = data
+        let hasNewPhoto = selectedImage != nil
+        let hasNicknameChange = nicknameChanged
+        let hasDietChange = dietChanged
+        let hasRestrictionsChange = restrictionsChanged
+
+        guard hasNewPhoto || hasNicknameChange || hasDietChange || hasRestrictionsChange else {
+            dismiss()
+            return
         }
 
-        if nicknameChanged {
-            let cleaned = nicknameText.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !cleaned.isEmpty else {
-                dismiss()
-                return
+        Task {
+            isSaving = true
+
+            if let selectedImage, let data = selectedImage.jpegData(compressionQuality: 0.8) {
+                await session.updateProfilePhoto(data)
             }
-            Task {
-                isSaving = true
-                await session.updateNickname(cleaned)
-                isSaving = false
-                if session.nicknameError == nil {
-                    dismiss()
+
+            if hasNicknameChange {
+                let cleaned = nicknameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !cleaned.isEmpty {
+                    await session.updateNickname(cleaned)
                 }
             }
-        } else {
-            dismiss()
+
+            if hasDietChange {
+                await session.updateDietaryPreference(dietType: selectedDietType)
+            }
+
+            if hasRestrictionsChange {
+                await session.updateDietaryRestrictions(restrictions: selectedRestrictions)
+            }
+
+            isSaving = false
+
+            if session.nicknameError == nil {
+                dismiss()
+            }
         }
     }
 }
@@ -448,12 +574,6 @@ struct SettingsView: View {
 
 private struct AccountSettingsView: View {
     @EnvironmentObject private var session: AppSession
-    @State private var showChangePassword = false
-    @State private var currentPassword = ""
-    @State private var newPassword = ""
-    @State private var confirmPassword = ""
-    @State private var passwordError: String?
-    @State private var passwordSuccess = false
 
     var body: some View {
         ScrollView {
@@ -475,77 +595,6 @@ private struct AccountSettingsView: View {
                     .padding(DS.Spacing.space4)
                 }
 
-                // Change Password
-                profileCard(header: "Password") {
-                    VStack(spacing: DS.Spacing.space3) {
-                        if showChangePassword {
-                            passwordField(label: "Current Password", text: $currentPassword)
-                            passwordField(label: "New Password", text: $newPassword)
-                            passwordField(label: "Confirm New Password", text: $confirmPassword)
-
-                            if let passwordError {
-                                Text(passwordError)
-                                    .appTextStyle(.bodySM)
-                                    .foregroundStyle(DS.ColorToken.error)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-
-                            if passwordSuccess {
-                                Text("Password updated successfully.")
-                                    .appTextStyle(.bodySM)
-                                    .foregroundStyle(DS.ColorToken.accent)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-
-                            HStack(spacing: DS.Spacing.space3) {
-                                Button {
-                                    showChangePassword = false
-                                    resetPasswordFields()
-                                } label: {
-                                    Text("Cancel")
-                                        .font(.custom("Satoshi Variable", size: 14).weight(.medium))
-                                        .foregroundStyle(DS.ColorToken.textSecondary)
-                                        .frame(maxWidth: .infinity)
-                                        .frame(height: 44)
-                                        .background(DS.ColorToken.bgPrimary)
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
-                                                .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
-                                        )
-                                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
-                                }
-                                .buttonStyle(.plain)
-
-                                Button {
-                                    submitPasswordChange()
-                                } label: {
-                                    Text("Update")
-                                        .font(.custom("Satoshi Variable", size: 14).weight(.semibold))
-                                        .foregroundStyle(.white)
-                                        .frame(maxWidth: .infinity)
-                                        .frame(height: 44)
-                                        .background(DS.ColorToken.primary)
-                                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        } else {
-                            Button {
-                                showChangePassword = true
-                            } label: {
-                                HStack(spacing: DS.Spacing.space2) {
-                                    Image(systemName: "lock.rotation")
-                                        .font(.system(size: 14, weight: .semibold))
-                                    Text("Change Password")
-                                        .font(.custom("Satoshi Variable", size: 14).weight(.medium))
-                                }
-                                .foregroundStyle(DS.ColorToken.primary)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(DS.Spacing.space4)
-                }
 
                 // Membership Plan
                 profileCard(header: "Membership Plan") {
@@ -630,46 +679,4 @@ private struct AccountSettingsView: View {
         }
     }
 
-    private func passwordField(label: String, text: Binding<String>) -> some View {
-        SecureField(label, text: text)
-            .font(.custom("Satoshi Variable", size: 16))
-            .foregroundStyle(DS.ColorToken.textPrimary)
-            .padding(.horizontal, DS.Spacing.space3)
-            .frame(height: 48)
-            .background(DS.ColorToken.bgPrimary)
-            .overlay(
-                RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
-                    .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
-    }
-
-    private func submitPasswordChange() {
-        passwordError = nil
-        passwordSuccess = false
-
-        guard !currentPassword.isEmpty else {
-            passwordError = "Enter your current password."
-            return
-        }
-        guard newPassword.count >= 6 else {
-            passwordError = "New password must be at least 6 characters."
-            return
-        }
-        guard newPassword == confirmPassword else {
-            passwordError = "Passwords do not match."
-            return
-        }
-
-        // TODO: call auth service to change password
-        passwordSuccess = true
-        resetPasswordFields()
-    }
-
-    private func resetPasswordFields() {
-        currentPassword = ""
-        newPassword = ""
-        confirmPassword = ""
-        passwordError = nil
-    }
 }

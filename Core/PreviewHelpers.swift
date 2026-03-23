@@ -23,7 +23,11 @@ struct PreviewContainer<Content: View>: View {
 
         _session = StateObject(wrappedValue: session)
         _pantryStore = StateObject(wrappedValue: PantryStore())
-        _savedRecipesStore = StateObject(wrappedValue: SavedRecipesStore())
+        _savedRecipesStore = StateObject(wrappedValue: SavedRecipesStore(
+            savedRecipes: DummyData.sampleSavedRecipes,
+            sharedRecipes: DummyData.sampleSharedRecipes,
+            communityRecipes: DummyData.sampleSharedRecipes
+        ))
         self.content = content
     }
 

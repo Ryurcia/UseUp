@@ -1,15 +1,31 @@
 import Foundation
 
 struct GenerationOptions: Hashable {
-    enum DietaryPreference: String, CaseIterable, Identifiable {
+    enum DietType: String, CaseIterable, Identifiable {
         case any = "Any"
         case vegetarian = "Vegetarian"
         case vegan = "Vegan"
+        case pescatarian = "Pescatarian"
+        case keto = "Keto"
+        case paleo = "Paleo"
 
         var id: String { rawValue }
     }
 
-    var dietaryPreference: DietaryPreference = .any
+    enum DietaryRestriction: String, CaseIterable, Identifiable, Hashable {
+        case glutenFree = "Gluten-Free"
+        case nutFree = "Nut-Free"
+        case dairyFree = "Dairy-Free"
+        case soyFree = "Soy-Free"
+        case eggFree = "Egg-Free"
+        case shellfishFree = "Shellfish-Free"
+        case lowSodium = "Low Sodium"
+
+        var id: String { rawValue }
+    }
+
+    var dietType: DietType = .any
+    var dietaryRestrictions: Set<DietaryRestriction> = []
     var maxTimeMinutes: Int = 30
     var cuisine: Cuisine?
 }

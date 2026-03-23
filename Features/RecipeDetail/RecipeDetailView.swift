@@ -10,9 +10,25 @@ import SwiftUI
 
 struct RecipeDetailView: View {
     @EnvironmentObject private var savedRecipesStore: SavedRecipesStore
+    @EnvironmentObject private var pantryStore: PantryStore
     @Environment(\.dismiss) private var dismiss
     let recipe: Recipe
     @State private var showRatingSheet = false
+
+    private var pantryMatchedIngredients: [RecipeIngredient] {
+        let pantryNames = Set(pantryStore.ingredients.map { $0.name.lowercased() })
+        return recipe.ingredientsUsed.filter { pantryNames.contains($0.name.lowercased()) }
+    }
+
+    private func sufficiency(for ingredient: RecipeIngredient) -> IngredientSufficiency {
+        guard let pantryItem = pantryStore.ingredients.first(where: {
+            $0.name.lowercased() == ingredient.name.lowercased()
+        }) else { return .notInPantry }
+        return IngredientComparator.compare(
+            recipeQuantity: ingredient.quantity,
+            pantryAmount: pantryItem.amount
+        )
+    }
 
     private var currentRecipe: Recipe {
         savedRecipesStore.sharedRecipes.first(where: { $0.id == recipe.id })
@@ -38,6 +54,9 @@ struct RecipeDetailView: View {
 
                 VStack(spacing: DS.Spacing.space5) {
                     ingredientsCard
+                    if !pantryMatchedIngredients.isEmpty {
+                        pantryMatchCard
+                    }
                     if !recipe.missingIngredients.isEmpty {
                         missingIngredientsCard
                     }
@@ -101,11 +120,28 @@ struct RecipeDetailView: View {
     private var recipeImage: some View {
         GeometryReader { proxy in
             let safeTop = proxy.safeAreaInsets.top
-            CachedRecipeImage(recipeID: recipe.id, imageData: recipe.imageData)
-                .frame(height: 300 + safeTop)
-                .frame(maxWidth: .infinity)
-                .clipped()
-                .offset(y: -safeTop)
+            Group {
+                if recipe.isAIGenerated && recipe.imageData == nil && recipe.imagePath == nil {
+                    LinearGradient(
+                        colors: [DS.ColorToken.primary, DS.ColorToken.accent],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                } else {
+                    CachedRecipeImage(recipeID: recipe.id, imageData: recipe.imageData, imagePath: recipe.imagePath)
+                }
+            }
+            .frame(height: 300 + safeTop)
+            .frame(maxWidth: .infinity)
+            .clipped()
+            .overlay(alignment: .topLeading) {
+                if recipe.isAIGenerated {
+                    AIGeneratedBadge()
+                        .padding(.horizontal, DS.Spacing.space5)
+                        .padding(.top, safeTop + DS.Spacing.space16)
+                }
+            }
+            .offset(y: -safeTop)
         }
         .frame(height: 300)
     }
@@ -129,11 +165,11 @@ struct RecipeDetailView: View {
             .appTextStyle(.bodySM)
             .foregroundStyle(DS.ColorToken.textTertiary)
 
-            if let createdBy = recipe.createdBy {
+            if let displayName = recipe.createdByName ?? recipe.createdBy {
                 HStack(spacing: DS.Spacing.space1) {
                     Image(systemName: "person.circle.fill")
                         .font(.system(size: 12))
-                    Text("Created by \(createdBy)")
+                    Text("Created by \(displayName)")
                 }
                 .appTextStyle(.caption)
                 .foregroundStyle(DS.ColorToken.textTertiary)
@@ -171,14 +207,24 @@ struct RecipeDetailView: View {
 
             VStack(alignment: .leading, spacing: DS.Spacing.space2) {
                 ForEach(recipe.ingredientsUsed) { ingredient in
-                    HStack(spacing: DS.Spacing.space2) {
-                        Circle()
-                            .fill(DS.ColorToken.primary)
-                            .frame(width: 6, height: 6)
-                        Text(ingredient.displayText)
-                            .appTextStyle(.bodySM)
-                            .foregroundStyle(DS.ColorToken.textPrimary)
-                    }
+                    let state = sufficiency(for: ingredient)
+                    ingredientRow(ingredient: ingredient, state: state)
+                }
+            }
+        }
+        .modifier(CardStyle())
+    }
+
+    // MARK: - Pantry Match
+
+    private var pantryMatchCard: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.space3) {
+            sectionLabel("Already In Your Pantry", icon: "checkmark.seal.fill")
+
+            VStack(alignment: .leading, spacing: DS.Spacing.space2) {
+                ForEach(pantryMatchedIngredients) { ingredient in
+                    let state = sufficiency(for: ingredient)
+                    ingredientRow(ingredient: ingredient, state: state)
                 }
             }
         }
@@ -260,6 +306,37 @@ struct RecipeDetailView: View {
     }
 
     // MARK: - Helpers
+
+    @ViewBuilder
+    private func ingredientRow(ingredient: RecipeIngredient, state: IngredientSufficiency) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: DS.Spacing.space2) {
+                switch state {
+                case .enough, .unknownAmount:
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(DS.ColorToken.success)
+                case .partial:
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(DS.ColorToken.warning)
+                case .notInPantry:
+                    Circle()
+                        .fill(DS.ColorToken.primary)
+                        .frame(width: 6, height: 6)
+                }
+                Text(ingredient.displayText)
+                    .appTextStyle(.bodySM)
+                    .foregroundStyle(DS.ColorToken.textPrimary)
+            }
+            if case let .partial(have, need) = state {
+                Text("You have \(have) — recipe needs \(need)")
+                    .appTextStyle(.caption)
+                    .foregroundStyle(DS.ColorToken.textTertiary)
+                    .padding(.leading, DS.Spacing.space4)
+            }
+        }
+    }
 
     private func sectionLabel(_ title: String, icon: String) -> some View {
         HStack(spacing: DS.Spacing.space2) {
