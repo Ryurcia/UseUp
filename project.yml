@@ -13,6 +13,12 @@ packages:
   Supabase:
     url: https://github.com/supabase/supabase-swift
     from: 2.5.1
+  RevenueCat:
+    url: https://github.com/RevenueCat/purchases-ios-spm.git
+    from: 5.21.0
+  SwiftSoup:
+    url: https://github.com/scinfu/SwiftSoup.git
+    from: 2.7.0
 targets:
   UseUp:
     type: application
@@ -34,5 +40,10 @@ targets:
         SWIFT_VERSION: "5.0"
     dependencies:
       - package: Supabase
+      - package: RevenueCat
+        products:
+          - RevenueCat
+          - RevenueCatUI
+      - package: SwiftSoup
     scheme:
       testTargets: []

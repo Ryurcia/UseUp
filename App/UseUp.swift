@@ -5,8 +5,14 @@ struct UseUp: App {
     @StateObject private var session = AppSession(authService: SupabaseAuthService())
     @StateObject private var pantryStore = PantryStore()
     @StateObject private var savedRecipesStore = SavedRecipesStore()
+    @StateObject private var activityStore = UserActivityStore()
+    @StateObject private var revenueCatManager = RevenueCatManager.shared
     @Environment(\.scenePhase) private var scenePhase
-    private let recipeGenerator: RecipeGenerating = MockRecipeGenerator()
+    private let recipeGenerator: RecipeGenerating = GeminiRecipeGenerator()
+
+    init() {
+        RevenueCatManager.shared.configure()
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -14,21 +20,34 @@ struct UseUp: App {
                 .environmentObject(session)
                 .environmentObject(pantryStore)
                 .environmentObject(savedRecipesStore)
+                .environmentObject(activityStore)
+                .environmentObject(revenueCatManager)
                 .tint(DS.ColorToken.primary)
                 .preferredColorScheme(session.isDarkMode ? .dark : .light)
                 .task {
                     await session.restoreSession()
                     pantryStore.userId = session.currentUserId
                     savedRecipesStore.userId = session.currentUserId
-                    await savedRecipesStore.fetchRecipes()
+                    savedRecipesStore.currentUserNickname = session.currentUserNickname
+                    activityStore.userId = session.currentUserId
                     if session.isAuthenticated {
-                        await pantryStore.fetchIngredients()
+                        // Log in to RevenueCat with the user's Supabase ID
+                        if let userId = session.currentUserId {
+                            await revenueCatManager.logIn(userId: userId.uuidString)
+                            session.isPremium = revenueCatManager.isPremium
+                        }
+                        async let recipes: Void = savedRecipesStore.fetchRecipes()
+                        async let ingredients: Void = pantryStore.fetchIngredients()
+                        _ = await (recipes, ingredients)
                         await ExpirationNotificationScheduler.rescheduleAll(for: pantryStore.ingredients)
+                    } else {
+                        await savedRecipesStore.fetchRecipes()
                     }
                 }
                 .onChange(of: scenePhase) { _, newPhase in
                     if newPhase == .active, session.isAuthenticated {
                         Task {
+                            await revenueCatManager.checkEntitlements()
                             await pantryStore.fetchIngredients()
                             await ExpirationNotificationScheduler.rescheduleAll(for: pantryStore.ingredients)
                         }
@@ -37,13 +56,23 @@ struct UseUp: App {
                 .onChange(of: session.currentUserId) { _, newId in
                     pantryStore.userId = newId
                     savedRecipesStore.userId = newId
-                    if newId == nil {
+                    savedRecipesStore.currentUserNickname = session.currentUserNickname
+                    activityStore.userId = newId
+                    if let newId {
+                        Task {
+                            await revenueCatManager.logIn(userId: newId.uuidString)
+                            await savedRecipesStore.fetchRecipes()
+                        }
+                    } else {
                         pantryStore.clearForSignOut()
                         savedRecipesStore.clearForSignOut()
+                        activityStore.clearForSignOut()
                         ExpirationNotificationScheduler.cancelAll()
-                    } else {
-                        Task { await savedRecipesStore.fetchRecipes() }
+                        Task { await revenueCatManager.logOut() }
                     }
+                }
+                .onChange(of: revenueCatManager.isPremium) { _, isPremium in
+                    session.isPremium = isPremium
                 }
                 .onTapGesture {
                     UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)

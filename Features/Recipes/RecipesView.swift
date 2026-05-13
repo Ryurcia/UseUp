@@ -8,11 +8,7 @@ import SwiftUI
     }
 }
 
-private enum RecipeTab: String, CaseIterable {
-    case community = "Community"
-    case yours = "Your Recipes"
-    case saved = "Saved"
-}
+// Tabs removed — community only
 
 // MARK: - Image Cache
 
@@ -36,6 +32,11 @@ final class RecipeImageCache {
     func image(for id: UUID, thumbnail: Bool = false) -> UIImage? {
         let key = id.uuidString as NSString
         return thumbnail ? thumbCache.object(forKey: key) : fullCache.object(forKey: key)
+    }
+
+    func clear() {
+        fullCache.removeAllObjects()
+        thumbCache.removeAllObjects()
     }
 
     func setImage(_ image: UIImage, for id: UUID, thumbnail: Bool = false, cost: Int = 0) {
@@ -180,8 +181,15 @@ struct CachedRecipeImage: View {
 
 // MARK: - Recipe Card
 
-private struct RecipeCard: View {
+private struct RecipeCard: View, Equatable {
     let recipe: Recipe
+
+    static func == (lhs: RecipeCard, rhs: RecipeCard) -> Bool {
+        lhs.recipe.id == rhs.recipe.id
+            && lhs.recipe.rating == rhs.recipe.rating
+            && lhs.recipe.title == rhs.recipe.title
+            && lhs.recipe.imagePath == rhs.recipe.imagePath
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -189,31 +197,36 @@ private struct RecipeCard: View {
                 .aspectRatio(4/3, contentMode: .fit)
                 .overlay {
                     if recipe.isAIGenerated && recipe.imageData == nil && recipe.imagePath == nil {
-                        LinearGradient(
-                            colors: [DS.ColorToken.primary, DS.ColorToken.accent],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
+                        ZStack {
+                            LinearGradient(
+                                colors: [DS.ColorToken.primary, DS.ColorToken.accent],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                            Image(systemName: "fork.knife")
+                                .font(.system(size: 36, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.85))
+                        }
                     } else {
                         CachedRecipeImage(recipeID: recipe.id, imageData: recipe.imageData, imagePath: recipe.imagePath, thumbnail: true)
                     }
                 }
                 .clipped()
                 .overlay(alignment: .topLeading) {
-                    if recipe.isAIGenerated {
-                        AIGeneratedBadge()
-                            .padding(8)
-                    }
-                }
-                .overlay(alignment: .bottomLeading) {
                     Text("\(recipe.timeMinutes) min")
                         .font(.custom("Satoshi Variable", size: 11).weight(.bold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
-                        .background(DS.ColorToken.accent.opacity(0.85))
+                        .background(Color.black.opacity(0.45))
                         .clipShape(Capsule())
                         .padding(8)
+                }
+                .overlay(alignment: .topTrailing) {
+                    if recipe.isAIGenerated {
+                        AIGeneratedBadge()
+                            .padding(8)
+                    }
                 }
                 .overlay(alignment: .bottomTrailing) {
                     if recipe.rating > 0 {
@@ -239,7 +252,7 @@ private struct RecipeCard: View {
                 Text(recipe.title)
                     .font(.custom("Satoshi Variable", size: 14).weight(.medium))
                     .foregroundStyle(DS.ColorToken.textPrimary)
-                    .lineLimit(2)
+                    .lineLimit(1)
                     .multilineTextAlignment(.leading)
 
                 Text(recipe.summary.isEmpty ? " " : recipe.summary)
@@ -247,15 +260,56 @@ private struct RecipeCard: View {
                     .foregroundStyle(DS.ColorToken.textSecondary)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
+
+                if !recipe.dietaryRestrictions.isEmpty || recipe.dietType != "any" {
+                    let allLabels: [(text: String, isDiet: Bool)] = {
+                        var labels: [(String, Bool)] = []
+                        if recipe.dietType != "any" {
+                            labels.append((recipe.dietType.capitalized, true))
+                        }
+                        for r in recipe.dietaryRestrictions {
+                            labels.append((r, false))
+                        }
+                        return labels
+                    }()
+                    let maxVisible = 2
+                    let visible = Array(allLabels.prefix(maxVisible))
+                    let overflow = allLabels.count - maxVisible
+
+                    HStack(spacing: 4) {
+                        ForEach(visible.indices, id: \.self) { i in
+                            Text(visible[i].text)
+                                .font(.custom("Satoshi Variable", size: 9).weight(.semibold))
+                                .foregroundStyle(visible[i].isDiet ? DS.ColorToken.accent : DS.ColorToken.primary)
+                                .lineLimit(1)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(visible[i].isDiet ? DS.ColorToken.accentLight : DS.ColorToken.primaryLight)
+                                .clipShape(Capsule())
+                        }
+
+                        if overflow > 0 {
+                            Text("+\(overflow) more")
+                                .font(.custom("Satoshi Variable", size: 9).weight(.semibold))
+                                .foregroundStyle(DS.ColorToken.textTertiary)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(DS.ColorToken.bgSecondary)
+                                .clipShape(Capsule())
+                                .overlay(
+                                    Capsule()
+                                        .stroke(DS.ColorToken.borderDefault, lineWidth: 0.5)
+                                )
+                        }
+                    }
+                }
             }
             .padding(DS.Spacing.space2)
             .frame(maxWidth: .infinity, alignment: .topLeading)
-            .frame(height: 72)
         }
         .background(DS.ColorToken.bgSecondary)
         .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
         .shadow(color: .black.opacity(0.08), radius: 4, x: 0, y: 2)
-        .drawingGroup()
     }
 }
 
@@ -263,10 +317,10 @@ struct RecipesView: View {
     @EnvironmentObject private var savedRecipesStore: SavedRecipesStore
     @EnvironmentObject private var pantryStore: PantryStore
 
-    @State private var selectedTab: RecipeTab = .community
     @State private var searchText = ""
     @State private var debouncedSearch = ""
     @State private var searchDebounceTask: Task<Void, Never>?
+    @State private var showingSettings = false
     @State private var showingShareSheet = false
     @State private var selectedRecipe: Recipe?
     @State private var navigateToRecipe: Recipe?
@@ -274,11 +328,21 @@ struct RecipesView: View {
     @State private var selectedCuisine: Cuisine?
     @State private var maxPrepTime: Int?
     @State private var selectedIngredients: Set<String> = []
+    @State private var selectedDietaryFilters: Set<String> = []
     @State private var cachedCommunityCategories: [RecipeCategory] = []
     @State private var navigateToCategory: RecipeCategory?
 
+    private enum QuickFilter: String, CaseIterable {
+        case all = "All"
+        case quick = "< 30 min"
+        case vegan = "Vegan"
+        case highProtein = "High Protein"
+        case glutenFree = "Gluten-Free"
+    }
+    @State private var quickFilter: QuickFilter = .all
+
     private var hasActiveFilters: Bool {
-        selectedCuisine != nil || maxPrepTime != nil || !selectedIngredients.isEmpty
+        selectedCuisine != nil || maxPrepTime != nil || !selectedIngredients.isEmpty || !selectedDietaryFilters.isEmpty
     }
 
     private func applyFilters(_ recipes: [Recipe]) -> [Recipe] {
@@ -309,19 +373,60 @@ struct RecipesView: View {
             }
         }
 
+        if !selectedDietaryFilters.isEmpty {
+            result = result.filter { recipe in
+                let recipeLabels = Set(recipe.dietaryRestrictions)
+                if recipe.dietType != "any" { return selectedDietaryFilters.contains(recipe.dietType.capitalized) || !selectedDietaryFilters.isDisjoint(with: recipeLabels) }
+                return !selectedDietaryFilters.isDisjoint(with: recipeLabels)
+            }
+        }
+
         return result
     }
 
     private var filteredCommunityRecipes: [Recipe] {
-        applyFilters(savedRecipesStore.communityRecipes)
+        applyQuickFilter(applyFilters(savedRecipesStore.communityRecipes))
     }
 
-    private var filteredYourRecipes: [Recipe] {
-        applyFilters(savedRecipesStore.sharedRecipes)
+    private var showcaseItem: (recipe: Recipe, ingredient: Ingredient)? {
+        let expiring = pantryStore.ingredients
+            .filter { $0.expirationDate != nil && ($0.daysUntilExpiration ?? Int.max) >= 0 && ($0.daysUntilExpiration ?? Int.max) <= 5 }
+            .sorted { ($0.daysUntilExpiration ?? Int.max) < ($1.daysUntilExpiration ?? Int.max) }
+        for ingredient in expiring {
+            let name = ingredient.name.lowercased()
+            if let match = savedRecipesStore.communityRecipes.first(where: { recipe in
+                recipe.ingredientsUsed.contains(where: {
+                    $0.name.lowercased().contains(name) || name.contains($0.name.lowercased())
+                })
+            }) {
+                return (match, ingredient)
+            }
+        }
+        return nil
     }
 
-    private var filteredSavedRecipes: [Recipe] {
-        applyFilters(savedRecipesStore.savedRecipes)
+    private var useUpSoonRecipes: [Recipe] {
+        let expiringNames = pantryStore.ingredients
+            .filter { $0.expirationDate != nil && ($0.daysUntilExpiration ?? Int.max) >= 0 && ($0.daysUntilExpiration ?? Int.max) <= 5 }
+            .map { $0.name.lowercased() }
+        guard !expiringNames.isEmpty else { return [] }
+        return savedRecipesStore.communityRecipes.filter { recipe in
+            recipe.ingredientsUsed.contains(where: { ing in
+                expiringNames.contains(where: {
+                    ing.name.lowercased().contains($0) || $0.contains(ing.name.lowercased())
+                })
+            })
+        }
+    }
+
+    private func applyQuickFilter(_ recipes: [Recipe]) -> [Recipe] {
+        switch quickFilter {
+        case .all: return recipes
+        case .quick: return recipes.filter { $0.timeMinutes <= 30 }
+        case .vegan: return recipes.filter { $0.dietType == "vegan" }
+        case .highProtein: return recipes.filter { $0.macros.proteinG >= 30 }
+        case .glutenFree: return recipes.filter { $0.dietaryRestrictions.contains("Gluten-Free") }
+        }
     }
 
     var body: some View {
@@ -329,38 +434,22 @@ struct RecipesView: View {
             headerView
 
             VStack(spacing: DS.Spacing.space3) {
-                // Tab pills
-                tabRow
-
-                // Search bar
                 searchBar
+                quickFilterChips
             }
             .padding(.horizontal, DS.Spacing.space5)
             .padding(.top, DS.Spacing.space4)
+            .padding(.bottom, DS.Spacing.space2)
 
-            // Content
-            Group {
-                switch selectedTab {
-                case .community:
-                    categorizedRecipeList(recipes: filteredCommunityRecipes)
-                case .yours:
-                    recipeGrid(
-                        recipes: filteredYourRecipes,
-                        emptyMessage: "You haven't shared any recipes yet."
-                    )
-                case .saved:
-                    recipeGrid(
-                        recipes: filteredSavedRecipes,
-                        emptyMessage: "No saved recipes yet. Save one from the Generate tab."
-                    )
-                }
-            }
-            .padding(.top, DS.Spacing.space3)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(DS.ColorToken.bgPrimary)
+            recipeScrollContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .background(DS.ColorToken.bgPrimary)
         }
         .background(DS.ColorToken.bgPrimary)
         .toolbar(.hidden, for: .navigationBar)
+        .sheet(isPresented: $showingSettings) {
+            NavigationStack { SettingsView() }
+        }
         .sheet(isPresented: $showingShareSheet) {
             ShareRecipeSheet()
         }
@@ -369,6 +458,7 @@ struct RecipesView: View {
                 selectedCuisine: $selectedCuisine,
                 maxPrepTime: $maxPrepTime,
                 selectedIngredients: $selectedIngredients,
+                selectedDietaryFilters: $selectedDietaryFilters,
                 allRecipes: savedRecipesStore.communityRecipes + savedRecipesStore.savedRecipes,
                 pantryIngredients: pantryStore.ingredients
             )
@@ -407,9 +497,9 @@ struct RecipesView: View {
     // MARK: - Header
 
     private var headerView: some View {
-        HStack {
-            Text("Today is \(Date.now, format: .dateTime.month(.wide).day())")
-                .font(.custom("Satoshi Variable", size: 22).weight(.semibold))
+        HStack(spacing: DS.Spacing.space4) {
+            Text("Recipes")
+                .font(.custom("CalSans-Regular", size: 28))
                 .foregroundStyle(DS.ColorToken.textPrimary)
 
             Spacer()
@@ -420,7 +510,7 @@ struct RecipesView: View {
                 HStack(spacing: DS.Spacing.space1) {
                     Image(systemName: "plus")
                         .font(.system(size: 14, weight: .semibold))
-                    Text("Share Recipe")
+                    Text("Share")
                         .font(.custom("Satoshi Variable", size: 14).weight(.semibold))
                 }
                 .foregroundStyle(.white)
@@ -430,6 +520,15 @@ struct RecipesView: View {
                 .clipShape(Capsule())
             }
             .buttonStyle(.plain)
+
+            Button { showingSettings = true } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 22, weight: .regular))
+                    .foregroundStyle(DS.ColorToken.textSecondary)
+            }
+            .buttonStyle(.plain)
+            NotificationBellButton()
+            ProfileNavButton()
         }
         .padding(.horizontal, DS.Spacing.space5)
         .padding(.top, DS.Spacing.space2)
@@ -440,60 +539,24 @@ struct RecipesView: View {
 
     private var searchBar: some View {
         HStack(spacing: DS.Spacing.space2) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(DS.ColorToken.textTertiary)
+            HStack(spacing: DS.Spacing.space2) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(DS.ColorToken.textTertiary)
 
-            TextField("Search recipes", text: $searchText)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .appTextStyle(.body)
-                .foregroundStyle(DS.ColorToken.textPrimary)
-        }
-        .padding(.horizontal, DS.Spacing.space3)
-        .frame(height: 48)
-        .background(DS.ColorToken.bgSecondary)
-        .overlay(
-            RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
-                .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
-    }
-
-    // MARK: - Tab Row
-
-    private var tabRow: some View {
-        HStack(spacing: DS.Spacing.space2) {
-            ForEach(RecipeTab.allCases, id: \.self) { tab in
-                Button {
-                    withAnimation(DS.Motion.easeDefault) {
-                        selectedTab = tab
-                    }
-                } label: {
-                    Text(tab.rawValue)
-                        .font(.custom("Satoshi Variable", size: 14).weight(.medium))
-                        .foregroundStyle(
-                            selectedTab == tab ? .white : DS.ColorToken.textSecondary
-                        )
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 40)
-                        .background(
-                            selectedTab == tab
-                                ? DS.ColorToken.midnight
-                                : DS.ColorToken.bgSecondary
-                        )
-                        .overlay(
-                            Capsule()
-                                .stroke(
-                                    selectedTab == tab
-                                        ? Color.clear
-                                        : DS.ColorToken.borderDefault,
-                                    lineWidth: 1
-                                )
-                        )
-                        .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
+                TextField("Search recipes", text: $searchText)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .appTextStyle(.body)
+                    .foregroundStyle(DS.ColorToken.textPrimary)
             }
+            .padding(.horizontal, DS.Spacing.space3)
+            .frame(height: 48)
+            .background(DS.ColorToken.bgSecondary)
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
+                    .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
 
             Button {
                 showingFilterSheet = true
@@ -502,19 +565,19 @@ struct RecipesView: View {
                     Image(systemName: "line.3.horizontal.decrease")
                         .font(.system(size: 16, weight: .medium))
                         .foregroundStyle(hasActiveFilters ? DS.ColorToken.primary : DS.ColorToken.textSecondary)
-                        .frame(width: 40, height: 40)
+                        .frame(width: 48, height: 48)
                         .background(DS.ColorToken.bgSecondary)
                         .overlay(
-                            Capsule()
+                            RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
                                 .stroke(hasActiveFilters ? DS.ColorToken.primary : DS.ColorToken.borderDefault, lineWidth: 1)
                         )
-                        .clipShape(Capsule())
+                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
 
                     if hasActiveFilters {
                         Circle()
                             .fill(DS.ColorToken.primary)
                             .frame(width: 8, height: 8)
-                            .offset(x: -2, y: 2)
+                            .offset(x: -4, y: 4)
                     }
                 }
             }
@@ -522,7 +585,310 @@ struct RecipesView: View {
         }
     }
 
-    // MARK: - Recipe List
+    // MARK: - Quick Filter Chips
+
+    private var quickFilterChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: DS.Spacing.space2) {
+                ForEach(QuickFilter.allCases, id: \.self) { filter in
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) { quickFilter = filter }
+                    } label: {
+                        Text(filter.rawValue)
+                            .font(.custom("Satoshi Variable", size: 13).weight(.medium))
+                            .foregroundStyle(quickFilter == filter ? .white : DS.ColorToken.textSecondary)
+                            .padding(.horizontal, DS.Spacing.space3)
+                            .frame(height: 34)
+                            .background(quickFilter == filter ? DS.ColorToken.accent : DS.ColorToken.bgSecondary)
+                            .overlay(
+                                Capsule().stroke(
+                                    quickFilter == filter ? Color.clear : DS.ColorToken.borderDefault,
+                                    lineWidth: 1
+                                )
+                            )
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .mask(
+            LinearGradient(
+                stops: [
+                    .init(color: .black, location: 0),
+                    .init(color: .black, location: 0.8),
+                    .init(color: .clear, location: 1.0)
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        )
+    }
+
+    // MARK: - Scroll Content
+
+    private var recipeScrollContent: some View {
+        let hasContent = !filteredCommunityRecipes.isEmpty || showcaseItem != nil || !useUpSoonRecipes.isEmpty
+        return Group {
+            if !hasContent {
+                VStack {
+                    Spacer(minLength: DS.Spacing.space8)
+                    Text("No recipes match your filters.")
+                        .appTextStyle(.bodySM)
+                        .foregroundStyle(DS.ColorToken.textSecondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                    Spacer()
+                }
+            } else {
+                ScrollView(showsIndicators: false) {
+                    LazyVStack(alignment: .leading, spacing: DS.Spacing.space6) {
+                        if let item = showcaseItem {
+                            showcaseCardView(recipe: item.recipe, ingredient: item.ingredient)
+                                .padding(.horizontal, DS.Spacing.space5)
+                        }
+
+                        if !useUpSoonRecipes.isEmpty {
+                            useUpSection
+                        }
+
+                        ForEach(cachedCommunityCategories) { category in
+                            categorySection(category)
+                        }
+                    }
+                    .padding(.top, DS.Spacing.space3)
+                    .padding(.bottom, DS.Spacing.space24)
+                }
+                .overlay(alignment: .bottom) {
+                    LinearGradient(
+                        colors: [DS.ColorToken.bgPrimary, DS.ColorToken.bgPrimary.opacity(0)],
+                        startPoint: .bottom, endPoint: .top
+                    )
+                    .frame(height: 48)
+                    .allowsHitTesting(false)
+                }
+            }
+        }
+    }
+
+    // MARK: - Showcase Card
+
+    @ViewBuilder
+    private func showcaseCardView(recipe: Recipe, ingredient: Ingredient) -> some View {
+        let days = ingredient.daysUntilExpiration ?? 0
+        let urgencyLabel = days == 0 ? "TODAY" : days == 1 ? "1 DAY" : "\(days) DAYS"
+        let pantryNames = Set(pantryStore.ingredients.map { $0.name.lowercased() })
+        let matchCount = recipe.ingredientsUsed.filter { pantryNames.contains($0.name.lowercased()) }.count
+        let isSaved = savedRecipesStore.isSaved(recipe)
+
+        Button { selectedRecipe = recipe } label: {
+            ZStack(alignment: .bottomLeading) {
+                // Full-bleed background image
+                Group {
+                    if recipe.imagePath != nil || recipe.imageData != nil {
+                        CachedRecipeImage(recipeID: recipe.id, imageData: recipe.imageData, imagePath: recipe.imagePath, thumbnail: false)
+                            .scaledToFill()
+                    } else {
+                        LinearGradient(colors: [DS.ColorToken.primary, DS.ColorToken.accent], startPoint: .topLeading, endPoint: .bottomTrailing)
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 220, maxHeight: 220)
+                .clipped()
+
+                // Dark gradient from bottom
+                LinearGradient(
+                    stops: [
+                        .init(color: .black.opacity(0.82), location: 0),
+                        .init(color: .black.opacity(0.38), location: 0.55),
+                        .init(color: .clear, location: 1)
+                    ],
+                    startPoint: .bottom, endPoint: .top
+                )
+
+                // Top row: urgency badge + bookmark
+                VStack {
+                    HStack(alignment: .top) {
+                        HStack(spacing: 5) {
+                            Circle().fill(DS.ColorToken.warning).frame(width: 6, height: 6)
+                            Text("USE \(ingredient.name.uppercased()) · \(urgencyLabel)")
+                                .font(.custom("Satoshi Variable", size: 10).weight(.bold))
+                                .foregroundStyle(.white)
+                        }
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(Color(red: 0.78, green: 0.38, blue: 0.05).opacity(0.9))
+                        .clipShape(Capsule())
+
+                        Spacer()
+
+                        Button {
+                            if isSaved { savedRecipesStore.unsaveRecipe(recipe) }
+                            else { savedRecipesStore.saveRecipe(recipe) }
+                        } label: {
+                            Image(systemName: isSaved ? "bookmark.fill" : "bookmark")
+                                .font(.system(size: 15, weight: .medium))
+                                .foregroundStyle(.white)
+                                .frame(width: 34, height: 34)
+                                .background(Color.black.opacity(0.3))
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, DS.Spacing.space4)
+                    .padding(.top, DS.Spacing.space4)
+                    Spacer()
+                }
+
+                // Bottom content
+                VStack(alignment: .leading, spacing: DS.Spacing.space1) {
+                    Text("TONIGHT'S PICK")
+                        .font(.custom("Satoshi Variable", size: 10).weight(.bold))
+                        .foregroundStyle(.white.opacity(0.65))
+                        .tracking(0.8)
+
+                    Text(recipe.title)
+                        .font(.custom("CalSans-Regular", size: 22))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+
+                    Text(recipe.summary)
+                        .font(.custom("Satoshi Variable", size: 12))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .lineLimit(1)
+
+                    HStack(spacing: DS.Spacing.space2) {
+                        if matchCount > 0 {
+                            HStack(spacing: 4) {
+                                Image(systemName: "checkmark").font(.system(size: 9, weight: .bold))
+                                Text("\(matchCount)/\(recipe.ingredientsUsed.count) in pantry")
+                                    .font(.custom("Satoshi Variable", size: 11).weight(.semibold))
+                            }
+                            .foregroundStyle(DS.ColorToken.success)
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                            .background(DS.ColorToken.success.opacity(0.18))
+                            .clipShape(Capsule())
+                        }
+
+                        HStack(spacing: 4) {
+                            Image(systemName: "clock").font(.system(size: 10))
+                            Text("\(recipe.timeMinutes) min")
+                                .font(.custom("Satoshi Variable", size: 11).weight(.semibold))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(Color.black.opacity(0.4))
+                        .clipShape(Capsule())
+
+                        Text("\(recipe.macros.calories)cal")
+                            .font(.custom("Satoshi Variable", size: 11).weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                            .background(Color.black.opacity(0.4))
+                            .clipShape(Capsule())
+                    }
+                    .padding(.top, 2)
+                }
+                .padding(.horizontal, DS.Spacing.space4)
+                .padding(.bottom, DS.Spacing.space4)
+            }
+            .frame(height: 220)
+            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Use Up Section
+
+    private var useUpSection: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.space3) {
+            HStack(alignment: .bottom) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Use up before it expires")
+                        .appTextStyle(.heading3)
+                        .foregroundStyle(DS.ColorToken.textPrimary)
+                    Text("\(useUpSoonRecipes.count) recipe\(useUpSoonRecipes.count == 1 ? "" : "s") for ingredients going bad soon")
+                        .font(.custom("Satoshi Variable", size: 12))
+                        .foregroundStyle(DS.ColorToken.textSecondary)
+                }
+                Spacer()
+                Text("See all")
+                    .font(.custom("Satoshi Variable", size: 13).weight(.medium))
+                    .foregroundStyle(DS.ColorToken.accent)
+            }
+            .padding(.horizontal, DS.Spacing.space5)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: DS.Spacing.space3) {
+                    ForEach(useUpSoonRecipes.prefix(10)) { recipe in
+                        Button { selectedRecipe = recipe } label: {
+                            RecipeCard(recipe: recipe).frame(width: 185)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, DS.Spacing.space5)
+            }
+            .mask(
+                LinearGradient(
+                    stops: [
+                        .init(color: .black, location: 0),
+                        .init(color: .black, location: 0.8),
+                        .init(color: .clear, location: 1.0)
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+        }
+    }
+
+    // MARK: - Category Section
+
+    private func categorySection(_ category: RecipeCategory) -> some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.space3) {
+            HStack(spacing: DS.Spacing.space2) {
+                Image(systemName: category.icon)
+                    .font(.system(size: 16))
+                    .foregroundStyle(DS.ColorToken.primary)
+                Text(category.title)
+                    .appTextStyle(.heading3)
+                    .foregroundStyle(DS.ColorToken.textPrimary)
+                Spacer()
+                if category.recipes.count > 5 {
+                    Button { navigateToCategory = category } label: {
+                        Text("See More")
+                            .font(.custom("Satoshi Variable", size: 13).weight(.medium))
+                            .foregroundStyle(DS.ColorToken.primary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, DS.Spacing.space5)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: DS.Spacing.space3) {
+                    ForEach(category.recipes.prefix(5)) { recipe in
+                        Button { selectedRecipe = recipe } label: {
+                            RecipeCard(recipe: recipe).frame(width: 185)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, DS.Spacing.space5)
+            }
+            .mask(
+                LinearGradient(
+                    stops: [
+                        .init(color: .black, location: 0),
+                        .init(color: .black, location: 0.8),
+                        .init(color: .clear, location: 1.0)
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+        }
+    }
+
+    // MARK: - Recipe List (grid, used for saved/your recipes)
 
     private let gridColumns = [
         GridItem(.flexible(), spacing: DS.Spacing.space3),
@@ -567,75 +933,6 @@ struct RecipesView: View {
         }
 
         return categories
-    }
-
-    private func categorizedRecipeList(recipes: [Recipe]) -> some View {
-        Group {
-            if recipes.isEmpty {
-                Spacer(minLength: DS.Spacing.space8)
-                Text("No community recipes yet. Be the first to share!")
-                    .appTextStyle(.bodySM)
-                    .foregroundStyle(DS.ColorToken.textSecondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                Spacer()
-            } else {
-                ScrollView(showsIndicators: false) {
-                    LazyVStack(alignment: .leading, spacing: DS.Spacing.space6) {
-                        ForEach(cachedCommunityCategories) { category in
-                            VStack(alignment: .leading, spacing: DS.Spacing.space3) {
-                                HStack(spacing: DS.Spacing.space2) {
-                                    Image(systemName: category.icon)
-                                        .font(.system(size: 16))
-                                        .foregroundStyle(DS.ColorToken.primary)
-                                    Text(category.title)
-                                        .appTextStyle(.heading3)
-                                        .foregroundStyle(DS.ColorToken.textPrimary)
-
-                                    Spacer()
-
-                                    if category.recipes.count > 5 {
-                                        Button {
-                                            navigateToCategory = category
-                                        } label: {
-                                            Text("See More")
-                                                .font(.custom("Satoshi Variable", size: 13).weight(.medium))
-                                                .foregroundStyle(DS.ColorToken.primary)
-                                        }
-                                        .buttonStyle(.plain)
-                                    }
-                                }
-                                .padding(.horizontal, DS.Spacing.space5)
-
-                                ScrollView(.horizontal, showsIndicators: false) {
-                                    LazyHStack(spacing: DS.Spacing.space3) {
-                                        ForEach(category.recipes.prefix(5)) { recipe in
-                                            Button {
-                                                selectedRecipe = recipe
-                                            } label: {
-                                                RecipeCard(recipe: recipe)
-                                                    .frame(width: 185)
-                                            }
-                                            .buttonStyle(.plain)
-                                        }
-                                    }
-                                    .padding(.horizontal, DS.Spacing.space5)
-                                }
-                            }
-                        }
-                    }
-                    .padding(.bottom, DS.Spacing.space24)
-                }
-                .overlay(alignment: .bottom) {
-                    LinearGradient(
-                        colors: [DS.ColorToken.bgPrimary, DS.ColorToken.bgPrimary.opacity(0)],
-                        startPoint: .bottom,
-                        endPoint: .top
-                    )
-                    .frame(height: 48)
-                    .allowsHitTesting(false)
-                }
-            }
-        }
     }
 
     // MARK: - Grid View (Your Recipes / Saved)
@@ -694,8 +991,7 @@ private struct RecipePreviewSheet: View {
     }
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            VStack(spacing: 0) {
+        VStack(spacing: 0) {
                 // Drag handle
                 Capsule()
                     .fill(DS.ColorToken.borderDefault)
@@ -729,6 +1025,30 @@ private struct RecipePreviewSheet: View {
                         }
                         .appTextStyle(.bodySM)
                         .foregroundStyle(DS.ColorToken.textSecondary)
+
+                        // Dietary pills
+                        if !recipe.dietaryRestrictions.isEmpty || recipe.dietType != "any" {
+                            FlowLayout(spacing: DS.Spacing.space1) {
+                                if recipe.dietType != "any" {
+                                    Text(recipe.dietType.capitalized)
+                                        .font(.custom("Satoshi Variable", size: 11).weight(.semibold))
+                                        .foregroundStyle(DS.ColorToken.accent)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(DS.ColorToken.accentLight)
+                                        .clipShape(Capsule())
+                                }
+                                ForEach(recipe.dietaryRestrictions, id: \.self) { restriction in
+                                    Text(restriction)
+                                        .font(.custom("Satoshi Variable", size: 11).weight(.semibold))
+                                        .foregroundStyle(DS.ColorToken.primary)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(DS.ColorToken.primaryLight)
+                                        .clipShape(Capsule())
+                                }
+                            }
+                        }
 
                         if recipe.rating > 0 {
                             HStack(spacing: DS.Spacing.space2) {
@@ -810,17 +1130,6 @@ private struct RecipePreviewSheet: View {
                 .padding(.top, DS.Spacing.space3)
                 .padding(.bottom, DS.Spacing.space4)
             }
-
-            // Dismiss button - top right
-            Button { dismiss() } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 28))
-                    .foregroundStyle(DS.ColorToken.textTertiary)
-            }
-            .buttonStyle(.plain)
-            .padding(.top, DS.Spacing.space3)
-            .padding(.trailing, DS.Spacing.space5)
-        }
         .background(DS.ColorToken.bgPrimary)
     }
 
@@ -851,6 +1160,7 @@ private struct RecipeFilterSheet: View {
     @Binding var selectedCuisine: Cuisine?
     @Binding var maxPrepTime: Int?
     @Binding var selectedIngredients: Set<String>
+    @Binding var selectedDietaryFilters: Set<String>
     let allRecipes: [Recipe]
     let pantryIngredients: [Ingredient]
 
@@ -859,7 +1169,7 @@ private struct RecipeFilterSheet: View {
     }
 
     private var hasActiveFilters: Bool {
-        selectedCuisine != nil || maxPrepTime != nil || !selectedIngredients.isEmpty
+        selectedCuisine != nil || maxPrepTime != nil || !selectedIngredients.isEmpty || !selectedDietaryFilters.isEmpty
     }
 
     private static let prepTimeOptions: [(label: String, value: Int?)] = [
@@ -868,6 +1178,11 @@ private struct RecipeFilterSheet: View {
         ("30 min", 30),
         ("45 min", 45),
         ("60 min", 60)
+    ]
+
+    private static let dietaryOptions: [String] = [
+        "Vegetarian", "Vegan", "Pescatarian", "Keto", "Paleo",
+        "Gluten-Free", "Nut-Free", "Dairy-Free", "Soy-Free", "Egg-Free", "Shellfish-Free", "Low Sodium"
     ]
 
     var body: some View {
@@ -892,6 +1207,7 @@ private struct RecipeFilterSheet: View {
                         selectedCuisine = nil
                         maxPrepTime = nil
                         selectedIngredients = []
+                        selectedDietaryFilters = []
                     }
                     .font(.custom("Satoshi Variable", size: 14).weight(.medium))
                     .foregroundStyle(DS.ColorToken.error)
@@ -962,6 +1278,25 @@ private struct RecipeFilterSheet: View {
                             }
                         }
                     }
+
+                    // Dietary filter
+                    VStack(alignment: .leading, spacing: DS.Spacing.space3) {
+                        Text("Dietary")
+                            .appTextStyle(.heading3)
+                            .foregroundStyle(DS.ColorToken.textPrimary)
+
+                        FlowLayout(spacing: DS.Spacing.space2) {
+                            ForEach(Self.dietaryOptions, id: \.self) { option in
+                                filterChip(option, isSelected: selectedDietaryFilters.contains(option)) {
+                                    if selectedDietaryFilters.contains(option) {
+                                        selectedDietaryFilters.remove(option)
+                                    } else {
+                                        selectedDietaryFilters.insert(option)
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 .padding(.horizontal, DS.Spacing.space5)
             }
@@ -991,7 +1326,7 @@ private struct RecipeFilterSheet: View {
                 .foregroundStyle(isSelected ? .white : DS.ColorToken.textSecondary)
                 .padding(.horizontal, DS.Spacing.space5)
                 .frame(height: 36)
-                .background(isSelected ? DS.ColorToken.midnight : DS.ColorToken.bgSecondary)
+                .background(isSelected ? DS.ColorToken.accent : DS.ColorToken.bgSecondary)
                 .overlay(
                     Capsule()
                         .stroke(isSelected ? Color.clear : DS.ColorToken.borderDefault, lineWidth: 1)

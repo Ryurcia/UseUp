@@ -37,6 +37,7 @@
 		3161C242EB7D1489FF6E482E /* chicken_souvlaki.jpg in Resources */ = {isa = PBXBuildFile; fileRef = F3E72A46ABBE7228AD086590 /* chicken_souvlaki.jpg */; };
 		318C85980AF96B54EF07A46E /* AuthView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC2237E7BB39DCCC31FD64A8 /* AuthView.swift */; };
 		39BFC9615DED8C1DBF441555 /* egg_fried_noodles.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 203CF2C073B558DE4F56C6BC /* egg_fried_noodles.jpg */; };
+		3A191478D89816F147369B95 /* UserActivityStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9D551A0C49F73E259FF9EAC /* UserActivityStore.swift */; };
 		3ABD7CDD9E7CDFD5716FE807 /* chicken_tikka_bowl.jpg in Resources */ = {isa = PBXBuildFile; fileRef = E9493B5DAB62EB7AB8319A32 /* chicken_tikka_bowl.jpg */; };
 		3BA5F3A89A4B3EF8A997D933 /* QuantityParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0BF8297360D3B691B78E06D /* QuantityParser.swift */; };
 		3E7E0588E11927D622A751C8 /* kimchi_jjigae.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 85A7222873164148CC809EC7 /* kimchi_jjigae.jpg */; };
@@ -45,7 +46,9 @@
 		50156D87EF57571A0F3D6342 /* grilled_chicken_breast.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 980BCCC4FF2E655171B2F353 /* grilled_chicken_breast.jpg */; };
 		550C0C63F02C72707A0A8498 /* MainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F114385A24647C300FEFF208 /* MainTabView.swift */; };
 		57095F8934630FC097687B48 /* Macros.swift in Sources */ = {isa = PBXBuildFile; fileRef = 642CCCEEB0FE0309D3A3132D /* Macros.swift */; };
+		59E3119F1C6D1558A30B580E /* RevenueCatUI in Frameworks */ = {isa = PBXBuildFile; productRef = 3C7DD94083541BE63042A48E /* RevenueCatUI */; };
 		5B17ED9E08DF4BEE88452FA4 /* spinach_egg_scramble.jpg in Resources */ = {isa = PBXBuildFile; fileRef = A1BAE9D0A8EEBD9BD45208EB /* spinach_egg_scramble.jpg */; };
+		5C9ECA4967711146B2875510 /* RecipeURLImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FB8F32E2425522FF310BCDF /* RecipeURLImporter.swift */; };
 		5EF1718AF3D23AD5364BC518 /* Ingredient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C1FADD9EFB44C900ADC3141 /* Ingredient.swift */; };
 		61BD0120D429DF101CDF7A20 /* tofu_pad_thai.jpg in Resources */ = {isa = PBXBuildFile; fileRef = E04E5C5E32A540BBA70863AA /* tofu_pad_thai.jpg */; };
 		639BDB219E2B5430181D46FE /* SupabaseClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7923D0BEDD4B9805886749DE /* SupabaseClient.swift */; };
@@ -55,7 +58,6 @@
 		68C53A8455B987CA7A5D3905 /* Bread.png in Resources */ = {isa = PBXBuildFile; fileRef = 2E418DF80ABF3353936BB2AE /* Bread.png */; };
 		68DD36EEAA11103AE8149FC7 /* Banana.png in Resources */ = {isa = PBXBuildFile; fileRef = B87364B705EF47E52293439B /* Banana.png */; };
 		69CD0B1CB6F16B796DB05718 /* crispy_carnitas.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 132CA0EDCB134D26FFDD25CE /* crispy_carnitas.jpg */; };
-		6B8D7AF98824336453564C0B /* TutorialOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5E638837C454449AA314726 /* TutorialOverlayView.swift */; };
 		6C646D06BE26B6523BD6283B /* Chili Pepper.png in Resources */ = {isa = PBXBuildFile; fileRef = 745464E36914E308C1EB67EE /* Chili Pepper.png */; };
 		70065FDAE4F13C2CC7146024 /* carne_asada_tacos.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 25648D10FD2F756C157EF096 /* carne_asada_tacos.jpg */; };
 		708D49513D61EDECD4728E01 /* RecipesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B37DDD79FAB449C94D672A45 /* RecipesView.swift */; };
@@ -70,15 +72,21 @@
 		87E95B6BB5E33A815974CCB1 /* BREAKFAST.svg in Resources */ = {isa = PBXBuildFile; fileRef = A14455240EDE937E9E5C3F1C /* BREAKFAST.svg */; };
 		8F397889BFC74E260325A739 /* korean_bibimbap.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 6A168D7F8712AFBCF08D3252 /* korean_bibimbap.jpg */; };
 		8F7FC742C9E4A3BA6D811B40 /* shakshuka.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 55A1C177904F2BF525A7E776 /* shakshuka.jpg */; };
+		92E3188DC1344D020FA940CE /* RevenueCat in Frameworks */ = {isa = PBXBuildFile; productRef = AC97A68611BFC02A499C9759 /* RevenueCat */; };
+		93BFD652BC96AF45257F1121 /* SwiftSoup in Frameworks */ = {isa = PBXBuildFile; productRef = 515739A4E69B59D1445EE8B5 /* SwiftSoup */; };
 		958A8C89AA6917DDD26A7D65 /* OTPVerificationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15BE3E5C630B56EADDC52D3E /* OTPVerificationView.swift */; };
 		95F29D9EB581D68440AE2E47 /* SonnetRecipeGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D32843A452D6EE7B5373CFDE /* SonnetRecipeGenerator.swift */; };
 		9792765765BF31471E985DE9 /* AvatarCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDC93F0E8E6A3066743A9DEB /* AvatarCache.swift */; };
 		98111EB34649D29DDF7ABFA8 /* coq_au_vin.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 443FD2E2D87E06DAFDA9F879 /* coq_au_vin.jpg */; };
+		9845679703ACE126B0AD6C34 /* CookingSkillOnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6582E09FDA77366C3A13EEB3 /* CookingSkillOnboardingView.swift */; };
 		9A20C3F25A7BB5808003C1E3 /* wild_mushroom_risotto.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 57CB60A690BE0E84FF54E340 /* wild_mushroom_risotto.jpg */; };
 		9A5767E2D0A62526292126D6 /* AIConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96F116CF10F66697DF9B69A0 /* AIConfig.swift */; };
 		9B69CC9E60EA77FA624FEAFD /* MacrosStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14B216034BEC0424DA1D51B9 /* MacrosStore.swift */; };
+		9C8F8FA9DB52C0B3A49F8FC9 /* CommunityReview.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDD8FE430E564E2E8C2ED83D /* CommunityReview.swift */; };
 		9E39D6F0DAFA231A39CC3C54 /* Garlic.png in Resources */ = {isa = PBXBuildFile; fileRef = A00B90C527EC572811682712 /* Garlic.png */; };
 		9E622AC99BABC0E527F026CA /* green_curry.jpg in Resources */ = {isa = PBXBuildFile; fileRef = D378796E8158DC9104CE3564 /* green_curry.jpg */; };
+		9F2CDFDC2FB3678A00B56B7A /* AI_GEN.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 9F2CDFDB2FB3678A00B56B7A /* AI_GEN.jpg */; };
+		9F2CDFDE2FB4049800B56B7A /* splash.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 9F2CDFDD2FB4049800B56B7A /* splash.jpg */; };
 		A2870067A48EFFDF2190EFD4 /* greek_chicken_salad.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 7222060915A5CEC7A8DC0D79 /* greek_chicken_salad.jpg */; };
 		A57F900CD01CD005ABA7BFC0 /* PLATES.png in Resources */ = {isa = PBXBuildFile; fileRef = BD96ED9308E0925C6283327D /* PLATES.png */; };
 		A5A4C7F43ECF0BC1A8E75409 /* chana_masala.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 3B64E33E90C092D7CE2F4355 /* chana_masala.jpg */; };
@@ -91,6 +99,7 @@
 		B1E9E1A440E1AC0BCD8D7B05 /* Recipe.svg in Resources */ = {isa = PBXBuildFile; fileRef = 325B9CBE4070D61ED68EC740 /* Recipe.svg */; };
 		B3743568EAD94CFD9B37AD49 /* SourceLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = F75D4D9A44F275DF59C80B53 /* SourceLink.swift */; };
 		B699F805B02A95BEA1011515 /* GetStartedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C5B6D69C5878EDBB78675A /* GetStartedView.swift */; };
+		B8594C094E14ED234F93D75C /* CookbookView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C08ECB9ED2246355829C9B40 /* CookbookView.swift */; };
 		BB00752D75DE6B8A925D159F /* sinigang_na_baboy.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 47C0FFB0CE7BD15C903BB2AB /* sinigang_na_baboy.jpg */; };
 		BB096795DBDD61E1C9608ACD /* StarRatingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C377C351BD6B5F3FEF6AEC0B /* StarRatingView.swift */; };
 		BB6CAE17A8B992A49EBB9985 /* pad_kra_pao.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 86B312C415CC0F8FE312279B /* pad_kra_pao.jpg */; };
@@ -103,21 +112,25 @@
 		C84FEFB86F36A5472694DA8C /* caprese_salad.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 46A16BBD0B5705143B90955A /* caprese_salad.jpg */; };
 		CA1983A18312E9CA947EFE31 /* bean_rice_bowl.jpg in Resources */ = {isa = PBXBuildFile; fileRef = A3DF438A696E4E878B57EF39 /* bean_rice_bowl.jpg */; };
 		CAFFAF2E2937790E5642AE94 /* gyudon.jpg in Resources */ = {isa = PBXBuildFile; fileRef = B5DD856E5EF77E8EE6B3C9B0 /* gyudon.jpg */; };
+		CB6FB53196AE6CC390B455CF /* RevenueCatService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 169EA047974A4C729BAEC243 /* RevenueCatService.swift */; };
 		CF6A1E6852DC65613DEFA308 /* ProfileService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 879AB4CD3CBEB8D4CFF8F20C /* ProfileService.swift */; };
 		D0101FEC647CD740FE4A9A6D /* MacroProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83614D561A8E94F520ADDBF0 /* MacroProfile.swift */; };
 		D0A68A6EB9ABD3823AFC8266 /* AppRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 946A3B567CAAB4387E4E633C /* AppRootView.swift */; };
 		D210141991A4ACB22FF33B1F /* Icons.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AE9184889DBD3A6D41BE9540 /* Icons.xcassets */; };
 		D4BBA0FF6745B25BEC2267D9 /* RecipeImageDiskCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78729F80E782A53F4372ED4D /* RecipeImageDiskCache.swift */; };
 		D759C22D3FF649A4B8F87B48 /* EXPIRE.png in Resources */ = {isa = PBXBuildFile; fileRef = 4BEF144D65792EF3B838E068 /* EXPIRE.png */; };
+		D7FA16C722885CA41C8EEB8E /* PasteURLSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31D110248CA43CCB86C1A637 /* PasteURLSheet.swift */; };
 		D94F918AEDA3FC5819D0BA76 /* GeminiRecipeGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77020B799CA5A3CF5AA2DBDE /* GeminiRecipeGenerator.swift */; };
 		D96E5099A1A5DF6872D04F50 /* chicken_shawarma_bowl.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 01AB22D067DF7B7FE12F017D /* chicken_shawarma_bowl.jpg */; };
 		DAEA3BC50B0FC4D58138127C /* DesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E9993855C4EB6BDEE8525E0 /* DesignSystem.swift */; };
 		DD43EB8F0FA794EAA5C263EE /* PantryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0923F147D56FC7B31EFD438D /* PantryView.swift */; };
+		DEB517B8B83ED7C6F8EFE1F7 /* RecipeImportData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45E52B7C36D7538A5E293991 /* RecipeImportData.swift */; };
 		DF072E4F8D89B5CE1D892202 /* Broccoli.png in Resources */ = {isa = PBXBuildFile; fileRef = A13E4D0B18FE5FD13DF23471 /* Broccoli.png */; };
 		E24BE3A936F255D1A2B57FC5 /* Macro.svg in Resources */ = {isa = PBXBuildFile; fileRef = 3E9664EFF4249699D3039F13 /* Macro.svg */; };
 		E787564288CB0A56B2C39D34 /* Corn.png in Resources */ = {isa = PBXBuildFile; fileRef = DA6456583B1EB9CFA64C963F /* Corn.png */; };
 		E9297E04A4B5355FAE60AFE8 /* butter_chicken.jpg in Resources */ = {isa = PBXBuildFile; fileRef = EFF65E61CBC058107E1347E0 /* butter_chicken.jpg */; };
 		F9E665C61B9FC15D3DF06314 /* Tomato.png in Resources */ = {isa = PBXBuildFile; fileRef = 2E03FBC42945881C1C8F5A1B /* Tomato.png */; };
+		FCB802A709ABBA94E211ED0C /* NotificationListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E09D526BC8A18BB67928EBD3 /* NotificationListView.swift */; };
 		FE2E00688DE4B92991C7B14A /* AppSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = E013008A3A3EDCEA85074AA4 /* AppSession.swift */; };
 		FF74F6770E93BDC9E9FB941A /* RecipePromptBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B6C011278302F4D24B1653D /* RecipePromptBuilder.swift */; };
 		FFBC78300528C80A919F6F34 /* ProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C82DA06EDE12D3E490F6ADFD /* ProfileView.swift */; };
@@ -133,6 +146,7 @@
 		146D91EAB4ED2123AC6E1D15 /* UseUp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = UseUp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		14B216034BEC0424DA1D51B9 /* MacrosStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacrosStore.swift; sourceTree = "<group>"; };
 		15BE3E5C630B56EADDC52D3E /* OTPVerificationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OTPVerificationView.swift; sourceTree = "<group>"; };
+		169EA047974A4C729BAEC243 /* RevenueCatService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RevenueCatService.swift; sourceTree = "<group>"; };
 		20098F5914F8B0BF4352AB9F /* Bricolage.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = Bricolage.ttf; sourceTree = "<group>"; };
 		203CF2C073B558DE4F56C6BC /* egg_fried_noodles.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = egg_fried_noodles.jpg; sourceTree = "<group>"; };
 		21BF6E967C36329A4F20EA2E /* CalSans-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "CalSans-Regular.ttf"; sourceTree = "<group>"; };
@@ -144,6 +158,7 @@
 		2E9993855C4EB6BDEE8525E0 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
 		2FD9C8D9CF4AC47BB7324723 /* teriyaki_chicken_donburi.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = teriyaki_chicken_donburi.jpg; sourceTree = "<group>"; };
 		3015D89525CDD4C977B5EA59 /* spaghetti_aglio_e_olio.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = spaghetti_aglio_e_olio.jpg; sourceTree = "<group>"; };
+		31D110248CA43CCB86C1A637 /* PasteURLSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PasteURLSheet.swift; sourceTree = "<group>"; };
 		325B9CBE4070D61ED68EC740 /* Recipe.svg */ = {isa = PBXFileReference; lastKnownFileType = text; path = Recipe.svg; sourceTree = "<group>"; };
 		3B64E33E90C092D7CE2F4355 /* chana_masala.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = chana_masala.jpg; sourceTree = "<group>"; };
 		3B6C011278302F4D24B1653D /* RecipePromptBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecipePromptBuilder.swift; sourceTree = "<group>"; };
@@ -155,6 +170,7 @@
 		417FE4C61D7DBC5A41C04A0A /* chicken_adobo.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = chicken_adobo.jpg; sourceTree = "<group>"; };
 		438410F3E71BEE5AD7656167 /* AIRecipeResponse.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIRecipeResponse.swift; sourceTree = "<group>"; };
 		443FD2E2D87E06DAFDA9F879 /* coq_au_vin.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = coq_au_vin.jpg; sourceTree = "<group>"; };
+		45E52B7C36D7538A5E293991 /* RecipeImportData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecipeImportData.swift; sourceTree = "<group>"; };
 		46A16BBD0B5705143B90955A /* caprese_salad.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = caprese_salad.jpg; sourceTree = "<group>"; };
 		47C0FFB0CE7BD15C903BB2AB /* sinigang_na_baboy.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = sinigang_na_baboy.jpg; sourceTree = "<group>"; };
 		4BEF144D65792EF3B838E068 /* EXPIRE.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = EXPIRE.png; sourceTree = "<group>"; };
@@ -168,6 +184,7 @@
 		5D63BB1F0AAFD076AC12DD0A /* pasta_alla_norma.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = pasta_alla_norma.jpg; sourceTree = "<group>"; };
 		60515F0F266575EB40A89EED /* SplashView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplashView.swift; sourceTree = "<group>"; };
 		642CCCEEB0FE0309D3A3132D /* Macros.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Macros.swift; sourceTree = "<group>"; };
+		6582E09FDA77366C3A13EEB3 /* CookingSkillOnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CookingSkillOnboardingView.swift; sourceTree = "<group>"; };
 		66C402A9402CC35141C54625 /* burrito_bowl.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = burrito_bowl.jpg; sourceTree = "<group>"; };
 		69848BF2381FD922BAF9CE9F /* mapo_tofu.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = mapo_tofu.jpg; sourceTree = "<group>"; };
 		6A168D7F8712AFBCF08D3252 /* korean_bibimbap.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = korean_bibimbap.jpg; sourceTree = "<group>"; };
@@ -185,6 +202,7 @@
 		7A7FCB770D091CD2B6544B29 /* AuthServicing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthServicing.swift; sourceTree = "<group>"; };
 		7B69C571ED8D292815D06EEB /* Lemon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Lemon.png; sourceTree = "<group>"; };
 		7BC9796247CDDA519DF6DD9E /* RecipeDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecipeDetailView.swift; sourceTree = "<group>"; };
+		7FB8F32E2425522FF310BCDF /* RecipeURLImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecipeURLImporter.swift; sourceTree = "<group>"; };
 		83614D561A8E94F520ADDBF0 /* MacroProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacroProfile.swift; sourceTree = "<group>"; };
 		85A7222873164148CC809EC7 /* kimchi_jjigae.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = kimchi_jjigae.jpg; sourceTree = "<group>"; };
 		867CBB4258210D87477030AB /* honey_garlic_salmon.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = honey_garlic_salmon.jpg; sourceTree = "<group>"; };
@@ -196,6 +214,8 @@
 		96F116CF10F66697DF9B69A0 /* AIConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIConfig.swift; sourceTree = "<group>"; };
 		980BCCC4FF2E655171B2F353 /* grilled_chicken_breast.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = grilled_chicken_breast.jpg; sourceTree = "<group>"; };
 		99B3F34FFF8348AC29A619D5 /* RecipeIngredient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecipeIngredient.swift; sourceTree = "<group>"; };
+		9F2CDFDB2FB3678A00B56B7A /* AI_GEN.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = AI_GEN.jpg; sourceTree = "<group>"; };
+		9F2CDFDD2FB4049800B56B7A /* splash.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = splash.jpg; sourceTree = "<group>"; };
 		A00B90C527EC572811682712 /* Garlic.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Garlic.png; sourceTree = "<group>"; };
 		A13E4D0B18FE5FD13DF23471 /* Broccoli.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Broccoli.png; sourceTree = "<group>"; };
 		A14455240EDE937E9E5C3F1C /* BREAKFAST.svg */ = {isa = PBXFileReference; lastKnownFileType = text; path = BREAKFAST.svg; sourceTree = "<group>"; };
@@ -209,7 +229,9 @@
 		B87364B705EF47E52293439B /* Banana.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = Banana.png; sourceTree = "<group>"; };
 		B9BF60F662B8DAA315390AF8 /* ShareRecipeSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareRecipeSheet.swift; sourceTree = "<group>"; };
 		BD96ED9308E0925C6283327D /* PLATES.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = PLATES.png; sourceTree = "<group>"; };
+		BDD8FE430E564E2E8C2ED83D /* CommunityReview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommunityReview.swift; sourceTree = "<group>"; };
 		BDEFF4B38D90BF86D50561DA /* pho_bo.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = pho_bo.jpg; sourceTree = "<group>"; };
+		C08ECB9ED2246355829C9B40 /* CookbookView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CookbookView.swift; sourceTree = "<group>"; };
 		C377C351BD6B5F3FEF6AEC0B /* StarRatingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StarRatingView.swift; sourceTree = "<group>"; };
 		C82DA06EDE12D3E490F6ADFD /* ProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileView.swift; sourceTree = "<group>"; };
 		CB25E259DB12ACD1C1E7F902 /* PreviewHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewHelpers.swift; sourceTree = "<group>"; };
@@ -225,8 +247,8 @@
 		DE70ECBA2BE70D22FB2ADEC6 /* black_bean_tacos.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = black_bean_tacos.jpg; sourceTree = "<group>"; };
 		E013008A3A3EDCEA85074AA4 /* AppSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSession.swift; sourceTree = "<group>"; };
 		E04E5C5E32A540BBA70863AA /* tofu_pad_thai.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = tofu_pad_thai.jpg; sourceTree = "<group>"; };
+		E09D526BC8A18BB67928EBD3 /* NotificationListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationListView.swift; sourceTree = "<group>"; };
 		E4EDEB03161CFCC7FA105B57 /* ratatouille.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = ratatouille.jpg; sourceTree = "<group>"; };
-		E5E638837C454449AA314726 /* TutorialOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TutorialOverlayView.swift; sourceTree = "<group>"; };
 		E6DACD6A28FCBB0C22151896 /* MockRecipeGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockRecipeGenerator.swift; sourceTree = "<group>"; };
 		E900A5D2406636D016C08FF8 /* SupabaseAuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupabaseAuthService.swift; sourceTree = "<group>"; };
 		E944FBC8A297AFD340B96F02 /* PantryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PantryStore.swift; sourceTree = "<group>"; };
@@ -238,6 +260,7 @@
 		F114385A24647C300FEFF208 /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabView.swift; sourceTree = "<group>"; };
 		F3E72A46ABBE7228AD086590 /* chicken_souvlaki.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = chicken_souvlaki.jpg; sourceTree = "<group>"; };
 		F75D4D9A44F275DF59C80B53 /* SourceLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceLink.swift; sourceTree = "<group>"; };
+		F9D551A0C49F73E259FF9EAC /* UserActivityStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserActivityStore.swift; sourceTree = "<group>"; };
 		FAD9D83EE1C4BE8CA98E685C /* UseUp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UseUp.swift; sourceTree = "<group>"; };
 		FE446B2406C6915F998A60C5 /* mediterranean_quinoa_bowl.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = mediterranean_quinoa_bowl.jpg; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -248,6 +271,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				C0B532C6B560D467B946DE0E /* Supabase in Frameworks */,
+				92E3188DC1344D020FA940CE /* RevenueCat in Frameworks */,
+				59E3119F1C6D1558A30B580E /* RevenueCatUI in Frameworks */,
+				93BFD652BC96AF45257F1121 /* SwiftSoup in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -331,6 +357,7 @@
 				14B216034BEC0424DA1D51B9 /* MacrosStore.swift */,
 				E944FBC8A297AFD340B96F02 /* PantryStore.swift */,
 				B4C9D4C308E8484274D74205 /* SavedRecipesStore.swift */,
+				F9D551A0C49F73E259FF9EAC /* UserActivityStore.swift */,
 			);
 			path = Store;
 			sourceTree = "<group>";
@@ -347,16 +374,27 @@
 			isa = PBXGroup;
 			children = (
 				438410F3E71BEE5AD7656167 /* AIRecipeResponse.swift */,
+				BDD8FE430E564E2E8C2ED83D /* CommunityReview.swift */,
 				DA53245272A621024C71F85B /* GenerationOptions.swift */,
 				5C1FADD9EFB44C900ADC3141 /* Ingredient.swift */,
 				250C8A2B0170133955E7CFC0 /* MacroEntry.swift */,
 				83614D561A8E94F520ADDBF0 /* MacroProfile.swift */,
 				642CCCEEB0FE0309D3A3132D /* Macros.swift */,
 				704CF556AF1EE264EE95390E /* Recipe.swift */,
+				45E52B7C36D7538A5E293991 /* RecipeImportData.swift */,
 				99B3F34FFF8348AC29A619D5 /* RecipeIngredient.swift */,
 				F75D4D9A44F275DF59C80B53 /* SourceLink.swift */,
 			);
 			path = Models;
+			sourceTree = "<group>";
+		};
+		540EEC17D940780001B653FD /* Cookbook */ = {
+			isa = PBXGroup;
+			children = (
+				C08ECB9ED2246355829C9B40 /* CookbookView.swift */,
+				31D110248CA43CCB86C1A637 /* PasteURLSheet.swift */,
+			);
+			path = Cookbook;
 			sourceTree = "<group>";
 		};
 		5693BEF783E81A12E3127530 /* Recipes */ = {
@@ -403,6 +441,8 @@
 				3BBC1A0C37F72DA19A56F017 /* RecipeGenerating.swift */,
 				78729F80E782A53F4372ED4D /* RecipeImageDiskCache.swift */,
 				3B6C011278302F4D24B1653D /* RecipePromptBuilder.swift */,
+				7FB8F32E2425522FF310BCDF /* RecipeURLImporter.swift */,
+				169EA047974A4C729BAEC243 /* RevenueCatService.swift */,
 				D32843A452D6EE7B5373CFDE /* SonnetRecipeGenerator.swift */,
 				E900A5D2406636D016C08FF8 /* SupabaseAuthService.swift */,
 				7923D0BEDD4B9805886749DE /* SupabaseClient.swift */,
@@ -434,6 +474,7 @@
 		8D9F4FA809B2ACF09F7C7AA6 /* Assets */ = {
 			isa = PBXGroup;
 			children = (
+				9F2CDFDB2FB3678A00B56B7A /* AI_GEN.jpg */,
 				562A16A05178033C19556FD3 /* BREAKFAST.png */,
 				A14455240EDE937E9E5C3F1C /* BREAKFAST.svg */,
 				4BEF144D65792EF3B838E068 /* EXPIRE.png */,
@@ -444,6 +485,7 @@
 				9F9E4D98271DF7F6C6559CFB /* FoodIcons */,
 				56F1FB94F14109720AAC0A54 /* Icons */,
 				DA9C29C7A80DD997741DACEE /* RecipeImages */,
+				9F2CDFDD2FB4049800B56B7A /* splash.jpg */,
 			);
 			path = Assets;
 			sourceTree = "<group>";
@@ -452,7 +494,9 @@
 			isa = PBXGroup;
 			children = (
 				B6EF91F62BFDFADFD752E705 /* Auth */,
+				540EEC17D940780001B653FD /* Cookbook */,
 				A12C037632851BCA8B3B7CA9 /* Generate */,
+				E1FB45BD6ACEB9738DE6AF46 /* Notifications */,
 				A8EEF95085FBA4347CE8C292 /* Onboarding */,
 				50155FC735435EF9ABC7EF2C /* Pantry */,
 				22D776B6638AB757A5B73098 /* Profile */,
@@ -493,7 +537,6 @@
 				06DCC290A03520C3DF5D0D97 /* FeatureOnboardingView.swift */,
 				52C5B6D69C5878EDBB78675A /* GetStartedView.swift */,
 				60515F0F266575EB40A89EED /* SplashView.swift */,
-				E5E638837C454449AA314726 /* TutorialOverlayView.swift */,
 			);
 			path = Onboarding;
 			sourceTree = "<group>";
@@ -502,6 +545,7 @@
 			isa = PBXGroup;
 			children = (
 				DC2237E7BB39DCCC31FD64A8 /* AuthView.swift */,
+				6582E09FDA77366C3A13EEB3 /* CookingSkillOnboardingView.swift */,
 				D260EE266AE92F62B8B91F81 /* DietaryPreferenceOnboardingView.swift */,
 				15BE3E5C630B56EADDC52D3E /* OTPVerificationView.swift */,
 			);
@@ -569,6 +613,14 @@
 			path = RecipeImages;
 			sourceTree = "<group>";
 		};
+		E1FB45BD6ACEB9738DE6AF46 /* Notifications */ = {
+			isa = PBXGroup;
+			children = (
+				E09D526BC8A18BB67928EBD3 /* NotificationListView.swift */,
+			);
+			path = Notifications;
+			sourceTree = "<group>";
+		};
 		F5C7BBF37C92FA147F888277 /* Data */ = {
 			isa = PBXGroup;
 			children = (
@@ -595,6 +647,9 @@
 			name = UseUp;
 			packageProductDependencies = (
 				09FE46A95D07C5CFEE2F4F0E /* Supabase */,
+				AC97A68611BFC02A499C9759 /* RevenueCat */,
+				3C7DD94083541BE63042A48E /* RevenueCatUI */,
+				515739A4E69B59D1445EE8B5 /* SwiftSoup */,
 			);
 			productName = UseUp;
 			productReference = 146D91EAB4ED2123AC6E1D15 /* UseUp.app */;
@@ -619,7 +674,9 @@
 			mainGroup = 06A11E0C9593BFFA9609BB51;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				028C2CC17197AFD8166D2426 /* XCRemoteSwiftPackageReference "purchases-ios-spm" */,
 				9E38EC76D6694FBC42EB8B21 /* XCRemoteSwiftPackageReference "supabase-swift" */,
+				51F71B946FF6E0DA19E31C21 /* XCRemoteSwiftPackageReference "SwiftSoup" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = CDECBB757AA11290CEF314CD /* Products */;
@@ -660,6 +717,7 @@
 				F9E665C61B9FC15D3DF06314 /* Tomato.png in Resources */,
 				CA1983A18312E9CA947EFE31 /* bean_rice_bowl.jpg in Resources */,
 				214FD5727EB4980F093DDBAD /* black_bean_tacos.jpg in Resources */,
+				9F2CDFDC2FB3678A00B56B7A /* AI_GEN.jpg in Resources */,
 				A71A4782F5ECEC1B5F2E3B09 /* burrito_bowl.jpg in Resources */,
 				E9297E04A4B5355FAE60AFE8 /* butter_chicken.jpg in Resources */,
 				C84FEFB86F36A5472694DA8C /* caprese_salad.jpg in Resources */,
@@ -692,6 +750,7 @@
 				BB00752D75DE6B8A925D159F /* sinigang_na_baboy.jpg in Resources */,
 				2C14EC9025345F1927D17CC5 /* spaghetti_aglio_e_olio.jpg in Resources */,
 				5B17ED9E08DF4BEE88452FA4 /* spinach_egg_scramble.jpg in Resources */,
+				9F2CDFDE2FB4049800B56B7A /* splash.jpg in Resources */,
 				25EEBE35D8CA8D20F3701A43 /* teriyaki_chicken_donburi.jpg in Resources */,
 				61BD0120D429DF101CDF7A20 /* tofu_pad_thai.jpg in Resources */,
 				414EBB6469BE9E8F7B259CE7 /* tuna_protein_salad.jpg in Resources */,
@@ -716,6 +775,9 @@
 				318C85980AF96B54EF07A46E /* AuthView.swift in Sources */,
 				9792765765BF31471E985DE9 /* AvatarCache.swift in Sources */,
 				C236C1E8BDA1FEEC78E5690E /* CategoryRecipesView.swift in Sources */,
+				9C8F8FA9DB52C0B3A49F8FC9 /* CommunityReview.swift in Sources */,
+				B8594C094E14ED234F93D75C /* CookbookView.swift in Sources */,
+				9845679703ACE126B0AD6C34 /* CookingSkillOnboardingView.swift in Sources */,
 				DAEA3BC50B0FC4D58138127C /* DesignSystem.swift in Sources */,
 				28ECF779DDF0B46189D9022F /* DietaryPreferenceOnboardingView.swift in Sources */,
 				12B822292D18CAAB77C161A7 /* DummyData.swift in Sources */,
@@ -735,9 +797,11 @@
 				550C0C63F02C72707A0A8498 /* MainTabView.swift in Sources */,
 				819D62E0EB2A0BD57042F946 /* MockAuthService.swift in Sources */,
 				295328ED217BE49A8190A6BB /* MockRecipeGenerator.swift in Sources */,
+				FCB802A709ABBA94E211ED0C /* NotificationListView.swift in Sources */,
 				958A8C89AA6917DDD26A7D65 /* OTPVerificationView.swift in Sources */,
 				B16AE7C7C466A375023CADBD /* PantryStore.swift in Sources */,
 				DD43EB8F0FA794EAA5C263EE /* PantryView.swift in Sources */,
+				D7FA16C722885CA41C8EEB8E /* PasteURLSheet.swift in Sources */,
 				A6433BF32F203E29F88C92BA /* PreviewHelpers.swift in Sources */,
 				CF6A1E6852DC65613DEFA308 /* ProfileService.swift in Sources */,
 				FFBC78300528C80A919F6F34 /* ProfileView.swift in Sources */,
@@ -746,9 +810,12 @@
 				02244F67199F15577ECA0CB4 /* RecipeDetailView.swift in Sources */,
 				646ADC15F073D597C1679473 /* RecipeGenerating.swift in Sources */,
 				D4BBA0FF6745B25BEC2267D9 /* RecipeImageDiskCache.swift in Sources */,
+				DEB517B8B83ED7C6F8EFE1F7 /* RecipeImportData.swift in Sources */,
 				26FE43D2BF95B1971460392A /* RecipeIngredient.swift in Sources */,
 				FF74F6770E93BDC9E9FB941A /* RecipePromptBuilder.swift in Sources */,
+				5C9ECA4967711146B2875510 /* RecipeURLImporter.swift in Sources */,
 				708D49513D61EDECD4728E01 /* RecipesView.swift in Sources */,
+				CB6FB53196AE6CC390B455CF /* RevenueCatService.swift in Sources */,
 				C0CEC24C56981B4957886FD7 /* SavedRecipesStore.swift in Sources */,
 				2B6A7725B316E8F594EBCF66 /* ShareRecipeSheet.swift in Sources */,
 				95F29D9EB581D68440AE2E47 /* SonnetRecipeGenerator.swift in Sources */,
@@ -757,8 +824,8 @@
 				BB096795DBDD61E1C9608ACD /* StarRatingView.swift in Sources */,
 				C6EFEF978941EDAF48CB57FC /* SupabaseAuthService.swift in Sources */,
 				639BDB219E2B5430181D46FE /* SupabaseClient.swift in Sources */,
-				6B8D7AF98824336453564C0B /* TutorialOverlayView.swift in Sources */,
 				02CC55C9E917BD8B040F3923 /* UseUp.swift in Sources */,
+				3A191478D89816F147369B95 /* UserActivityStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -954,6 +1021,22 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		028C2CC17197AFD8166D2426 /* XCRemoteSwiftPackageReference "purchases-ios-spm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/RevenueCat/purchases-ios-spm.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 5.21.0;
+			};
+		};
+		51F71B946FF6E0DA19E31C21 /* XCRemoteSwiftPackageReference "SwiftSoup" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/scinfu/SwiftSoup.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.7.0;
+			};
+		};
 		9E38EC76D6694FBC42EB8B21 /* XCRemoteSwiftPackageReference "supabase-swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/supabase/supabase-swift";
@@ -969,6 +1052,21 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 9E38EC76D6694FBC42EB8B21 /* XCRemoteSwiftPackageReference "supabase-swift" */;
 			productName = Supabase;
+		};
+		3C7DD94083541BE63042A48E /* RevenueCatUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 028C2CC17197AFD8166D2426 /* XCRemoteSwiftPackageReference "purchases-ios-spm" */;
+			productName = RevenueCatUI;
+		};
+		515739A4E69B59D1445EE8B5 /* SwiftSoup */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 51F71B946FF6E0DA19E31C21 /* XCRemoteSwiftPackageReference "SwiftSoup" */;
+			productName = SwiftSoup;
+		};
+		AC97A68611BFC02A499C9759 /* RevenueCat */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 028C2CC17197AFD8166D2426 /* XCRemoteSwiftPackageReference "purchases-ios-spm" */;
+			productName = RevenueCat;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

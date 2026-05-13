@@ -84,10 +84,29 @@ final class PantryStore: ObservableObject {
     @Published private(set) var ingredients: [Ingredient] = []
     @Published private(set) var isLoading = false
     @Published var error: String?
+    @Published var dismissedIngredientIds: Set<UUID> = [] {
+        didSet { saveDismissedIds() }
+    }
 
     var userId: UUID?
     private var lastFetchedAt: Date?
     private let client = SupabaseManager.client
+    private var notificationDebounceTask: Task<Void, Never>?
+
+    private static let dismissedIdsKey = "dismissedIngredientIds"
+
+    init() {
+        loadDismissedIds()
+    }
+
+    private func saveDismissedIds() {
+        UserDefaults.standard.set(dismissedIngredientIds.map(\.uuidString), forKey: Self.dismissedIdsKey)
+    }
+
+    private func loadDismissedIds() {
+        guard let stored = UserDefaults.standard.stringArray(forKey: Self.dismissedIdsKey) else { return }
+        dismissedIngredientIds = Set(stored.compactMap(UUID.init))
+    }
 
     private func getUserId() -> UUID? { userId }
 
@@ -96,6 +115,8 @@ final class PantryStore: ObservableObject {
         ingredients = []
         lastFetchedAt = nil
         error = nil
+        UserDefaults.standard.removeObject(forKey: Self.dismissedIdsKey)
+        dismissedIngredientIds = []
     }
 
     // MARK: - Fetch
@@ -304,7 +325,10 @@ final class PantryStore: ObservableObject {
     // MARK: - Notifications
 
     private func rescheduleNotifications() {
-        Task {
+        notificationDebounceTask?.cancel()
+        notificationDebounceTask = Task {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
             await ExpirationNotificationScheduler.rescheduleAll(for: ingredients)
         }
     }

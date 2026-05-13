@@ -1,98 +1,161 @@
 #!/bin/bash
 # ============================================================
-# Upload recipe images to Supabase Storage and generate SQL
-# to update each recipe's image_path.
+# UseUp — Seed Recipe Image Uploader
+# Downloads a matching food photo for each seed recipe and
+# uploads it to Supabase Storage (recipe-images bucket).
 #
-# Usage:
-#   SERVICE_ROLE_KEY=ey... ./Scripts/upload_recipe_images.sh
-#
-# Or:
-#   ./Scripts/upload_recipe_images.sh eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVzeWNpcmV3Ymp5a3hud2F1YWlqIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Mjg5ODg3NSwiZXhwIjoyMDg4NDc0ODc1fQ.aIaI3Yr1pBwp-Yz_m9tDNH3qqj-WB8hijzidIT5K_2o
+# Requirements: curl, python3
+# Usage:        bash scripts/upload_recipe_images.sh
 # ============================================================
 
 set -euo pipefail
 
-SERVICE_ROLE_KEY="${1:-${SERVICE_ROLE_KEY:-}}"
-
-if [ -z "$SERVICE_ROLE_KEY" ]; then
-  echo "Error: SERVICE_ROLE_KEY is required."
-  echo "Usage: SERVICE_ROLE_KEY=ey... $0"
-  echo "   or: $0 <service_role_key>"
-  exit 1
-fi
-
 SUPABASE_URL="https://usycirewbjykxnwauaij.supabase.co"
-USEUP_UUID="00000000-0000-0000-0000-000000555570"
+SERVICE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVzeWNpcmV3Ymp5a3hud2F1YWlqIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Mjg5ODg3NSwiZXhwIjoyMDg4NDc0ODc1fQ.aIaI3Yr1pBwp-Yz_m9tDNH3qqj-WB8hijzidIT5K_2o"
 BUCKET="recipe-images"
-IMAGE_DIR="$(dirname "$0")/../Assets/RecipeImages"
+TMP_DIR="/tmp/useup_seed_$$"
 
-# Map: recipe_uuid -> image_filename
-declare -a RECIPES=(
-  "a0000001-0000-4000-8000-000000000001:honey_garlic_salmon.jpg"
-  "a0000001-0000-4000-8000-000000000002:carne_asada_tacos.jpg"
-  "a0000001-0000-4000-8000-000000000003:wild_mushroom_risotto.jpg"
-  "a0000001-0000-4000-8000-000000000004:teriyaki_chicken_donburi.jpg"
-  "a0000001-0000-4000-8000-000000000005:butter_chicken.jpg"
-  "a0000001-0000-4000-8000-000000000006:green_curry.jpg"
-  "a0000001-0000-4000-8000-000000000007:kimchi_jjigae.jpg"
-  "a0000001-0000-4000-8000-000000000008:mapo_tofu.jpg"
-  "a0000001-0000-4000-8000-000000000009:ratatouille.jpg"
-  "a0000001-0000-4000-8000-000000000010:chicken_souvlaki.jpg"
-  "a0000001-0000-4000-8000-000000000011:sinigang_na_baboy.jpg"
-  "a0000001-0000-4000-8000-000000000012:shakshuka.jpg"
-  "a0000001-0000-4000-8000-000000000013:chicken_shawarma_bowl.jpg"
-  "a0000001-0000-4000-8000-000000000014:pho_bo.jpg"
-  "a0000001-0000-4000-8000-000000000015:crispy_carnitas.jpg"
-  "a0000001-0000-4000-8000-000000000016:pasta_alla_norma.jpg"
-  "a0000001-0000-4000-8000-000000000017:chana_masala.jpg"
-  "a0000001-0000-4000-8000-000000000018:gyudon.jpg"
-  "a0000001-0000-4000-8000-000000000019:pad_kra_pao.jpg"
-  "a0000001-0000-4000-8000-000000000020:coq_au_vin.jpg"
-)
+mkdir -p "$TMP_DIR"
+trap 'rm -rf "$TMP_DIR"' EXIT
 
-echo "Uploading recipe images to Supabase Storage..."
-echo "================================================"
+# ── Colours ───────────────────────────────────────────────────────────────────
+GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; NC='\033[0m'
 
-SQL_UPDATES=""
-FAILED=0
+# ── upload_image(uuid, mealdb_query, fallback_unsplash_photo_id) ──────────────
+# 1. Searches TheMealDB (free, no key) for a matching food photo
+# 2. Falls back to a curated Unsplash photo if not found
+# 3. Uploads to Supabase Storage with upsert (safe to re-run)
+upload_image() {
+  local uuid="$1"
+  local query="$2"
+  local fallback_photo_id="$3"
+  local dest="seeds/${uuid}.jpg"
+  local tmp="${TMP_DIR}/${uuid}.jpg"
 
-for entry in "${RECIPES[@]}"; do
-  RECIPE_UUID="${entry%%:*}"
-  FILENAME="${entry##*:}"
-  FILEPATH="${IMAGE_DIR}/${FILENAME}"
-  STORAGE_PATH="${USEUP_UUID}/${FILENAME}"
+  printf "  %-42s" "${query}"
 
-  if [ ! -f "$FILEPATH" ]; then
-    echo "SKIP: $FILENAME (file not found)"
-    FAILED=$((FAILED + 1))
-    continue
+  # --- 1. TheMealDB lookup ---
+  local encoded
+  encoded=$(python3 -c \
+    "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" \
+    "$query" 2>/dev/null || echo "${query// /+}")
+
+  local img_url=""
+  img_url=$(curl -sf --max-time 10 \
+    "https://www.themealdb.com/api/json/v1/1/search.php?s=${encoded}" \
+    | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    meals = d.get('meals') or []
+    print(meals[0]['strMealThumb'] if meals else '')
+except Exception:
+    print('')
+" 2>/dev/null) || img_url=""
+
+  local source="TheMealDB"
+  if [ -z "$img_url" ]; then
+    img_url="https://images.unsplash.com/${fallback_photo_id}?auto=format&fit=crop&w=800&q=80"
+    source="Unsplash "
   fi
 
-  echo -n "Uploading $FILENAME... "
+  # --- 2. Download ---
+  if ! curl -sfL --max-time 20 "$img_url" -o "$tmp" 2>/dev/null; then
+    printf "${RED}✗ download failed${NC}\n"
+    return
+  fi
 
-  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-    -X POST \
-    "${SUPABASE_URL}/storage/v1/object/${BUCKET}/${STORAGE_PATH}" \
-    -H "Authorization: Bearer ${SERVICE_ROLE_KEY}" \
+  # Sanity-check file size (real image should be > 10KB)
+  local size
+  size=$(wc -c < "$tmp" 2>/dev/null || echo 0)
+  if [ "$size" -lt 10000 ]; then
+    printf "${YELLOW}✗ file too small (${size}B) — skipping${NC}\n"
+    return
+  fi
+
+  # --- 3. Upload to Supabase Storage ---
+  local http_code
+  http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+    -X POST "${SUPABASE_URL}/storage/v1/object/${BUCKET}/${dest}" \
+    -H "Authorization: Bearer ${SERVICE_KEY}" \
     -H "Content-Type: image/jpeg" \
-    --data-binary "@${FILEPATH}")
+    -H "x-upsert: true" \
+    --data-binary @"$tmp")
 
-  if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
-    echo "OK (${HTTP_CODE})"
-    SQL_UPDATES="${SQL_UPDATES}UPDATE recipes SET image_path = '${STORAGE_PATH}' WHERE id = '${RECIPE_UUID}';\n"
-  elif [ "$HTTP_CODE" = "409" ]; then
-    echo "ALREADY EXISTS (409) — skipping"
-    SQL_UPDATES="${SQL_UPDATES}UPDATE recipes SET image_path = '${STORAGE_PATH}' WHERE id = '${RECIPE_UUID}';\n"
+  if [ "$http_code" = "200" ]; then
+    printf "${GREEN}✓ %-12s${NC}\n" "($source)"
   else
-    echo "FAILED (${HTTP_CODE})"
-    FAILED=$((FAILED + 1))
+    printf "${RED}✗ HTTP ${http_code}${NC}\n"
   fi
-done
+}
 
 echo ""
-echo "================================================"
-echo "Done! ${FAILED} failures."
+echo "UseUp — Uploading 20 recipe seed images"
+echo "════════════════════════════════════════════════════════════"
 echo ""
-echo "Run the following SQL in Supabase SQL Editor to set image_path on each recipe:"
+
+#  uuid                                    TheMealDB search term      Unsplash fallback photo-id
+upload_image \
+  "a0000001-0000-4000-8000-000000000021" "Spaghetti Carbonara"      "photo-1612874742237-6526221588e3"
+
+upload_image \
+  "a0000001-0000-4000-8000-000000000022" "Chicken Tikka Masala"     "photo-1565557623262-b51c2513a641"
+
+upload_image \
+  "a0000001-0000-4000-8000-000000000023" "Buddha Bowl"              "photo-1512621776951-a57141f2eefd"
+
+upload_image \
+  "a0000001-0000-4000-8000-000000000024" "Beef Bulgogi"             "photo-1590301157890-4810ed352733"
+
+upload_image \
+  "a0000001-0000-4000-8000-000000000025" "Egg Breakfast Bowl"       "photo-1484723091739-30990ff56fba"
+
+upload_image \
+  "a0000001-0000-4000-8000-000000000026" "Pad Thai"                 "photo-1559314809-0d155014e29e"
+
+upload_image \
+  "a0000001-0000-4000-8000-000000000027" "Moussaka"                 "photo-1600891964092-4316c288032e"
+
+upload_image \
+  "a0000001-0000-4000-8000-000000000028" "Falafel"                  "photo-1547592181-eb5abfed09c2"
+
+upload_image \
+  "a0000001-0000-4000-8000-000000000029" "Birria Tacos"             "photo-1604467794349-0b74285de7e7"
+
+upload_image \
+  "a0000001-0000-4000-8000-000000000030" "Tonkotsu Ramen"           "photo-1569050467447-ce54b3bbc37d"
+
+upload_image \
+  "a0000001-0000-4000-8000-000000000031" "French Onion Soup"        "photo-1547592166-23ac45744acd"
+
+upload_image \
+  "a0000001-0000-4000-8000-000000000032" "Salmon Poke Bowl"         "photo-1519708227418-c8fd9a32b7a2"
+
+upload_image \
+  "a0000001-0000-4000-8000-000000000033" "Miso Glazed Cod"          "photo-1551326844-4df70f2d7c82"
+
+upload_image \
+  "a0000001-0000-4000-8000-000000000034" "Char Siu Pork"            "photo-1563245372-f21724e3856d"
+
+upload_image \
+  "a0000001-0000-4000-8000-000000000035" "Palak Paneer"             "photo-1574653853027-5382a3d23a15"
+
+upload_image \
+  "a0000001-0000-4000-8000-000000000036" "Tom Yum Goong"            "photo-1569718212165-3a8278d5f624"
+
+upload_image \
+  "a0000001-0000-4000-8000-000000000037" "Beef Bourguignon"         "photo-1534939561126-855b8675edd7"
+
+upload_image \
+  "a0000001-0000-4000-8000-000000000038" "Dal Fry"                  "photo-1547592180-85f173990554"
+
+upload_image \
+  "a0000001-0000-4000-8000-000000000039" "Paella"                   "photo-1534080564583-6be75777b70a"
+
+upload_image \
+  "a0000001-0000-4000-8000-000000000040" "Acai Bowl"                "photo-1490323914169-4b82b5d34fc6"
+
 echo ""
-echo -e "$SQL_UPDATES"
+echo "════════════════════════════════════════════════════════════"
+echo "Done. Check Supabase Storage → recipe-images/seeds/"
+echo ""

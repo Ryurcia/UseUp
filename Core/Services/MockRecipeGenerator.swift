@@ -1,7 +1,7 @@
 import Foundation
 
 final class MockRecipeGenerator: RecipeGenerating {
-    func generateRecipes(for ingredientNames: [String], options: GenerationOptions) async throws -> [Recipe] {
+    func generateRecipes(for ingredientNames: [String], options: GenerationOptions, recipeCount: Int = 3) async throws -> [Recipe] {
         let cleaned = ingredientNames
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
             .filter { !$0.isEmpty }
@@ -13,7 +13,7 @@ final class MockRecipeGenerator: RecipeGenerating {
         try await Task.sleep(for: .seconds(3))
 
         let uniqueIngredients = Array(Set(cleaned)).sorted()
-        let templates = recipeTemplates(for: uniqueIngredients)
+        let templates = Array(recipeTemplates(for: uniqueIngredients).prefix(recipeCount))
 
         return templates.map { template in
             let macros = estimateMacros(
@@ -118,7 +118,61 @@ final class MockRecipeGenerator: RecipeGenerating {
             )
         )
 
-        return Array(templates.prefix(3))
+        templates.append(
+            RecipeTemplate(
+                title: "Garlic Butter Pasta",
+                summary: "A quick weeknight pasta that comes together in under 20 minutes with pantry staples.",
+                timeMinutes: 18,
+                servings: 2,
+                ingredientsUsed: [.init(name: "pasta"), .init(name: "garlic"), .init(name: "butter"), .init(name: "parmesan")],
+                missingIngredients: [.init(name: "fresh parsley")],
+                steps: [
+                    "Boil salted water and cook pasta until al dente, reserving half a cup of pasta water.",
+                    "Melt butter in a pan over medium heat and saute sliced garlic for 2 minutes.",
+                    "Toss drained pasta into the pan with a splash of pasta water.",
+                    "Remove from heat, stir in parmesan, and season to taste."
+                ],
+                sources: sampleSources(topic: "garlic-butter-pasta")
+            )
+        )
+
+        templates.append(
+            RecipeTemplate(
+                title: "Sheet Pan Roasted Vegetables",
+                summary: "Caramelised mixed vegetables with olive oil and herbs — minimal effort, maximum flavour.",
+                timeMinutes: 40,
+                servings: 3,
+                ingredientsUsed: ingredients.prefix(5).map { RecipeIngredient(name: $0) },
+                missingIngredients: [.init(name: "olive oil"), .init(name: "dried thyme")],
+                steps: [
+                    "Preheat oven to 220°C (425°F) and line a baking sheet with parchment.",
+                    "Cut all vegetables into similar-sized pieces and spread in a single layer.",
+                    "Drizzle with olive oil, season generously, and scatter over thyme.",
+                    "Roast for 25 to 30 minutes, flipping halfway, until golden at the edges."
+                ],
+                sources: sampleSources(topic: "sheet-pan-veg")
+            )
+        )
+
+        templates.append(
+            RecipeTemplate(
+                title: "Greek Yogurt Parfait",
+                summary: "A protein-packed no-cook breakfast layered with fruit and a honey drizzle.",
+                timeMinutes: 5,
+                servings: 1,
+                ingredientsUsed: [.init(name: "greek yogurt"), .init(name: "berries"), .init(name: "honey"), .init(name: "granola")],
+                missingIngredients: [],
+                steps: [
+                    "Spoon half the yogurt into a glass or bowl.",
+                    "Add a layer of berries and a handful of granola.",
+                    "Repeat with remaining yogurt and toppings.",
+                    "Finish with a drizzle of honey and serve immediately."
+                ],
+                sources: sampleSources(topic: "yogurt-parfait")
+            )
+        )
+
+        return templates
     }
 
     private func estimateMacros(

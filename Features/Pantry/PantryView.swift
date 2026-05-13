@@ -3,11 +3,7 @@ import SwiftUI
 struct PantryView: View {
     @EnvironmentObject private var pantryStore: PantryStore
     @EnvironmentObject private var session: AppSession
-    @Binding var requestAddSheet: Bool
-
-    init(requestAddSheet: Binding<Bool> = .constant(false)) {
-        _requestAddSheet = requestAddSheet
-    }
+    @EnvironmentObject private var activityStore: UserActivityStore
 
     @State private var searchText = ""
     @State private var debouncedSearch = ""
@@ -21,7 +17,9 @@ struct PantryView: View {
     @State private var ingredientPendingDelete: Ingredient?
     @State private var ingredientBeingEdited: Ingredient?
     @State private var ingredientBeingUsed: Ingredient?
+    @State private var ingredientBeingExtended: Ingredient?
     @State private var expandedIngredientID: UUID?
+    @State private var cachedFilteredIngredients: [Ingredient] = []
     private var hasActiveFilters: Bool {
         !selectedStorageFilters.isEmpty || !selectedCategories.isEmpty || filterExpiringSoon
     }
@@ -30,12 +28,17 @@ struct PantryView: View {
            !displayName.isEmpty {
             return displayName
         }
-
         return "there"
     }
 
-    private var filteredIngredients: [Ingredient] {
+    private var expiringSoonItems: [Ingredient] {
         pantryStore.ingredients
+            .filter { $0.expirationDate != nil && ($0.daysUntilExpiration ?? Int.max) <= 5 }
+            .sorted { ($0.daysUntilExpiration ?? Int.max) < ($1.daysUntilExpiration ?? Int.max) }
+    }
+
+    private func recomputeFilteredIngredients() {
+        cachedFilteredIngredients = pantryStore.ingredients
             .filter { ingredient in
                 let trimmedSearch = debouncedSearch.trimmingCharacters(in: .whitespacesAndNewlines)
                 let matchesSearch = trimmedSearch.isEmpty || ingredient.name.localizedCaseInsensitiveContains(trimmedSearch)
@@ -44,55 +47,170 @@ struct PantryView: View {
                 let matchesExpiring = !filterExpiringSoon || (ingredient.daysUntilExpiration ?? Int.max) <= 5
                 return matchesSearch && matchesCategory && matchesStorage && matchesExpiring
             }
-            .sorted { $0.loggedAt > $1.loggedAt }
+            .sorted { lhs, rhs in
+                let lhsExpiring = lhs.expirationDate != nil && (lhs.daysUntilExpiration ?? Int.max) <= 5
+                    && !pantryStore.dismissedIngredientIds.contains(lhs.id)
+                let rhsExpiring = rhs.expirationDate != nil && (rhs.daysUntilExpiration ?? Int.max) <= 5
+                    && !pantryStore.dismissedIngredientIds.contains(rhs.id)
+
+                if lhsExpiring != rhsExpiring { return lhsExpiring }
+                if lhsExpiring && rhsExpiring {
+                    return (lhs.daysUntilExpiration ?? Int.max) < (rhs.daysUntilExpiration ?? Int.max)
+                }
+                return lhs.loggedAt > rhs.loggedAt
+            }
     }
 
     var body: some View {
+        withSheets
+            .task {
+                await pantryStore.fetchIngredients()
+                recomputeFilteredIngredients()
+            }
+            .onChange(of: searchText) { _, newValue in
+                searchDebounceTask?.cancel()
+                searchDebounceTask = Task {
+                    try? await Task.sleep(for: .milliseconds(300))
+                    guard !Task.isCancelled else { return }
+                    debouncedSearch = newValue
+                }
+            }
+            .onChange(of: debouncedSearch) { _, _ in recomputeFilteredIngredients() }
+            .onChange(of: selectedCategories) { _, _ in recomputeFilteredIngredients() }
+            .onChange(of: selectedStorageFilters) { _, _ in recomputeFilteredIngredients() }
+            .onChange(of: filterExpiringSoon) { _, _ in recomputeFilteredIngredients() }
+            .onChange(of: pantryStore.ingredients) { _, _ in recomputeFilteredIngredients() }
+    }
+
+    private var withSheets: some View {
+        withOverlays
+            .sheet(isPresented: $showingAddSheet) {
+                AddIngredientSheet { name, amount, category, location, expirationDate in
+                    withAnimation {
+                        pantryStore.addIngredient(name: name, amount: amount, category: category, location: location, expirationDate: expirationDate)
+                    }
+                }
+            }
+            .sheet(item: $ingredientBeingEdited) { ingredient in
+                EditIngredientSheet(ingredient: ingredient) { name, amount, category, location, expirationDate in
+                    withAnimation {
+                        pantryStore.updateIngredient(
+                            id: ingredient.id, name: name, amount: amount,
+                            category: category, location: location, expirationDate: expirationDate
+                        )
+                    }
+                }
+            }
+            .sheet(item: $ingredientBeingExtended) { ingredient in
+                ExtendExpirationSheet(ingredient: ingredient) { newDate in
+                    pantryStore.updateIngredient(
+                        id: ingredient.id, name: ingredient.name, amount: ingredient.amount,
+                        category: ingredient.category, location: ingredient.location,
+                        expirationDate: newDate
+                    )
+                }
+                .presentationDetents([.medium])
+            }
+            .sheet(item: $ingredientBeingUsed) { ingredient in
+                UseIngredientSheet(ingredient: ingredient) { newAmount in
+                    withAnimation { pantryStore.useIngredient(id: ingredient.id, newAmount: newAmount) }
+                    if newAmount == nil { activityStore.logEvent(type: "item_saved") }
+                }
+                .presentationDetents([.medium])
+            }
+            .alert("Delete ingredient?", isPresented: isShowingDeleteAlert, presenting: ingredientPendingDelete) { ingredient in
+                Button("Cancel", role: .cancel) { ingredientPendingDelete = nil }
+                Button("Delete", role: .destructive) {
+                    if ingredient.isExpired { activityStore.logEvent(type: "item_wasted") }
+                    withAnimation { pantryStore.deleteIngredient(id: ingredient.id) }
+                    ingredientPendingDelete = nil
+                }
+            } message: { ingredient in
+                Text("This will remove \(ingredient.name.capitalized) from your pantry.")
+            }
+            .sheet(isPresented: $showingFilterSheet) {
+                FilterSheet(
+                    selectedStorageFilters: $selectedStorageFilters,
+                    selectedCategories: $selectedCategories,
+                    filterExpiringSoon: $filterExpiringSoon
+                )
+                .presentationDetents([.large])
+            }
+            .sheet(isPresented: $showingSettings) {
+                NavigationStack { SettingsView() }
+            }
+    }
+
+    private var withOverlays: some View {
+        mainContent
+            .background(DS.ColorToken.bgPrimary)
+            .overlay { dimBackground }
+            .overlay(alignment: .bottomTrailing) { fabButton }
+            .toolbar(.hidden, for: .navigationBar)
+    }
+
+    @ViewBuilder private var dimBackground: some View {
+        if showingAddSheet || showingFilterSheet || showingSettings || ingredientBeingEdited != nil || ingredientBeingUsed != nil {
+            Color.black.opacity(0.3)
+                .ignoresSafeArea()
+                .animation(.easeInOut(duration: 0.2), value: showingAddSheet)
+                .animation(.easeInOut(duration: 0.2), value: showingFilterSheet)
+                .animation(.easeInOut(duration: 0.2), value: showingSettings)
+                .animation(.easeInOut(duration: 0.2), value: ingredientBeingEdited != nil)
+                .animation(.easeInOut(duration: 0.2), value: ingredientBeingUsed != nil)
+        }
+    }
+
+    private var fabButton: some View {
+        Button { showingAddSheet = true } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 24, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 56, height: 56)
+                .background(
+                    Circle()
+                        .fill(DS.ColorToken.accent)
+                        .shadow(color: DS.ColorToken.accent.opacity(0.3), radius: 8, x: 0, y: 4)
+                )
+        }
+        .padding(.trailing, DS.Spacing.space5)
+        .padding(.bottom, 90)
+    }
+
+    // MARK: - Main Content
+
+    private var mainContent: some View {
         VStack(spacing: 0) {
             headerView
 
-            VStack(alignment: .leading, spacing: DS.Spacing.space4) {
-                searchBar
+            ScrollView(showsIndicators: false) {
+                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    Group {
+                        searchBar
+                            .padding(.horizontal, DS.Spacing.space5)
 
-                HStack {
-                    Text("Your Pantry")
-                        .appTextStyle(.heading3)
-                        .foregroundStyle(DS.ColorToken.textSecondary)
-
-                    Spacer()
-
-                    Button {
-                        showingFilterSheet = true
-                    } label: {
-                        Image(systemName: hasActiveFilters
-                              ? "line.3.horizontal.decrease.circle.fill"
-                              : "line.3.horizontal.decrease")
-                            .font(.system(size: 20, weight: .medium))
-                            .foregroundStyle(
-                                hasActiveFilters
-                                    ? DS.ColorToken.primary
-                                    : DS.ColorToken.textSecondary
-                            )
+                        if !expiringSoonItems.isEmpty {
+                            useUpSoonSection
+                                .padding(.top, DS.Spacing.space4)
+                        }
                     }
-                    .buttonStyle(.plain)
-                }
+                    .padding(.bottom, DS.Spacing.space4)
 
-                if filteredIngredients.isEmpty {
-                    Spacer(minLength: DS.Spacing.space8)
-                    VStack(spacing: DS.Spacing.space3) {
-                        Image(systemName: "face.dashed")
-                            .font(.system(size: 48))
-                            .foregroundStyle(DS.ColorToken.textTertiary)
-                        Text("Looks like you haven't logged anything")
-                            .appTextStyle(.bodySM)
-                            .foregroundStyle(DS.ColorToken.textSecondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    Spacer()
-                } else {
-                    ScrollView(showsIndicators: false) {
-                        LazyVStack(spacing: DS.Spacing.space2) {
-                            ForEach(filteredIngredients) { item in
+                    Section {
+                        if cachedFilteredIngredients.isEmpty {
+                            VStack(spacing: DS.Spacing.space3) {
+                                Image(systemName: "face.dashed")
+                                    .font(.system(size: 48))
+                                    .foregroundStyle(DS.ColorToken.textTertiary)
+                                Text("Looks like you haven't logged anything")
+                                    .appTextStyle(.bodySM)
+                                    .foregroundStyle(DS.ColorToken.textSecondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding(.horizontal, DS.Spacing.space5)
+                            .padding(.top, DS.Spacing.space8)
+                        } else {
+                            ForEach(cachedFilteredIngredients) { item in
                                 ExpandableIngredientRow(
                                     item: item,
                                     isExpanded: expandedIngredientID == item.id,
@@ -112,119 +230,36 @@ struct PantryView: View {
                                     onDelete: {
                                         expandedIngredientID = nil
                                         ingredientPendingDelete = item
+                                    },
+                                    onExtend: {
+                                        expandedIngredientID = nil
+                                        ingredientBeingExtended = item
                                     }
                                 )
+                                .padding(.horizontal, DS.Spacing.space5)
+                                .padding(.bottom, DS.Spacing.space2)
                             }
                         }
-                        .padding(.bottom, DS.Spacing.space24)
+                    } header: {
+                        VStack(alignment: .leading, spacing: DS.Spacing.space3) {
+                            pantryListHeader
+                            categoryChipsRow
+                        }
+                        .padding(.horizontal, DS.Spacing.space5)
+                        .padding(.vertical, DS.Spacing.space3)
                         .background(DS.ColorToken.bgPrimary)
                     }
-                    .scrollContentBackground(.hidden)
-                    .overlay(alignment: .bottom) {
-                        LinearGradient(
-                            colors: [DS.ColorToken.bgPrimary, DS.ColorToken.bgPrimary.opacity(0)],
-                            startPoint: .bottom,
-                            endPoint: .top
-                        )
-                        .frame(height: 48)
-                        .allowsHitTesting(false)
-                    }
                 }
+                .padding(.top, DS.Spacing.space4)
+                .padding(.bottom, DS.Spacing.space24)
             }
-            .padding(.horizontal, DS.Spacing.space5)
-            .padding(.top, DS.Spacing.space4)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        }
-        .background(DS.ColorToken.bgPrimary)
-        .overlay {
-            if showingAddSheet || showingFilterSheet || showingSettings || ingredientBeingEdited != nil || ingredientBeingUsed != nil {
-                Color.black.opacity(0.3)
-                    .ignoresSafeArea()
-                    .animation(.easeInOut(duration: 0.2), value: showingAddSheet)
-                    .animation(.easeInOut(duration: 0.2), value: showingFilterSheet)
-                    .animation(.easeInOut(duration: 0.2), value: showingSettings)
-                    .animation(.easeInOut(duration: 0.2), value: ingredientBeingEdited != nil)
-                    .animation(.easeInOut(duration: 0.2), value: ingredientBeingUsed != nil)
-            }
-        }
-        .toolbar(.hidden, for: .navigationBar)
-        .sheet(isPresented: $showingAddSheet) {
-            AddIngredientSheet { name, amount, category, location, expirationDate in
-                withAnimation {
-                    pantryStore.addIngredient(name: name, amount: amount, category: category, location: location, expirationDate: expirationDate)
-                }
-            }
-        }
-        .onChange(of: requestAddSheet) { _, request in
-            if request {
-                requestAddSheet = false
-                showingAddSheet = true
-            }
-        }
-        .sheet(item: $ingredientBeingEdited) { ingredient in
-            EditIngredientSheet(ingredient: ingredient) { name, amount, category, location, expirationDate in
-                withAnimation {
-                    pantryStore.updateIngredient(
-                        id: ingredient.id,
-                        name: name,
-                        amount: amount,
-                        category: category,
-                        location: location,
-                        expirationDate: expirationDate
-                    )
-                }
-            }
-        }
-        .sheet(item: $ingredientBeingUsed) { ingredient in
-            UseIngredientSheet(ingredient: ingredient) { newAmount in
-                withAnimation {
-                    pantryStore.useIngredient(id: ingredient.id, newAmount: newAmount)
-                }
-            }
-            .presentationDetents([.medium])
-        }
-        .alert("Delete ingredient?", isPresented: isShowingDeleteAlert, presenting: ingredientPendingDelete) { ingredient in
-            Button("Cancel", role: .cancel) {
-                ingredientPendingDelete = nil
-            }
-            Button("Delete", role: .destructive) {
-                withAnimation {
-                    pantryStore.deleteIngredient(id: ingredient.id)
-                }
-                ingredientPendingDelete = nil
-            }
-        } message: { ingredient in
-            Text("This will remove \(ingredient.name.capitalized) from your pantry.")
-        }
-        .sheet(isPresented: $showingFilterSheet) {
-            FilterSheet(
-                selectedStorageFilters: $selectedStorageFilters,
-                selectedCategories: $selectedCategories,
-                filterExpiringSoon: $filterExpiringSoon
-            )
-            .presentationDetents([.large])
-        }
-        .sheet(isPresented: $showingSettings) {
-            NavigationStack {
-                SettingsView()
-            }
-        }
-        .task {
-            await pantryStore.fetchIngredients()
-        }
-        .onChange(of: searchText) { _, newValue in
-            searchDebounceTask?.cancel()
-            searchDebounceTask = Task {
-                try? await Task.sleep(for: .milliseconds(300))
-                guard !Task.isCancelled else { return }
-                debouncedSearch = newValue
-            }
+            .scrollContentBackground(.hidden)
         }
     }
 
     private var headerView: some View {
         VStack(spacing: DS.Spacing.space3) {
-            HStack {
+            HStack(spacing: DS.Spacing.space4) {
                 Text("Today is \(Date.now, format: .dateTime.month(.wide).day())")
                     .font(.custom("Satoshi Variable", size: 22).weight(.semibold))
                     .foregroundStyle(DS.ColorToken.textPrimary)
@@ -236,12 +271,15 @@ struct PantryView: View {
                 } label: {
                     Image(systemName: "gearshape")
                         .font(.system(size: 22, weight: .regular))
-                        .foregroundStyle(DS.ColorToken.accent)
+                        .foregroundStyle(DS.ColorToken.textSecondary)
                 }
                 .buttonStyle(.plain)
+
+                NotificationBellButton()
+                ProfileNavButton()
             }
 
-            Text("Hey \(greetingName)!")
+            Text("Hey \(greetingName)! 👋")
                 .font(.custom("CalSans-Regular", size: 36))
                 .kerning(0)
                 .foregroundStyle(DS.ColorToken.textPrimary)
@@ -249,116 +287,10 @@ struct PantryView: View {
                 .minimumScaleFactor(0.75)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            if !expiringSoonItems.isEmpty {
-                (Text("You have ")
-                    + Text("\(expiringSoonItems.count) items expiring soon")
-                        .font(.custom("Satoshi Variable", size: 18).weight(.bold))
-                        .foregroundColor(DS.ColorToken.primary))
-                    .font(.custom("Satoshi Variable", size: 18))
-                    .foregroundStyle(DS.ColorToken.textSecondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            if expiringSoonItems.isEmpty {
-                emptyExpiringCard
-            } else {
-                expiringCard
-            }
         }
         .padding(.horizontal, DS.Spacing.space5)
         .padding(.top, DS.Spacing.space2)
         .padding(.bottom, DS.Spacing.space4)
-    }
-
-    private var expiringSoonItems: [Ingredient] {
-        pantryStore.ingredients
-            .filter { $0.expirationDate != nil && ($0.daysUntilExpiration ?? Int.max) <= 5 }
-            .sorted { ($0.daysUntilExpiration ?? Int.max) < ($1.daysUntilExpiration ?? Int.max) }
-    }
-
-    private var expiringCard: some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.space3) {
-            HStack {
-                Image(systemName: "clock.badge.exclamationmark")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(DS.ColorToken.primary)
-                Text("USE THESE UP")
-                    .font(.custom("Satoshi Variable", size: 13).weight(.bold))
-                    .tracking(0.5)
-                    .foregroundStyle(DS.ColorToken.primary)
-            }
-
-            if expiringSoonItems.count > 1 {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: DS.Spacing.space2) {
-                        expiringItemChips
-                    }
-                }
-            } else {
-                HStack(spacing: DS.Spacing.space2) {
-                    expiringItemChips
-                }
-            }
-        }
-        .padding(DS.Spacing.space4)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(DS.ColorToken.bgTertiary)
-        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.xxl, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: DS.Radius.xxl, style: .continuous)
-                .stroke(DS.ColorToken.primary.opacity(0.25), lineWidth: 1.5)
-        )
-    }
-
-    private var emptyExpiringCard: some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.space3) {
-            HStack {
-                Image(systemName: "clock.badge.exclamationmark")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(DS.ColorToken.primary)
-                Text("USE THESE UP")
-                    .font(.custom("Satoshi Variable", size: 13).weight(.bold))
-                    .tracking(0.5)
-                    .foregroundStyle(DS.ColorToken.primary)
-            }
-
-            Text("Nothing is going bad yet — you're all good!")
-                .appTextStyle(.bodySM)
-                .foregroundStyle(DS.ColorToken.textSecondary)
-        }
-        .padding(DS.Spacing.space4)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(DS.ColorToken.bgTertiary)
-        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.xxl, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: DS.Radius.xxl, style: .continuous)
-                .stroke(DS.ColorToken.primary.opacity(0.25), lineWidth: 1.5)
-        )
-    }
-
-    @ViewBuilder
-    private var expiringItemChips: some View {
-        ForEach(expiringSoonItems) { item in
-            HStack(spacing: 0) {
-                Text(item.name.capitalized)
-                    .font(.custom("Satoshi Variable", size: 14).weight(.medium))
-                if let days = item.daysUntilExpiration {
-                    Text(" · \(expirationLabel(days))")
-                        .font(.custom("Satoshi Variable", size: 14).weight(.semibold))
-                }
-            }
-            .foregroundStyle(DS.ColorToken.textPrimary)
-            .padding(.horizontal, DS.Spacing.space5)
-            .padding(.vertical, DS.Spacing.space3)
-            .background(DS.ColorToken.bgPrimary)
-            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
-            .shadow(color: .black.opacity(0.04), radius: 2, x: 0, y: 1)
-        }
-    }
-
-    private func expirationLabel(_ days: Int) -> String {
-        if days <= 0 { return "0d" }
-        return "\(days)d"
     }
 
     private var searchBar: some View {
@@ -380,6 +312,179 @@ struct PantryView: View {
                 .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+    }
+
+    // MARK: - Use Up Soon
+
+    private var useUpSoonSection: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.space3) {
+            HStack(spacing: DS.Spacing.space2) {
+                Circle()
+                    .fill(DS.ColorToken.error)
+                    .frame(width: 8, height: 8)
+                Text("USE UP SOON")
+                    .font(.custom("Satoshi Variable", size: 13).weight(.bold))
+                    .tracking(0.5)
+                    .foregroundStyle(DS.ColorToken.textPrimary)
+                Text("\(expiringSoonItems.count)")
+                    .font(.custom("Satoshi Variable", size: 11).weight(.bold))
+                    .foregroundStyle(.white)
+                    .frame(minWidth: 20, minHeight: 20)
+                    .background(DS.ColorToken.error)
+                    .clipShape(Circle())
+                Spacer()
+            }
+            .padding(.horizontal, DS.Spacing.space5)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: DS.Spacing.space3) {
+                    ForEach(expiringSoonItems) { item in
+                        expiringItemCard(item)
+                    }
+                }
+                .padding(.horizontal, DS.Spacing.space5)
+            }
+            .mask(
+                LinearGradient(
+                    stops: [
+                        .init(color: .black, location: 0),
+                        .init(color: .black, location: 0.8),
+                        .init(color: .clear, location: 1.0)
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+        }
+    }
+
+    private func expiringItemCard(_ item: Ingredient) -> some View {
+        let days = item.daysUntilExpiration ?? 0
+        let (badgeText, badgeFg, badgeBg) = expiringCardBadgeStyle(days: days)
+
+        return VStack(alignment: .leading, spacing: DS.Spacing.space2) {
+            Text(badgeText)
+                .font(.custom("Satoshi Variable", size: 12).weight(.semibold))
+                .foregroundStyle(badgeFg)
+                .padding(.horizontal, DS.Spacing.space2)
+                .padding(.vertical, 3)
+                .background(badgeBg)
+                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous))
+
+            Text(item.name.capitalized)
+                .font(.custom("Satoshi Variable", size: 18).weight(.bold))
+                .foregroundStyle(DS.ColorToken.textPrimary)
+                .lineLimit(2)
+
+            HStack(spacing: 3) {
+                if let amount = item.amount, !amount.isEmpty {
+                    Text(amount)
+                    Text("·")
+                }
+                Text(item.location.title)
+            }
+            .font(.custom("Satoshi Variable", size: 13))
+            .foregroundStyle(DS.ColorToken.textSecondary)
+        }
+        .padding(DS.Spacing.space4)
+        .frame(width: 162, alignment: .topLeading)
+        .background(DS.ColorToken.bgSecondary)
+        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous)
+                .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
+        )
+    }
+
+    private func expiringCardBadgeStyle(days: Int) -> (String, Color, Color) {
+        if days <= 0 {
+            return ("Today", DS.ColorToken.error, DS.ColorToken.error.opacity(0.15))
+        } else if days == 1 {
+            return ("1 day left", DS.ColorToken.error, DS.ColorToken.error.opacity(0.15))
+        } else if days <= 3 {
+            return ("\(days) days left", DS.ColorToken.warning, DS.ColorToken.warning.opacity(0.15))
+        } else {
+            return ("\(days) days left", DS.ColorToken.warning, DS.ColorToken.warning.opacity(0.15))
+        }
+    }
+
+    // MARK: - Pantry List Header + Category Chips
+
+    private var pantryListHeader: some View {
+        HStack {
+            Text("Your Pantry")
+                .font(.custom("CalSans-Regular", size: 22))
+                .foregroundStyle(DS.ColorToken.textPrimary)
+
+            Spacer()
+
+            HStack(spacing: DS.Spacing.space2) {
+                let count = pantryStore.ingredients.count
+                Text("\(count) item\(count == 1 ? "" : "s")")
+                    .font(.custom("Satoshi Variable", size: 14))
+                    .foregroundStyle(DS.ColorToken.textSecondary)
+
+                Button {
+                    showingFilterSheet = true
+                } label: {
+                    Image(systemName: hasActiveFilters
+                          ? "line.3.horizontal.decrease.circle.fill"
+                          : "line.3.horizontal.decrease")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundStyle(
+                            hasActiveFilters ? DS.ColorToken.primary : DS.ColorToken.textSecondary
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var categoryChipsRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: DS.Spacing.space2) {
+                categoryChip(label: "All", isSelected: selectedCategories.isEmpty) {
+                    selectedCategories.removeAll()
+                }
+                ForEach(PantryCategory.allCases) { category in
+                    categoryChip(label: category.label, isSelected: selectedCategories.contains(category)) {
+                        if selectedCategories.count == 1 && selectedCategories.contains(category) {
+                            selectedCategories.removeAll()
+                        } else {
+                            selectedCategories = [category]
+                        }
+                    }
+                }
+            }
+        }
+        .mask(
+            LinearGradient(
+                stops: [
+                    .init(color: .black, location: 0),
+                    .init(color: .black, location: 0.8),
+                    .init(color: .clear, location: 1.0)
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        )
+    }
+
+    private func categoryChip(label: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.custom("Satoshi Variable", size: 14).weight(.medium))
+                .foregroundStyle(isSelected ? .white : DS.ColorToken.textSecondary)
+                .padding(.horizontal, DS.Spacing.space4)
+                .padding(.vertical, DS.Spacing.space2)
+                .background(isSelected ? DS.ColorToken.accent : DS.ColorToken.bgSecondary)
+                .overlay(
+                    Capsule()
+                        .stroke(isSelected ? Color.clear : DS.ColorToken.borderDefault, lineWidth: 1)
+                )
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 
     private var isShowingDeleteAlert: Binding<Bool> {
@@ -405,6 +510,12 @@ private struct IngredientRowContent: View, Equatable {
         return formatter
     }()
 
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f
+    }()
+
     static func == (lhs: IngredientRowContent, rhs: IngredientRowContent) -> Bool {
         lhs.item == rhs.item
     }
@@ -415,23 +526,14 @@ private struct IngredientRowContent: View, Equatable {
                 pillLabel(
                     text: item.location.title,
                     foreground: .white,
-                    background: DS.ColorToken.warning
+                    background: locationColor(item.location)
                 )
-
+                let (catFg, catBg) = categoryPillColors(for: item.category)
                 pillLabel(
                     text: item.category.title,
-                    foreground: DS.ColorToken.accent,
-                    background: DS.ColorToken.accentLight
+                    foreground: catFg,
+                    background: catBg
                 )
-
-                if let days = item.daysUntilExpiration, days <= 5 {
-                    let (label, fg, bg) = expirationStyle(days: days)
-                    pillLabel(text: label, foreground: fg, background: bg)
-                } else if let expirationDate = item.expirationDate {
-                    Text("exp. on \(Self.expirationDateFormatter.string(from: expirationDate))")
-                        .appTextStyle(.caption)
-                        .foregroundStyle(DS.ColorToken.textSecondary)
-                }
             }
 
             HStack(alignment: .firstTextBaseline, spacing: DS.Spacing.space3) {
@@ -444,13 +546,53 @@ private struct IngredientRowContent: View, Equatable {
 
                 if let amount = item.amount, !amount.isEmpty {
                     Text(amount)
-                        .appTextStyle(.body)
+                        .font(.custom("Satoshi Variable", size: 16).weight(.semibold))
+                        .foregroundStyle(DS.ColorToken.textPrimary)
+                }
+            }
+
+            HStack {
+                Text("Added \(Self.relativeFormatter.localizedString(for: item.loggedAt, relativeTo: Date()))")
+                    .appTextStyle(.caption)
+                    .foregroundStyle(DS.ColorToken.textTertiary)
+
+                Spacer()
+
+                if let days = item.daysUntilExpiration {
+                    let (label, fg, _) = expirationStyle(days: days)
+                    Text(label)
+                        .font(.custom("Satoshi Variable", size: 12).weight(.semibold))
+                        .foregroundStyle(fg)
+                } else if let expDate = item.expirationDate {
+                    Text("exp. \(Self.expirationDateFormatter.string(from: expDate))")
+                        .appTextStyle(.caption)
                         .foregroundStyle(DS.ColorToken.textSecondary)
                 }
             }
         }
         .padding(.horizontal, DS.Spacing.space5)
         .padding(.vertical, DS.Spacing.space3)
+    }
+
+    private func locationColor(_ location: Ingredient.StorageLocation) -> Color {
+        switch location {
+        case .fridge: return DS.ColorToken.warning
+        case .freezer: return Color(red: 0.25, green: 0.5, blue: 0.9)
+        case .pantry: return DS.ColorToken.accent
+        }
+    }
+
+    private func categoryPillColors(for category: Ingredient.Category) -> (Color, Color) {
+        switch category {
+        case .proteins: return (.white, DS.ColorToken.error.opacity(0.85))
+        case .produce: return (.white, DS.ColorToken.primary)
+        case .vegetables: return (.white, DS.ColorToken.accent)
+        case .carbs: return (.white, DS.ColorToken.warning)
+        case .dairy: return (.white, Color(red: 0.2, green: 0.45, blue: 0.85))
+        case .fruits: return (.white, DS.ColorToken.primary)
+        case .condiments: return (DS.ColorToken.textSecondary, DS.ColorToken.bgTertiary)
+        case .other: return (DS.ColorToken.textTertiary, DS.ColorToken.bgTertiary)
+        }
     }
 
     private func pillLabel(text: String, foreground: Color, background: Color) -> some View {
@@ -467,21 +609,22 @@ private struct IngredientRowContent: View, Equatable {
         if days < 0 {
             return ("Expired", DS.ColorToken.error, DS.ColorToken.errorLight)
         } else if days == 0 {
-            return ("Expires today", DS.ColorToken.error, DS.ColorToken.errorLight)
+            return ("Today", DS.ColorToken.error, DS.ColorToken.errorLight)
         } else if days == 1 {
-            return ("Expires tomorrow", DS.ColorToken.error, DS.ColorToken.errorLight)
+            return ("1 day left", DS.ColorToken.error, DS.ColorToken.errorLight)
         } else if days <= 3 {
-            return ("Expires in \(days) days", DS.ColorToken.warning, DS.ColorToken.warningLight)
+            return ("\(days) days left", DS.ColorToken.warning, DS.ColorToken.warningLight)
         } else if days <= 5 {
-            return ("Expires in \(days) days", DS.ColorToken.error, DS.ColorToken.errorLight)
+            return ("\(days) days left", DS.ColorToken.warning, DS.ColorToken.warningLight)
         } else {
-            return ("Expires in \(days) days", DS.ColorToken.textSecondary, DS.ColorToken.bgSecondary)
+            return ("\(days) days left", DS.ColorToken.textSecondary, DS.ColorToken.bgSecondary)
         }
     }
 }
 
 private enum PantryCategory: String, CaseIterable, Identifiable {
     case proteins
+    case produce
     case vegetables
     case carbs
     case dairy
@@ -497,6 +640,7 @@ private enum PantryCategory: String, CaseIterable, Identifiable {
     var ingredientCategory: Ingredient.Category {
         switch self {
         case .proteins: return .proteins
+        case .produce: return .produce
         case .vegetables: return .vegetables
         case .carbs: return .carbs
         case .dairy: return .dairy
@@ -518,16 +662,26 @@ private struct ExpandableIngredientRow: View {
     let onUse: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
+    let onExtend: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             IngredientRowContent(item: item)
 
             if isExpanded {
-                HStack(spacing: DS.Spacing.space3) {
-                    actionButton(label: "Use", icon: "minus.circle", style: .filled, action: onUse)
-                    actionButton(label: "Edit", icon: "pencil", style: .outlined, action: onEdit)
-                    actionButton(label: "Delete", icon: "trash", style: .destructive, action: onDelete)
+                Group {
+                    if item.isExpired {
+                        HStack(spacing: DS.Spacing.space3) {
+                            actionButton(label: "Still good?", icon: "calendar.badge.plus", style: .filled, action: onExtend)
+                            actionButton(label: "Trash", icon: "trash", style: .destructive, action: onDelete)
+                        }
+                    } else {
+                        HStack(spacing: DS.Spacing.space3) {
+                            actionButton(label: "Use", icon: "minus.circle", style: .filled, action: onUse)
+                            actionButton(label: "Edit", icon: "pencil", style: .outlined, action: onEdit)
+                            actionButton(label: "Delete", icon: "trash", style: .destructive, action: onDelete)
+                        }
+                    }
                 }
                 .padding(.horizontal, DS.Spacing.space4)
                 .padding(.top, DS.Spacing.space3)
@@ -535,11 +689,11 @@ private struct ExpandableIngredientRow: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .background(DS.ColorToken.bgSecondary)
+        .background(item.isExpired ? DS.ColorToken.errorLight : DS.ColorToken.bgSecondary)
         .clipShape(RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous)
-                .stroke(isExpanded ? DS.ColorToken.primary.opacity(0.3) : DS.ColorToken.borderDefault, lineWidth: 1)
+                .stroke(item.isExpired ? DS.ColorToken.error.opacity(0.3) : (isExpanded ? DS.ColorToken.primary.opacity(0.3) : DS.ColorToken.borderDefault), lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 2)
         .contentShape(Rectangle())
@@ -981,7 +1135,7 @@ private struct IngredientFormContent: View {
 
                             Spacer()
 
-                            Toggle("", isOn: $hasExpiration)
+                            Toggle("", isOn: $hasExpiration.animation(DS.Motion.easeOut))
                                 .labelsHidden()
                                 .tint(DS.ColorToken.primary)
                         }
@@ -996,20 +1150,20 @@ private struct IngredientFormContent: View {
 
                         if hasExpiration {
                             DatePicker(
-                                "Expires on",
+                                "",
                                 selection: $expirationDate,
                                 displayedComponents: .date
                             )
-                            .font(.custom("Satoshi Variable", size: 15).weight(.regular))
+                            .datePickerStyle(.graphical)
                             .tint(DS.ColorToken.primary)
-                            .padding(.horizontal, DS.Spacing.space3)
-                            .frame(height: 48)
+                            .padding(.horizontal, DS.Spacing.space2)
                             .background(DS.ColorToken.bgSecondary)
                             .overlay(
-                                RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
+                                RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
                                     .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
                             )
-                            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
+                            .transition(.opacity.combined(with: .move(edge: .top)))
                         }
                     }
                 }
@@ -1527,5 +1681,63 @@ private struct FilterSheet: View {
             )
         }
         .buttonStyle(.plain)
+    }
+}
+
+
+// MARK: - Extend Expiration Sheet
+
+private struct ExtendExpirationSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let ingredient: Ingredient
+    let onSave: (Date) -> Void
+
+    @State private var newDate: Date = Calendar.current.date(byAdding: .day, value: 3, to: Date()) ?? Date()
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Capsule()
+                .fill(DS.ColorToken.borderDefault)
+                .frame(width: 36, height: 5)
+                .padding(.top, DS.Spacing.space3)
+                .padding(.bottom, DS.Spacing.space4)
+
+            Text("Set a new expiration date for \(ingredient.name.capitalized).")
+                .appTextStyle(.bodySM)
+                .foregroundStyle(DS.ColorToken.textSecondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, DS.Spacing.space4)
+                .padding(.horizontal, DS.Spacing.space5)
+                .padding(.bottom, DS.Spacing.space4)
+
+            DatePicker(
+                "",
+                selection: $newDate,
+                in: Date()...,
+                displayedComponents: .date
+            )
+            .datePickerStyle(.graphical)
+            .tint(DS.ColorToken.accent)
+            .padding(.horizontal, DS.Spacing.space3)
+
+            Spacer()
+
+            Button {
+                onSave(newDate)
+                dismiss()
+            } label: {
+                Text("Extend Expiration")
+                    .font(.custom("Satoshi Variable", size: 16).weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 52)
+                    .background(DS.ColorToken.accent)
+                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, DS.Spacing.space5)
+            .padding(.bottom, DS.Spacing.space4)
+        }
+        .background(DS.ColorToken.bgPrimary)
     }
 }

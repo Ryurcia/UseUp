@@ -22,6 +22,8 @@ private struct RecipeRow: Decodable {
     let fatG: Int
     let avgRating: Double
     let ratingCount: Int
+    let dietType: String?
+    let dietaryRestrictions: [String]?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -37,6 +39,8 @@ private struct RecipeRow: Decodable {
         case fatG = "fat_g"
         case avgRating = "avg_rating"
         case ratingCount = "rating_count"
+        case dietType = "diet_type"
+        case dietaryRestrictions = "dietary_restrictions"
     }
 }
 
@@ -87,6 +91,8 @@ private struct RecipeRowWithRelations: Decodable {
     let fatG: Int
     let avgRating: Double
     let ratingCount: Int
+    let dietType: String?
+    let dietaryRestrictions: [String]?
     let recipeIngredients: [RecipeIngredientRow]
     let sourceLinks: [SourceLinkRow]
 
@@ -104,6 +110,8 @@ private struct RecipeRowWithRelations: Decodable {
         case fatG = "fat_g"
         case avgRating = "avg_rating"
         case ratingCount = "rating_count"
+        case dietType = "diet_type"
+        case dietaryRestrictions = "dietary_restrictions"
         case recipeIngredients = "recipe_ingredients"
         case sourceLinks = "source_links"
     }
@@ -138,7 +146,9 @@ private struct RecipeRowWithRelations: Decodable {
             cuisine: Cuisine(databaseValue: cuisine) ?? .other,
             createdBy: createdByIdString,
             createdByName: displayName,
-            rating: avgRating
+            rating: avgRating,
+            dietType: dietType ?? "any",
+            dietaryRestrictions: dietaryRestrictions ?? []
         )
     }
 }
@@ -158,6 +168,9 @@ private struct RecipeInsert: Encodable {
     let proteinG: Int
     let carbsG: Int
     let fatG: Int
+    let dietType: String
+    let dietaryRestrictions: [String]
+    let isPublic: Bool
 
     enum CodingKeys: String, CodingKey {
         case createdBy = "created_by"
@@ -170,6 +183,9 @@ private struct RecipeInsert: Encodable {
         case proteinG = "protein_g"
         case carbsG = "carbs_g"
         case fatG = "fat_g"
+        case dietType = "diet_type"
+        case dietaryRestrictions = "dietary_restrictions"
+        case isPublic = "public"
     }
 }
 
@@ -202,10 +218,12 @@ private struct SourceLinkInsert: Encodable {
 private struct SavedRecipeRow: Decodable {
     let userId: UUID
     let recipeId: UUID
+    let category: String?
 
     enum CodingKeys: String, CodingKey {
         case userId = "user_id"
         case recipeId = "recipe_id"
+        case category
     }
 }
 
@@ -213,10 +231,60 @@ private struct SavedRecipeRow: Decodable {
 private struct SavedRecipeInsert: Encodable {
     let userId: UUID
     let recipeId: UUID
+    let category: String?
 
     enum CodingKeys: String, CodingKey {
         case userId = "user_id"
         case recipeId = "recipe_id"
+        case category
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(userId, forKey: .userId)
+        try container.encode(recipeId, forKey: .recipeId)
+        try container.encodeIfPresent(category, forKey: .category)
+    }
+}
+
+/// Minimal decodable used only to extract the ID after a recipe INSERT.
+private struct InsertedID: Decodable { let id: UUID }
+
+/// Decodable row for fetching the current user's ratings.
+private struct UserRatingRow: Decodable {
+    let recipeId: UUID
+    let rating: Double
+    let review: String?
+
+    enum CodingKeys: String, CodingKey {
+        case recipeId = "recipe_id"
+        case rating, review
+    }
+}
+
+/// Decodable row for community review ratings.
+private struct CommunityReviewRow: Decodable {
+    let userId: UUID
+    let rating: Double
+    let review: String?
+    let createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case userId = "user_id"
+        case rating, review
+        case createdAt = "created_at"
+    }
+}
+
+/// Decodable row for reviewer profile info.
+private struct ReviewerProfileRow: Decodable {
+    let id: UUID
+    let nickname: String?
+    let avatarPath: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, nickname
+        case avatarPath = "avatar_path"
     }
 }
 
@@ -241,10 +309,13 @@ final class SavedRecipesStore: ObservableObject {
     @Published private(set) var savedRecipes: [Recipe]
     @Published private(set) var sharedRecipes: [Recipe]
     @Published private(set) var communityRecipes: [Recipe] = []
+    @Published private(set) var communityReviews: [UUID: [CommunityReview]] = [:]
+    @Published private(set) var savedRecipeCategories: [UUID: String] = [:]
     @Published private(set) var isLoading = false
     @Published var error: String?
 
     var userId: UUID?
+    var currentUserNickname: String?
     private var lastFetchedAt: Date?
     private let client = SupabaseManager.client
 
@@ -262,9 +333,12 @@ final class SavedRecipesStore: ObservableObject {
 
     func clearForSignOut() {
         userId = nil
+        currentUserNickname = nil
         savedRecipes = []
         sharedRecipes = []
         communityRecipes = []
+        communityReviews = [:]
+        savedRecipeCategories = [:]
         lastFetchedAt = nil
         error = nil
     }
@@ -299,6 +373,27 @@ final class SavedRecipesStore: ObservableObject {
         }
     }
 
+    /// Fetch the current user's ratings for a set of recipe IDs.
+    private func fetchUserRatings(for recipeIds: [UUID], userId: UUID) async -> [UUID: (rating: Double, review: String?)] {
+        guard !recipeIds.isEmpty else { return [:] }
+        do {
+            let rows: [UserRatingRow] = try await client
+                .from("recipe_ratings")
+                .select("recipe_id, rating, review")
+                .eq("user_id", value: userId.uuidString)
+                .in("recipe_id", values: recipeIds.map { $0.uuidString })
+                .execute()
+                .value
+            var map: [UUID: (rating: Double, review: String?)] = [:]
+            for row in rows {
+                map[row.recipeId] = (rating: row.rating, review: row.review)
+            }
+            return map
+        } catch {
+            return [:]
+        }
+    }
+
     func fetchRecipes() async {
         if let last = lastFetchedAt, Date().timeIntervalSince(last) < 60, !communityRecipes.isEmpty || !savedRecipes.isEmpty || !sharedRecipes.isEmpty { return }
         guard let userId = getUserId() else { return }
@@ -306,8 +401,8 @@ final class SavedRecipesStore: ObservableObject {
         error = nil
 
         do {
-            // Fetch community recipes (limited for initial load)
-            let communityRows: [RecipeRowWithRelations] = try await client
+            // Fetch community recipes and bookmark IDs in parallel
+            async let communityRowsTask: [RecipeRowWithRelations] = client
                 .from("recipes")
                 .select("*, recipe_ingredients(*), source_links(*)")
                 .eq("is_user_shared", value: true)
@@ -315,24 +410,32 @@ final class SavedRecipesStore: ObservableObject {
                 .limit(50)
                 .execute()
                 .value
-
-            // Collect unique creator UUIDs and fetch their nicknames
-            let creatorIds = Set(communityRows.map { $0.createdBy })
-            let nicknameMap = await fetchNicknames(for: creatorIds)
-
-            communityRecipes = communityRows.map { $0.toRecipe(nicknameMap: nicknameMap) }
-
-            // Filter to just current user's shared recipes
-            sharedRecipes = communityRecipes.filter { $0.createdBy == userId.uuidString }
-
-            // Fetch saved/bookmarked recipe IDs
-            let bookmarkRows: [SavedRecipeRow] = try await client
+            async let bookmarkRowsTask: [SavedRecipeRow] = client
                 .from("saved_recipes")
                 .select()
                 .eq("user_id", value: userId.uuidString)
                 .execute()
                 .value
 
+            let (communityRows, bookmarkRows) = try await (communityRowsTask, bookmarkRowsTask)
+
+            // Fetch nicknames for community recipe creators
+            let creatorIds = Set(communityRows.map { $0.createdBy })
+            let nicknameMap = await fetchNicknames(for: creatorIds)
+
+            communityRecipes = communityRows.map { $0.toRecipe(nicknameMap: nicknameMap) }
+            sharedRecipes = communityRecipes.filter { $0.createdBy == userId.uuidString }
+
+            // Build category map from bookmarks
+            var categoryMap: [UUID: String] = [:]
+            for row in bookmarkRows {
+                if let cat = row.category {
+                    categoryMap[row.recipeId] = cat
+                }
+            }
+            savedRecipeCategories = categoryMap
+
+            // Fetch saved recipes by ID
             let savedRecipeIds = bookmarkRows.map { $0.recipeId }
 
             if !savedRecipeIds.isEmpty {
@@ -344,13 +447,32 @@ final class SavedRecipesStore: ObservableObject {
                     .execute()
                     .value
 
-                // Fetch nicknames for saved recipe creators too
                 let savedCreatorIds = Set(savedRows.map { $0.createdBy })
                 let savedNicknameMap = await fetchNicknames(for: savedCreatorIds)
 
                 savedRecipes = savedRows.map { $0.toRecipe(nicknameMap: savedNicknameMap) }
             } else {
                 savedRecipes = []
+            }
+
+            // Fetch user's own ratings for all loaded recipes
+            let allRecipeIds = communityRecipes.map(\.id) + savedRecipes.filter { r in !communityRecipes.contains(where: { $0.id == r.id }) }.map(\.id)
+            let userRatings = await fetchUserRatings(for: allRecipeIds, userId: userId)
+
+            // Merge user ratings onto recipe arrays
+            for (recipeId, ratingData) in userRatings {
+                if let idx = communityRecipes.firstIndex(where: { $0.id == recipeId }) {
+                    communityRecipes[idx].userRating = ratingData.rating
+                    communityRecipes[idx].review = ratingData.review
+                }
+                if let idx = sharedRecipes.firstIndex(where: { $0.id == recipeId }) {
+                    sharedRecipes[idx].userRating = ratingData.rating
+                    sharedRecipes[idx].review = ratingData.review
+                }
+                if let idx = savedRecipes.firstIndex(where: { $0.id == recipeId }) {
+                    savedRecipes[idx].userRating = ratingData.rating
+                    savedRecipes[idx].review = ratingData.review
+                }
             }
 
             lastFetchedAt = Date()
@@ -402,6 +524,55 @@ final class SavedRecipesStore: ObservableObject {
         }
     }
 
+    // MARK: - Fetch Community Reviews
+
+    func fetchCommunityReviews(for recipeId: UUID) async {
+        guard let currentUserId = getUserId() else { return }
+        do {
+            // Fetch all ratings for this recipe except the current user's
+            let rows: [CommunityReviewRow] = try await client
+                .from("recipe_ratings")
+                .select("user_id, rating, review, created_at")
+                .eq("recipe_id", value: recipeId.uuidString)
+                .neq("user_id", value: currentUserId.uuidString)
+                .order("created_at", ascending: false)
+                .execute()
+                .value
+
+            guard !rows.isEmpty else {
+                communityReviews[recipeId] = []
+                return
+            }
+
+            // Fetch reviewer profiles
+            let reviewerIds = Set(rows.map { $0.userId })
+            let profileRows: [ReviewerProfileRow] = try await client
+                .from("profiles")
+                .select("id, nickname, avatar_path")
+                .in("id", values: reviewerIds.map { $0.uuidString })
+                .execute()
+                .value
+
+            let profileMap = Dictionary(uniqueKeysWithValues: profileRows.map { ($0.id, $0) })
+
+            let reviews = rows.compactMap { row -> CommunityReview? in
+                guard let profile = profileMap[row.userId],
+                      let nickname = profile.nickname else { return nil }
+                return CommunityReview(
+                    userId: row.userId,
+                    nickname: nickname,
+                    avatarPath: profile.avatarPath,
+                    rating: row.rating,
+                    review: row.review,
+                    createdAt: row.createdAt
+                )
+            }
+            communityReviews[recipeId] = reviews
+        } catch {
+            // Non-critical — silently fail
+        }
+    }
+
     // MARK: - Add Shared Recipe
 
     func addSharedRecipe(
@@ -414,9 +585,17 @@ final class SavedRecipesStore: ObservableObject {
         macros: Macros,
         sources: [SourceLink],
         imageData: Data? = nil,
-        cuisine: Cuisine
-    ) {
-        // Optimistic local insert
+        cuisine: Cuisine,
+        dietType: String = "any",
+        dietaryRestrictions: [String] = [],
+        isPublic: Bool = false,
+        isUserShared: Bool = true
+    ) async throws {
+        guard let userId = getUserId() else {
+            throw NSError(domain: "SavedRecipesStore", code: 0, userInfo: [NSLocalizedDescriptionKey: "Not signed in."])
+        }
+
+        // Optimistic local insert so the recipe appears immediately in the UI
         let tempRecipe = Recipe(
             title: title,
             summary: summary,
@@ -427,120 +606,118 @@ final class SavedRecipesStore: ObservableObject {
             steps: steps,
             macros: macros,
             sources: sources,
-            isUserShared: true,
+            isUserShared: isUserShared,
             imageData: imageData,
-            cuisine: cuisine
+            cuisine: cuisine,
+            createdByName: currentUserNickname
         )
-        sharedRecipes.insert(tempRecipe, at: 0)
+        if isUserShared {
+            sharedRecipes.insert(tempRecipe, at: 0)
+        } else {
+            savedRecipes.insert(tempRecipe, at: 0)
+        }
 
-        Task {
-            guard let userId = getUserId() else {
-                sharedRecipes.removeAll { $0.id == tempRecipe.id }
-                return
+        do {
+            // Upload image if provided
+            var imagePath: String?
+            if let imageData {
+                let compressedData = compressImage(imageData)
+                let fileName = "\(userId.uuidString.lowercased())/\(UUID().uuidString).jpg"
+                try await client.storage
+                    .from("recipe-images")
+                    .upload(fileName, data: compressedData, options: .init(contentType: "image/jpeg"))
+                imagePath = fileName
             }
 
-            do {
-                // Upload image if provided
-                var imagePath: String?
-                if let imageData {
-                    let compressedData = compressImage(imageData)
-                    let fileName = "\(userId.uuidString)/\(UUID().uuidString).jpg"
-                    try await client.storage
-                        .from("recipe-images")
-                        .upload(fileName, data: compressedData, options: .init(contentType: "image/jpeg"))
-                    imagePath = fileName
-                }
+            // Insert recipe row
+            let insert = RecipeInsert(
+                createdBy: userId,
+                title: title,
+                summary: summary,
+                timeMinutes: timeMinutes,
+                servings: servings,
+                steps: steps,
+                cuisine: cuisine.databaseValue,
+                isUserShared: isUserShared,
+                imagePath: imagePath,
+                calories: macros.calories,
+                proteinG: macros.proteinG,
+                carbsG: macros.carbsG,
+                fatG: macros.fatG,
+                dietType: dietType,
+                dietaryRestrictions: dietaryRestrictions,
+                isPublic: isPublic
+            )
 
-                // Insert recipe row
-                let insert = RecipeInsert(
-                    createdBy: userId,
-                    title: title,
-                    summary: summary,
-                    timeMinutes: timeMinutes,
-                    servings: servings,
-                    steps: steps,
-                    cuisine: cuisine.databaseValue,
-                    isUserShared: true,
-                    imagePath: imagePath,
-                    calories: macros.calories,
-                    proteinG: macros.proteinG,
-                    carbsG: macros.carbsG,
-                    fatG: macros.fatG
-                )
+            let insertedRows: [InsertedID] = try await client
+                .from("recipes")
+                .insert(insert)
+                .select("id")
+                .execute()
+                .value
 
-                let insertedRows: [RecipeRow] = try await client
-                    .from("recipes")
-                    .insert(insert)
-                    .select()
+            guard let insertedRow = insertedRows.first else {
+                throw NSError(domain: "SavedRecipesStore", code: 1, userInfo: [NSLocalizedDescriptionKey: "Insert succeeded but returned no ID."])
+            }
+
+            let recipeId = insertedRow.id
+
+            // Batch-insert ingredients
+            let ingredientInserts = ingredients.map { ingredient in
+                RecipeIngredientInsert(recipeId: recipeId, kind: "used", name: ingredient.name, quantity: ingredient.quantity)
+            }
+            if !ingredientInserts.isEmpty {
+                try await client.from("recipe_ingredients").insert(ingredientInserts).execute()
+            }
+
+            // Batch-insert source links
+            let sourceLinkInserts = sources.map { source in
+                SourceLinkInsert(recipeId: recipeId, title: source.title, url: source.url.absoluteString)
+            }
+            if !sourceLinkInserts.isEmpty {
+                try await client.from("source_links").insert(sourceLinkInserts).execute()
+            }
+
+            // Cookbook recipes need a saved_recipes entry so they appear in the cookbook
+            if !isUserShared {
+                try await client
+                    .from("saved_recipes")
+                    .insert(SavedRecipeInsert(userId: userId, recipeId: recipeId, category: nil))
                     .execute()
-                    .value
+            }
 
-                guard let insertedRow = insertedRows.first else {
-                    sharedRecipes.removeAll { $0.id == tempRecipe.id }
-                    return
-                }
-
-                let recipeId = insertedRow.id
-
-                // Batch-insert ingredients
-                let ingredientInserts = ingredients.map { ingredient in
-                    RecipeIngredientInsert(
-                        recipeId: recipeId,
-                        kind: "used",
-                        name: ingredient.name,
-                        quantity: ingredient.quantity
-                    )
-                }
-
-                if !ingredientInserts.isEmpty {
-                    try await client
-                        .from("recipe_ingredients")
-                        .insert(ingredientInserts)
-                        .execute()
-                }
-
-                // Batch-insert source links
-                let sourceLinkInserts = sources.map { source in
-                    SourceLinkInsert(
-                        recipeId: recipeId,
-                        title: source.title,
-                        url: source.url.absoluteString
-                    )
-                }
-
-                if !sourceLinkInserts.isEmpty {
-                    try await client
-                        .from("source_links")
-                        .insert(sourceLinkInserts)
-                        .execute()
-                }
-
-                // Replace temp recipe with server version
+            // Replace temp recipe with the confirmed server version
+            let serverRecipe = Recipe(
+                id: recipeId,
+                title: title,
+                summary: summary,
+                timeMinutes: timeMinutes,
+                servings: servings,
+                ingredientsUsed: ingredients,
+                missingIngredients: [],
+                steps: steps,
+                macros: macros,
+                sources: sources,
+                isUserShared: isUserShared,
+                imagePath: imagePath,
+                cuisine: cuisine,
+                createdBy: userId.uuidString,
+                createdByName: currentUserNickname
+            )
+            if isUserShared {
                 if let index = sharedRecipes.firstIndex(where: { $0.id == tempRecipe.id }) {
-                    var serverRecipe = tempRecipe
-                    serverRecipe = Recipe(
-                        id: recipeId,
-                        title: title,
-                        summary: summary,
-                        timeMinutes: timeMinutes,
-                        servings: servings,
-                        ingredientsUsed: ingredients,
-                        missingIngredients: [],
-                        steps: steps,
-                        macros: macros,
-                        sources: sources,
-                        isUserShared: true,
-                        imageData: imageData,
-                        cuisine: cuisine,
-                        createdBy: userId.uuidString
-                    )
                     sharedRecipes[index] = serverRecipe
                 }
-            } catch {
-                // Rollback optimistic insert
-                sharedRecipes.removeAll { $0.id == tempRecipe.id }
-                self.error = error.localizedDescription
+            } else {
+                if let index = savedRecipes.firstIndex(where: { $0.id == tempRecipe.id }) {
+                    savedRecipes[index] = serverRecipe
+                }
             }
+        } catch {
+            // Rollback the optimistic insert and re-throw so the caller can show the error
+            if isUserShared { sharedRecipes.removeAll { $0.id == tempRecipe.id } }
+            else { savedRecipes.removeAll { $0.id == tempRecipe.id } }
+            throw error
         }
     }
 
@@ -550,51 +727,57 @@ final class SavedRecipesStore: ObservableObject {
         savedRecipes.contains(where: { $0.id == recipe.id })
     }
 
-    func toggleSaved(_ recipe: Recipe) {
-        if let index = savedRecipes.firstIndex(where: { $0.id == recipe.id }) {
-            // Optimistic remove
-            let removed = savedRecipes.remove(at: index)
+    func saveRecipe(_ recipe: Recipe, category: String? = nil) {
+        guard !isSaved(recipe) else { return }
 
-            Task {
-                guard let userId = getUserId() else {
-                    savedRecipes.insert(removed, at: min(index, savedRecipes.count))
-                    return
-                }
+        savedRecipes.insert(recipe, at: 0)
+        if let category { savedRecipeCategories[recipe.id] = category }
 
-                do {
-                    try await client
-                        .from("saved_recipes")
-                        .delete()
-                        .eq("user_id", value: userId.uuidString)
-                        .eq("recipe_id", value: recipe.id.uuidString)
-                        .execute()
-                } catch {
-                    // Rollback
-                    savedRecipes.insert(removed, at: min(index, savedRecipes.count))
-                    self.error = error.localizedDescription
-                }
+        Task {
+            guard let userId = getUserId() else {
+                savedRecipes.removeAll { $0.id == recipe.id }
+                savedRecipeCategories.removeValue(forKey: recipe.id)
+                return
             }
-        } else {
-            // Optimistic add
-            savedRecipes.insert(recipe, at: 0)
 
-            Task {
-                guard let userId = getUserId() else {
-                    savedRecipes.removeAll { $0.id == recipe.id }
-                    return
-                }
+            do {
+                let insert = SavedRecipeInsert(userId: userId, recipeId: recipe.id, category: category)
+                try await client
+                    .from("saved_recipes")
+                    .insert(insert)
+                    .execute()
+            } catch {
+                savedRecipes.removeAll { $0.id == recipe.id }
+                savedRecipeCategories.removeValue(forKey: recipe.id)
+                self.error = error.localizedDescription
+            }
+        }
+    }
 
-                do {
-                    let insert = SavedRecipeInsert(userId: userId, recipeId: recipe.id)
-                    try await client
-                        .from("saved_recipes")
-                        .insert(insert)
-                        .execute()
-                } catch {
-                    // Rollback
-                    savedRecipes.removeAll { $0.id == recipe.id }
-                    self.error = error.localizedDescription
-                }
+    func unsaveRecipe(_ recipe: Recipe) {
+        guard let index = savedRecipes.firstIndex(where: { $0.id == recipe.id }) else { return }
+
+        let removed = savedRecipes.remove(at: index)
+        let removedCategory = savedRecipeCategories.removeValue(forKey: recipe.id)
+
+        Task {
+            guard let userId = getUserId() else {
+                savedRecipes.insert(removed, at: min(index, savedRecipes.count))
+                if let removedCategory { savedRecipeCategories[recipe.id] = removedCategory }
+                return
+            }
+
+            do {
+                try await client
+                    .from("saved_recipes")
+                    .delete()
+                    .eq("user_id", value: userId.uuidString)
+                    .eq("recipe_id", value: recipe.id.uuidString)
+                    .execute()
+            } catch {
+                savedRecipes.insert(removed, at: min(index, savedRecipes.count))
+                if let removedCategory { savedRecipeCategories[recipe.id] = removedCategory }
+                self.error = error.localizedDescription
             }
         }
     }
@@ -606,23 +789,24 @@ final class SavedRecipesStore: ObservableObject {
         let trimmedReview = review?.trimmingCharacters(in: .whitespacesAndNewlines)
         let finalReview = (trimmedReview?.isEmpty ?? true) ? nil : trimmedReview
 
-        // Optimistic local update
-        let previousSharedIndex = sharedRecipes.firstIndex(where: { $0.id == recipe.id })
-        let previousSharedRating = previousSharedIndex.map { sharedRecipes[$0].rating }
-        let previousSharedReview = previousSharedIndex.map { sharedRecipes[$0].review }
-
-        let previousSavedIndex = savedRecipes.firstIndex(where: { $0.id == recipe.id })
-        let previousSavedRating = previousSavedIndex.map { savedRecipes[$0].rating }
-        let previousSavedReview = previousSavedIndex.map { savedRecipes[$0].review }
-
-        if let index = previousSharedIndex {
-            sharedRecipes[index].rating = clamped
-            sharedRecipes[index].review = finalReview
+        // Snapshot previous state for rollback
+        struct Snapshot {
+            let index: Int
+            let userRating: Double?
+            let review: String?
         }
-        if let index = previousSavedIndex {
-            savedRecipes[index].rating = clamped
-            savedRecipes[index].review = finalReview
+
+        func applyRating(on recipes: inout [Recipe]) -> Snapshot? {
+            guard let idx = recipes.firstIndex(where: { $0.id == recipe.id }) else { return nil }
+            let snap = Snapshot(index: idx, userRating: recipes[idx].userRating, review: recipes[idx].review)
+            recipes[idx].userRating = clamped
+            recipes[idx].review = finalReview
+            return snap
         }
+
+        let sharedSnap = applyRating(on: &sharedRecipes)
+        let savedSnap = applyRating(on: &savedRecipes)
+        let communitySnap = applyRating(on: &communityRecipes)
 
         Task {
             guard let userId = getUserId() else { return }
@@ -640,14 +824,14 @@ final class SavedRecipesStore: ObservableObject {
                     .execute()
             } catch {
                 // Rollback
-                if let index = previousSharedIndex, let prevRating = previousSharedRating {
-                    sharedRecipes[index].rating = prevRating
-                    sharedRecipes[index].review = previousSharedReview ?? nil
+                func rollback(on recipes: inout [Recipe], snap: Snapshot?) {
+                    guard let snap else { return }
+                    recipes[snap.index].userRating = snap.userRating
+                    recipes[snap.index].review = snap.review
                 }
-                if let index = previousSavedIndex, let prevRating = previousSavedRating {
-                    savedRecipes[index].rating = prevRating
-                    savedRecipes[index].review = previousSavedReview ?? nil
-                }
+                rollback(on: &sharedRecipes, snap: sharedSnap)
+                rollback(on: &savedRecipes, snap: savedSnap)
+                rollback(on: &communityRecipes, snap: communitySnap)
                 self.error = error.localizedDescription
             }
         }

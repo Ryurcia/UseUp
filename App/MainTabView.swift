@@ -1,5 +1,12 @@
 import SwiftUI
 
+struct HideTabBarKey: PreferenceKey {
+    static var defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) {
+        value = value || nextValue()
+    }
+}
+
 #Preview("Main Tabs") {
     PreviewContainer {
         MainTabView(recipeGenerator: previewRecipeGenerator)
@@ -9,111 +16,85 @@ import SwiftUI
 enum Tab: Int, CaseIterable {
     case pantry = 0
     case recipes = 1
-    case profile = 2
+    case generate = 2
+    case cookbook = 3
 
     var title: String {
         switch self {
         case .pantry: return "Pantry"
         case .recipes: return "Recipes"
-        case .profile: return "Profile"
+        case .generate: return "Generate"
+        case .cookbook: return "Cookbook"
         }
     }
 
-    var iconPath: String {
+    var iconPath: String? {
         switch self {
         case .pantry: return TabIconPath.pantry
         case .recipes: return TabIconPath.recipe
-        case .profile: return TabIconPath.profile
+        case .generate: return nil
+        case .cookbook: return nil
         }
     }
-}
 
-struct AddButtonFramePreferenceKey: PreferenceKey {
-    static var defaultValue: CGRect = .zero
-    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
-        value = nextValue()
+    var systemImage: String? {
+        switch self {
+        case .generate: return "bolt.fill"
+        case .cookbook: return "book.fill"
+        default: return nil
+        }
     }
 }
 
 struct MainTabView: View {
     let recipeGenerator: RecipeGenerating
-    @EnvironmentObject private var session: AppSession
     @State private var selectedTab: Tab = .pantry
     @State private var slideDirection: Edge = .trailing
-    @State private var showGenerate = false
-    @State private var requestPantryAdd = false
-    @State private var addMenuExpanded = false
-    @State private var addButtonFrame: CGRect = .zero
+    @State private var pantryPath = NavigationPath()
+    @State private var recipesPath = NavigationPath()
+    @State private var generatePath = NavigationPath()
+    @State private var cookbookPath = NavigationPath()
+    @State private var hideTabBar = false
 
     var body: some View {
         ZStack {
-            // Content – keep all tabs alive to preserve scroll position & state
             ZStack {
-                NavigationStack { PantryView(requestAddSheet: $requestPantryAdd) }
+                NavigationStack(path: $pantryPath) { PantryView() }
                     .opacity(selectedTab == .pantry ? 1 : 0)
                     .allowsHitTesting(selectedTab == .pantry)
 
-                NavigationStack { RecipesView() }
+                NavigationStack(path: $recipesPath) { RecipesView() }
                     .opacity(selectedTab == .recipes ? 1 : 0)
                     .allowsHitTesting(selectedTab == .recipes)
 
-                NavigationStack { ProfileView() }
-                    .opacity(selectedTab == .profile ? 1 : 0)
-                    .allowsHitTesting(selectedTab == .profile)
+                NavigationStack(path: $generatePath) { GenerateView(recipeGenerator: recipeGenerator) }
+                    .opacity(selectedTab == .generate ? 1 : 0)
+                    .allowsHitTesting(selectedTab == .generate)
+
+                NavigationStack(path: $cookbookPath) { CookbookView(onGenerateTapped: { selectedTab = .generate }) }
+                    .opacity(selectedTab == .cookbook ? 1 : 0)
+                    .allowsHitTesting(selectedTab == .cookbook)
             }
+            .onChange(of: selectedTab) { _, _ in
+                pantryPath = NavigationPath()
+                recipesPath = NavigationPath()
+                generatePath = NavigationPath()
+                cookbookPath = NavigationPath()
+            }
+            .onPreferenceChange(HideTabBarKey.self) { hideTabBar = $0 }
             .safeAreaInset(edge: .bottom) {
-                Color.clear.frame(height: 80)
+                if !hideTabBar {
+                    Color.clear.frame(height: 80)
+                }
             }
 
-            // Dismiss scrim when expanded
-            if addMenuExpanded {
-                Color.black.opacity(0.01)
-                    .ignoresSafeArea()
-                    .onTapGesture {
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
-                            addMenuExpanded = false
-                        }
-                    }
-            }
-
-            // Tab bar
-            VStack {
-                Spacer()
-                FloatingTabBar(
-                    selectedTab: $selectedTab,
-                    slideDirection: $slideDirection,
-                    expanded: $addMenuExpanded,
-                    onAddToPantry: {
-                        addMenuExpanded = false
-                        selectedTab = .pantry
-                        requestPantryAdd = true
-                    },
-                    onGenerate: {
-                        addMenuExpanded = false
-                        showGenerate = true
-                    }
-                )
-            }
-        }
-        .coordinateSpace(name: "mainTab")
-        .onPreferenceChange(AddButtonFramePreferenceKey.self) { frame in
-            addButtonFrame = frame
-        }
-        .overlay {
-            if session.tutorialStep > 0 && addButtonFrame != .zero {
-                TutorialOverlayView(
-                    addButtonFrame: addButtonFrame,
-                    onDismiss: { session.dismissTutorial() }
-                )
-                .transition(.opacity)
-            }
-        }
-        .sheet(isPresented: $showGenerate) {
-            NavigationStack {
-                GenerateView(recipeGenerator: recipeGenerator) {
-                    showGenerate = false
-                    selectedTab = .pantry
-                    requestPantryAdd = true
+            if !hideTabBar {
+                VStack {
+                    Spacer()
+                    FloatingTabBar(
+                        selectedTab: $selectedTab,
+                        slideDirection: $slideDirection
+                    )
                 }
             }
         }
@@ -125,145 +106,35 @@ struct MainTabView: View {
 private struct FloatingTabBar: View {
     @Binding var selectedTab: Tab
     @Binding var slideDirection: Edge
-    @Binding var expanded: Bool
-    var onAddToPantry: () -> Void
-    var onGenerate: () -> Void
+
     var body: some View {
-        HStack(spacing: DS.Spacing.space3) {
-            if expanded {
-                expandedContent
-                    .transition(.opacity.combined(with: .scale(scale: 0.92)))
-            } else {
-                collapsedContent
-                    .transition(.opacity.combined(with: .scale(scale: 0.92)))
-            }
-        }
-        .padding(.horizontal, DS.Spacing.space5)
-        .padding(.bottom, DS.Spacing.space2)
-    }
-
-    // MARK: - Collapsed (normal tab bar)
-
-    private var collapsedContent: some View {
-        HStack(spacing: DS.Spacing.space3) {
-            // Tab pill
-            HStack(spacing: 0) {
-                ForEach(Tab.allCases, id: \.self) { tab in
-                    TabBarButton(
-                        tab: tab,
-                        isSelected: selectedTab == tab
-                    ) {
-                        slideDirection = tab.rawValue > selectedTab.rawValue ? .trailing : .leading
-                        withAnimation(.easeInOut(duration: 0.25)) {
-                            selectedTab = tab
-                        }
+        HStack(spacing: 0) {
+            ForEach(Tab.allCases, id: \.self) { tab in
+                TabBarButton(
+                    tab: tab,
+                    isSelected: selectedTab == tab
+                ) {
+                    slideDirection = tab.rawValue > selectedTab.rawValue ? .trailing : .leading
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        selectedTab = tab
                     }
                 }
             }
-            .padding(.vertical, DS.Spacing.space2)
-            .padding(.horizontal, DS.Spacing.space5)
-            .background(
-                Capsule()
-                    .fill(.ultraThinMaterial)
-                    .shadow(color: .black.opacity(0.08), radius: 16, x: 0, y: 4)
-                    .shadow(color: .black.opacity(0.04), radius: 2, x: 0, y: 1)
-            )
-            .overlay(
-                Capsule()
-                    .stroke(DS.ColorToken.borderDefault.opacity(0.3), lineWidth: 0.5)
-            )
-
-            // Add button
-            Button {
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
-                    expanded = true
-                }
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 26, weight: .medium))
-                    .foregroundStyle(.white)
-                    .frame(width: 56, height: 56)
-                    .background(
-                        Circle()
-                            .fill(DS.ColorToken.accent)
-                            .shadow(color: DS.ColorToken.accent.opacity(0.3), radius: 8, x: 0, y: 4)
-                    )
-            }
-            .background(
-                GeometryReader { geo in
-                    Color.clear
-                        .preference(
-                            key: AddButtonFramePreferenceKey.self,
-                            value: geo.frame(in: .global)
-                        )
-                }
-            )
         }
-    }
-
-    // MARK: - Expanded (action options)
-
-    private var expandedContent: some View {
-        HStack(spacing: DS.Spacing.space3) {
-            // Action pill
-            HStack(spacing: 0) {
-                AddMenuButton(icon: "refrigerator.fill", label: "Add to Pantry", action: onAddToPantry)
-                AddMenuButton(icon: "wand.and.stars", label: "Generate Recipe", action: onGenerate)
-            }
-            .padding(.vertical, DS.Spacing.space2)
-            .padding(.horizontal, DS.Spacing.space5)
-            .background(
-                Capsule()
-                    .fill(.ultraThinMaterial)
-                    .shadow(color: .black.opacity(0.08), radius: 16, x: 0, y: 4)
-                    .shadow(color: .black.opacity(0.04), radius: 2, x: 0, y: 1)
-            )
-            .overlay(
-                Capsule()
-                    .stroke(DS.ColorToken.borderDefault.opacity(0.3), lineWidth: 0.5)
-            )
-
-            // Close button
-            Button {
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
-                    expanded = false
-                }
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 20, weight: .medium))
-                    .foregroundStyle(.white)
-                    .frame(width: 56, height: 56)
-                    .background(
-                        Circle()
-                            .fill(DS.ColorToken.textSecondary)
-                            .shadow(color: .black.opacity(0.15), radius: 8, x: 0, y: 4)
-                    )
-            }
-        }
-    }
-}
-
-// MARK: - Add Menu Button
-
-private struct AddMenuButton: View {
-    let icon: String
-    let label: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(.system(size: 20))
-
-                Text(label)
-                    .font(.custom("Satoshi Variable", size: 11))
-            }
-            .foregroundStyle(DS.ColorToken.textPrimary)
-            .frame(maxWidth: .infinity)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
+        .padding(.vertical, DS.Spacing.space2)
+        .padding(.horizontal, DS.Spacing.space5)
+        .background(
+            Capsule()
+                .fill(.ultraThinMaterial)
+                .shadow(color: .black.opacity(0.08), radius: 16, x: 0, y: 4)
+                .shadow(color: .black.opacity(0.04), radius: 2, x: 0, y: 1)
+        )
+        .overlay(
+            Capsule()
+                .stroke(DS.ColorToken.borderDefault.opacity(0.3), lineWidth: 0.5)
+        )
+        .padding(.horizontal, DS.Spacing.space5)
+        .padding(.bottom, DS.Spacing.space2)
     }
 }
 
@@ -277,7 +148,12 @@ private struct TabBarButton: View {
     var body: some View {
         Button(action: action) {
             VStack(spacing: 4) {
-                SVGIcon(tab.iconPath, size: 22)
+                if let iconPath = tab.iconPath {
+                    SVGIcon(iconPath, size: 22)
+                } else if let systemImage = tab.systemImage {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 20))
+                }
 
                 Text(tab.title)
                     .font(.custom("Satoshi Variable", size: 11).weight(isSelected ? .bold : .regular))

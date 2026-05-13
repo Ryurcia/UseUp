@@ -9,6 +9,9 @@ struct Profile: Codable {
     var avatarPath: String?
     var dietaryPreference: String?
     var dietaryRestrictions: String?
+    var cookingSkillLevel: Int?
+    var subscriptionType: String?
+    var dietaryUpdatedAt: Date?
     var createdAt: Date?
     var updatedAt: Date?
 
@@ -19,6 +22,9 @@ struct Profile: Codable {
         case avatarPath = "avatar_path"
         case dietaryPreference = "dietary_preference"
         case dietaryRestrictions = "dietary_restrictions"
+        case cookingSkillLevel = "cooking_skill_level"
+        case subscriptionType = "subscription_type"
+        case dietaryUpdatedAt = "dietary_updated_at"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
@@ -49,10 +55,12 @@ protocol ProfileServicing {
     func isNicknameAvailable(_ nickname: String, excludingUserId: UUID?) async throws -> Bool
     func createProfile(nickname: String, displayName: String, userId: UUID) async throws -> Profile
     func updateNickname(_ nickname: String, userId: UUID) async throws -> Profile
-    func uploadAvatar(imageData: Data, userId: UUID, oldAvatarPath: String?) async throws -> String
+    func uploadAvatar(imageData: Data, userId: UUID) async throws -> String
     func fetchAvatarData(avatarPath: String) async throws -> Data
     func updateDietaryPreference(_ preference: String, userId: UUID) async throws -> Profile
     func updateDietaryRestrictions(_ restrictions: String, userId: UUID) async throws -> Profile
+    func updateDisplayName(_ displayName: String, userId: UUID) async throws -> Profile
+    func updateCookingSkillLevel(_ level: Int, userId: UUID) async throws -> Profile
 }
 
 final class SupabaseProfileService: ProfileServicing {
@@ -128,22 +136,16 @@ final class SupabaseProfileService: ProfileServicing {
         return updated
     }
 
-    func uploadAvatar(imageData: Data, userId: UUID, oldAvatarPath: String?) async throws -> String {
+    func uploadAvatar(imageData: Data, userId: UUID) async throws -> String {
         guard let compressedData = UIImage(data: imageData)?.jpegData(compressionQuality: 0.7) else {
             throw ProfileError.unknown("Failed to compress image.")
         }
 
-        // Delete old avatar if one exists
-        if let oldPath = oldAvatarPath, !oldPath.isEmpty {
-            _ = try? await client.storage.from("profile-photos").remove(paths: [oldPath])
-        }
-
-        let fileName = "\(userId.uuidString.lowercased())/\(UUID().uuidString.lowercased()).jpg"
+        let fileName = "\(userId.uuidString.lowercased())/avatar.jpg"
         try await client.storage
             .from("profile-photos")
-            .upload(fileName, data: compressedData, options: .init(contentType: "image/jpeg"))
+            .upload(fileName, data: compressedData, options: .init(contentType: "image/jpeg", upsert: true))
 
-        // Update avatar_path in profiles table
         try await client
             .from("profiles")
             .update(["avatar_path": fileName])
@@ -158,9 +160,10 @@ final class SupabaseProfileService: ProfileServicing {
     }
 
     func updateDietaryPreference(_ preference: String, userId: UUID) async throws -> Profile {
+        let now = ISO8601DateFormatter().string(from: Date())
         let rows: [Profile] = try await client
             .from("profiles")
-            .update(["dietary_preference": preference])
+            .update(["dietary_preference": preference, "dietary_updated_at": now])
             .eq("id", value: userId.uuidString)
             .select()
             .execute()
@@ -172,15 +175,44 @@ final class SupabaseProfileService: ProfileServicing {
     }
 
     func updateDietaryRestrictions(_ restrictions: String, userId: UUID) async throws -> Profile {
+        let now = ISO8601DateFormatter().string(from: Date())
         let rows: [Profile] = try await client
             .from("profiles")
-            .update(["dietary_restrictions": restrictions])
+            .update(["dietary_restrictions": restrictions, "dietary_updated_at": now])
             .eq("id", value: userId.uuidString)
             .select()
             .execute()
             .value
         guard let updated = rows.first else {
             throw ProfileError.unknown("Failed to save dietary restrictions.")
+        }
+        return updated
+    }
+
+    func updateDisplayName(_ displayName: String, userId: UUID) async throws -> Profile {
+        let rows: [Profile] = try await client
+            .from("profiles")
+            .update(["display_name": displayName])
+            .eq("id", value: userId.uuidString)
+            .select()
+            .execute()
+            .value
+        guard let updated = rows.first else {
+            throw ProfileError.unknown("Failed to save display name.")
+        }
+        return updated
+    }
+
+    func updateCookingSkillLevel(_ level: Int, userId: UUID) async throws -> Profile {
+        let rows: [Profile] = try await client
+            .from("profiles")
+            .update(["cooking_skill_level": level])
+            .eq("id", value: userId.uuidString)
+            .select()
+            .execute()
+            .value
+        guard let updated = rows.first else {
+            throw ProfileError.unknown("Failed to save cooking skill level.")
         }
         return updated
     }
@@ -203,7 +235,7 @@ final class MockProfileService: ProfileServicing {
         Profile(id: userId, nickname: nickname, updatedAt: Date())
     }
 
-    func uploadAvatar(imageData: Data, userId: UUID, oldAvatarPath: String?) async throws -> String {
+    func uploadAvatar(imageData: Data, userId: UUID) async throws -> String {
         "mock/avatar.jpg"
     }
 
@@ -217,5 +249,13 @@ final class MockProfileService: ProfileServicing {
 
     func updateDietaryRestrictions(_ restrictions: String, userId: UUID) async throws -> Profile {
         Profile(id: userId, nickname: "Chef", dietaryRestrictions: restrictions, updatedAt: Date())
+    }
+
+    func updateDisplayName(_ displayName: String, userId: UUID) async throws -> Profile {
+        Profile(id: userId, nickname: "Chef", displayName: displayName, updatedAt: Date())
+    }
+
+    func updateCookingSkillLevel(_ level: Int, userId: UUID) async throws -> Profile {
+        Profile(id: userId, nickname: "Chef", cookingSkillLevel: level, updatedAt: Date())
     }
 }

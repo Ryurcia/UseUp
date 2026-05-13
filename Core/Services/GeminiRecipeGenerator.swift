@@ -2,7 +2,7 @@ import Foundation
 
 final class GeminiRecipeGenerator: RecipeGenerating {
 
-    func generateRecipes(for ingredientNames: [String], options: GenerationOptions) async throws -> [Recipe] {
+    func generateRecipes(for ingredientNames: [String], options: GenerationOptions, recipeCount: Int = 3) async throws -> [Recipe] {
         let cleaned = ingredientNames
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
             .filter { !$0.isEmpty }
@@ -11,7 +11,7 @@ final class GeminiRecipeGenerator: RecipeGenerating {
             throw RecipeGenerationError.noIngredients
         }
 
-        let systemPrompt = RecipePromptBuilder.buildSystemPrompt()
+        let systemPrompt = RecipePromptBuilder.buildSystemPrompt(recipeCount: recipeCount)
         let userPrompt = RecipePromptBuilder.buildUserPrompt(ingredientNames: cleaned, options: options)
 
         let requestBody: [String: Any] = [
@@ -76,7 +76,7 @@ final class GeminiRecipeGenerator: RecipeGenerating {
             throw RecipeGenerationError.parsingError
         }
 
-        let recipes = aiResponse.recipes.map { $0.toRecipe() }
+        let recipes = aiResponse.recipes.prefix(recipeCount).map { $0.toRecipe() }
 
         guard !recipes.isEmpty else {
             throw RecipeGenerationError.emptyResponse

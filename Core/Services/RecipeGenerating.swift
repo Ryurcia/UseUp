@@ -1,7 +1,7 @@
 import Foundation
 
 protocol RecipeGenerating {
-    func generateRecipes(for ingredientNames: [String], options: GenerationOptions) async throws -> [Recipe]
+    func generateRecipes(for ingredientNames: [String], options: GenerationOptions, recipeCount: Int) async throws -> [Recipe]
 }
 
 enum RecipeGenerationError: LocalizedError {

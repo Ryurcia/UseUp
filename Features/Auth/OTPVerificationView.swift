@@ -22,7 +22,7 @@ struct OTPVerificationView: View {
             Spacer(minLength: 0)
 
             // Icon
-            Image(systemName: "message.badge")
+            Image(systemName: "checkmark.circle")
                 .font(.system(size: 48))
                 .foregroundStyle(DS.ColorToken.primary)
                 .padding(.bottom, DS.Spacing.space2)

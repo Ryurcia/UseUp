@@ -4,6 +4,7 @@ struct DietaryPreferenceOnboardingView: View {
     @EnvironmentObject private var session: AppSession
     let nickname: String
     let displayName: String
+    var onContinue: (() -> Void)?
 
     @State private var selectedDiet: GenerationOptions.DietType = .any
     @State private var selectedRestrictions: Set<GenerationOptions.DietaryRestriction> = []
@@ -121,17 +122,6 @@ struct DietaryPreferenceOnboardingView: View {
                 }
                 .buttonStyle(PrimaryButtonStyle(size: .lg, fullWidth: true))
                 .disabled(isLoading)
-
-                Button {
-                    completeOnboarding(diet: .any)
-                } label: {
-                    Text("Skip")
-                        .font(.custom("Satoshi Variable", size: 15).weight(.medium))
-                        .foregroundStyle(DS.ColorToken.textTertiary)
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.plain)
-                .disabled(isLoading)
             }
             .padding(.horizontal, DS.Spacing.space4)
             .padding(.bottom, DS.Spacing.space4)
@@ -144,8 +134,12 @@ struct DietaryPreferenceOnboardingView: View {
             isLoading = true
             await session.updateDietaryPreference(dietType: diet)
             await session.updateDietaryRestrictions(restrictions: selectedRestrictions)
-            await session.completeNicknameOnboarding(nickname: nickname, displayName: displayName)
             isLoading = false
+            if let onContinue {
+                onContinue()
+            } else {
+                await session.completeNicknameOnboarding(nickname: nickname, displayName: displayName)
+            }
         }
     }
 }

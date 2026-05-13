@@ -494,6 +494,79 @@ struct FlowLayout: Layout {
     }
 }
 
+// MARK: - Notification Bell Button
+
+struct NotificationBellButton: View {
+    @EnvironmentObject private var pantryStore: PantryStore
+    @State private var showNotifications = false
+
+    private var alertItems: [Ingredient] {
+        pantryStore.ingredients.filter { ingredient in
+            guard ingredient.expirationDate != nil else { return false }
+            guard !pantryStore.dismissedIngredientIds.contains(ingredient.id) else { return false }
+            if ingredient.isExpired { return true }
+            if let days = ingredient.daysUntilExpiration, days <= 5 { return true }
+            return false
+        }
+    }
+
+    var body: some View {
+        Button { showNotifications = true } label: {
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: alertItems.isEmpty ? "bell" : "bell.fill")
+                    .font(.system(size: 20))
+                    .foregroundStyle(alertItems.isEmpty ? DS.ColorToken.textTertiary : DS.ColorToken.textSecondary)
+
+                if !alertItems.isEmpty {
+                    Text("\(alertItems.count)")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(minWidth: 16, minHeight: 16)
+                        .background(DS.ColorToken.error)
+                        .clipShape(Circle())
+                        .offset(x: 6, y: -4)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .sheet(isPresented: $showNotifications) {
+            NotificationListView()
+        }
+    }
+}
+
+// MARK: - Profile Nav Button
+
+struct ProfileNavButton: View {
+    @EnvironmentObject private var session: AppSession
+    @State private var showProfile = false
+
+    var body: some View {
+        Button {
+            showProfile = true
+        } label: {
+            if let data = session.profileImageData,
+               let uiImage = UIImage(data: data) {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 28, height: 28)
+                    .clipShape(Circle())
+            } else {
+                Image(systemName: "person.circle.fill")
+                    .font(.system(size: 24))
+                    .foregroundStyle(DS.ColorToken.textTertiary)
+            }
+        }
+        .buttonStyle(.plain)
+        .sheet(isPresented: $showProfile) {
+            NavigationStack {
+                AccountSettingsView()
+            }
+        }
+    }
+}
+
 // MARK: - Tab Icon Path Data
 
 enum TabIconPath {

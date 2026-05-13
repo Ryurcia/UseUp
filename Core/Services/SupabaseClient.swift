@@ -3,7 +3,12 @@ import Foundation
 
 enum SupabaseManager {
     private static let supabaseURL = URL(string: "https://usycirewbjykxnwauaij.supabase.co")!
-    private static let supabaseAnonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVzeWNpcmV3Ymp5a3hud2F1YWlqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI4OTg4NzUsImV4cCI6MjA4ODQ3NDg3NX0.-wWtPfCqw7cExy7_xSc3J35KeFvN7LWtRDGah-qLsSg"
+    private static let supabaseAnonKey: String = {
+        guard let key = Bundle.main.infoDictionary?["SupabaseAnonKey"] as? String, !key.isEmpty else {
+            fatalError("SUPABASE_ANON_KEY not set in Secrets.xcconfig")
+        }
+        return key
+    }()
 
     static let client = SupabaseClient(
         supabaseURL: supabaseURL,

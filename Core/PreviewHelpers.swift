@@ -5,6 +5,7 @@ struct PreviewContainer<Content: View>: View {
     @StateObject private var session: AppSession
     @StateObject private var pantryStore: PantryStore
     @StateObject private var savedRecipesStore: SavedRecipesStore
+    @StateObject private var activityStore: UserActivityStore
     let content: () -> Content
 
     init(
@@ -23,6 +24,7 @@ struct PreviewContainer<Content: View>: View {
 
         _session = StateObject(wrappedValue: session)
         _pantryStore = StateObject(wrappedValue: PantryStore())
+        _activityStore = StateObject(wrappedValue: UserActivityStore())
         _savedRecipesStore = StateObject(wrappedValue: SavedRecipesStore(
             savedRecipes: DummyData.sampleSavedRecipes,
             sharedRecipes: DummyData.sampleSharedRecipes,
@@ -36,6 +38,7 @@ struct PreviewContainer<Content: View>: View {
             .environmentObject(session)
             .environmentObject(pantryStore)
             .environmentObject(savedRecipesStore)
+            .environmentObject(activityStore)
     }
 }
 

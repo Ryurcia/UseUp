@@ -202,7 +202,7 @@ struct ProfileOnboardingContainerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            OnboardingProgressBar(progress: Double(currentStep) / 2.0)
+            OnboardingProgressBar(progress: Double(currentStep) / 3.0)
                 .padding(.horizontal, DS.Spacing.space4)
                 .padding(.top, DS.Spacing.space3)
 
@@ -218,8 +218,19 @@ struct ProfileOnboardingContainerView: View {
                         }
                     )
                     .transition(.push(from: .trailing))
-                } else {
+                } else if currentStep == 2 {
                     DietaryPreferenceOnboardingView(
+                        nickname: username,
+                        displayName: displayName,
+                        onContinue: {
+                            withAnimation(.easeInOut(duration: 0.3)) {
+                                currentStep = 3
+                            }
+                        }
+                    )
+                    .transition(.push(from: .trailing))
+                } else {
+                    CookingSkillOnboardingView(
                         nickname: username,
                         displayName: displayName
                     )

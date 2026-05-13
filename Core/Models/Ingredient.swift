@@ -19,6 +19,7 @@ struct Ingredient: Identifiable, Hashable {
 
     enum Category: String, CaseIterable, Identifiable {
         case proteins
+        case produce
         case vegetables
         case carbs
         case dairy
@@ -31,6 +32,7 @@ struct Ingredient: Identifiable, Hashable {
         var title: String {
             switch self {
             case .proteins: return "Proteins"
+            case .produce: return "Produce"
             case .vegetables: return "Vegetables"
             case .carbs: return "Carbs"
             case .dairy: return "Dairy"
@@ -43,6 +45,7 @@ struct Ingredient: Identifiable, Hashable {
         var icon: String {
             switch self {
             case .proteins: return "fish"
+            case .produce: return "carrot"
             case .vegetables: return "leaf"
             case .carbs: return "birthday.cake"
             case .dairy: return "cup.and.saucer"

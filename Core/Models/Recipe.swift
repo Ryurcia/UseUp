@@ -15,6 +15,13 @@ enum Cuisine: String, CaseIterable, Identifiable, Hashable {
     case mexican = "Mexican"
     case middleEastern = "Middle Eastern"
     case thai = "Thai"
+    case spanish = "Spanish"
+    case vietnamese = "Vietnamese"
+    case brazilian = "Brazilian"
+    case ethiopian = "Ethiopian"
+    case turkish = "Turkish"
+    case peruvian = "Peruvian"
+    case caribbean = "Caribbean"
     case other = "Other"
 
     var id: String { rawValue }
@@ -52,7 +59,10 @@ struct Recipe: Identifiable, Hashable {
     var createdBy: String?
     var createdByName: String?
     var rating: Double
+    var userRating: Double?
     var review: String?
+    var dietType: String
+    var dietaryRestrictions: [String]
     var isAIGenerated: Bool
 
     init(
@@ -73,7 +83,10 @@ struct Recipe: Identifiable, Hashable {
         createdBy: String? = nil,
         createdByName: String? = nil,
         rating: Double = 0,
+        userRating: Double? = nil,
         review: String? = nil,
+        dietType: String = "any",
+        dietaryRestrictions: [String] = [],
         isAIGenerated: Bool = false
     ) {
         self.id = id
@@ -93,7 +106,10 @@ struct Recipe: Identifiable, Hashable {
         self.createdBy = createdBy
         self.createdByName = createdByName
         self.rating = rating
+        self.userRating = userRating
         self.review = review
+        self.dietType = dietType
+        self.dietaryRestrictions = dietaryRestrictions
         self.isAIGenerated = isAIGenerated
     }
 }

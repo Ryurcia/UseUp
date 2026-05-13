@@ -1,238 +1,125 @@
 import SwiftUI
+import RevenueCatUI
+import UserNotifications
 
-#Preview("Profile") {
+#Preview("Account Settings") {
     PreviewContainer {
         NavigationStack {
-            ProfileView()
+            AccountSettingsView()
         }
     }
 }
 
-private enum StatPeriod: String, CaseIterable {
-    case week = "Week"
-    case month = "Month"
-    case year = "Year"
-}
+// MARK: - Settings
 
-struct ProfileView: View {
+struct SettingsView: View {
     @EnvironmentObject private var session: AppSession
-    @State private var selectedPeriod: StatPeriod = .week
-
-    private var profileDisplayName: String {
-        if let name = session.currentUserDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !name.isEmpty {
-            return name
-        }
-        if let nickname = session.currentUserNickname?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !nickname.isEmpty {
-            return nickname
-        }
-        return "Guest"
-    }
-
-    private var statsForPeriod: (foodSaved: String, recipesCooked: String, wastePrevented: String) {
-        switch selectedPeriod {
-        case .week: return ("4 items", "3 recipes", "0.8 kg")
-        case .month: return ("12 items", "8 recipes", "2.4 kg")
-        case .year: return ("87 items", "52 recipes", "18.6 kg")
-        }
-    }
+    @State private var notificationsAuthorized = false
+    @State private var showClearCacheAlert = false
 
     var body: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(spacing: DS.Spacing.space5) {
-                // Header
-                VStack(spacing: DS.Spacing.space2) {
-                    if let data = session.profileImageData,
-                       let uiImage = UIImage(data: data) {
-                        Image(uiImage: uiImage)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: 80, height: 80)
-                            .clipShape(Circle())
-                    } else {
-                        Image(systemName: "person.circle.fill")
-                            .font(.system(size: 64))
-                            .foregroundStyle(DS.ColorToken.accent)
-                    }
-
-                    Text(profileDisplayName)
-                        .font(.custom("CalSans-Regular", size: 28))
-                        .foregroundStyle(DS.ColorToken.textPrimary)
-
-                    if let nickname = session.currentUserNickname?.trimmingCharacters(in: .whitespacesAndNewlines),
-                       !nickname.isEmpty {
-                        Text("@\(nickname)")
-                            .font(.custom("Satoshi Variable", size: 15).weight(.medium))
-                            .foregroundStyle(DS.ColorToken.textSecondary)
-                    }
-
-
-                    NavigationLink {
-                        EditProfileView()
-                    } label: {
-                        HStack(spacing: DS.Spacing.space1) {
-                            Image(systemName: "pencil")
-                                .font(.system(size: 12, weight: .semibold))
-                            Text("Edit Profile")
-                                .font(.custom("Satoshi Variable", size: 14).weight(.medium))
-                        }
-                        .foregroundStyle(DS.ColorToken.primary)
-                        .padding(.horizontal, DS.Spacing.space4)
-                        .frame(height: 36)
-                        .background(DS.ColorToken.bgSecondary)
-                        .overlay(
-                            Capsule()
-                                .stroke(DS.ColorToken.primary.opacity(0.3), lineWidth: 1)
-                        )
-                        .clipShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.top, DS.Spacing.space1)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.top, DS.Spacing.space6)
-
-                // Stats section
-                VStack(spacing: DS.Spacing.space3) {
-                    // Period toggle
-                    HStack(spacing: 0) {
-                        ForEach(StatPeriod.allCases, id: \.self) { period in
-                            Button {
-                                withAnimation(.easeInOut(duration: 0.2)) {
-                                    selectedPeriod = period
-                                }
-                            } label: {
-                                Text(period.rawValue)
-                                    .font(.custom("Satoshi Variable", size: 14).weight(selectedPeriod == period ? .bold : .regular))
-                                    .foregroundStyle(
-                                        selectedPeriod == period
-                                            ? DS.ColorToken.accent
-                                            : DS.ColorToken.textTertiary
-                                    )
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, DS.Spacing.space2)
-                                    .background(
-                                        selectedPeriod == period
-                                            ? DS.ColorToken.accentLight
-                                            : Color.clear
-                                    )
-                                    .clipShape(Capsule())
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(DS.Spacing.space1)
-                    .background(DS.ColorToken.bgSecondary)
-                    .clipShape(Capsule())
-                    .overlay(
-                        Capsule()
-                            .stroke(DS.ColorToken.borderDefault, lineWidth: 0.5)
-                    )
-
-                    // Stats cards
-                    HStack(spacing: DS.Spacing.space3) {
-                        statCard(value: statsForPeriod.foodSaved, label: "Food Saved", icon: "leaf.fill", color: DS.ColorToken.accent)
-                        statCard(value: statsForPeriod.recipesCooked, label: "Recipes Cooked", icon: "fork.knife", color: DS.ColorToken.primary)
-                        statCard(value: statsForPeriod.wastePrevented, label: "Waste Prevented", icon: "arrow.3.trianglepath", color: DS.ColorToken.ocean)
-                    }
-                }
-
-                // Backend status card
-                profileSection(header: "Backend Status") {
-                    HStack(spacing: DS.Spacing.space3) {
-                        Image(systemName: "antenna.radiowaves.left.and.right.slash")
-                            .font(.system(size: 18))
-                            .foregroundStyle(DS.ColorToken.warning)
-                            .frame(width: 24)
-
-                        Text("Supabase and live AI generation are not connected yet.")
-                            .appTextStyle(.bodySM)
-                            .foregroundStyle(DS.ColorToken.textSecondary)
-                    }
-                    .padding(DS.Spacing.space4)
-                }
-
+        Form {
+            Section("Appearance") {
+                Toggle("Dark Mode", isOn: $session.isDarkMode)
             }
-            .padding(.horizontal, DS.Spacing.space5)
-            .padding(.top, DS.Spacing.space3)
-            .padding(.bottom, DS.Spacing.space24)
-        }
-        .background(DS.ColorToken.bgPrimary)
-        .toolbar(.hidden, for: .navigationBar)
-    }
 
-    private func statCard(value: String, label: String, icon: String, color: Color) -> some View {
-        VStack(spacing: DS.Spacing.space2) {
-            Image(systemName: icon)
-                .font(.system(size: 18))
-                .foregroundStyle(color)
+            Section("Notifications") {
+                Toggle("Expiration Reminders", isOn: Binding(
+                    get: { notificationsAuthorized },
+                    set: { _ in handleNotificationToggle() }
+                ))
+            }
 
-            Text(value)
-                .font(.custom("Satoshi Variable", size: 16).weight(.semibold))
+            Section("Cache") {
+                Button("Clear Image Cache") {
+                    showClearCacheAlert = true
+                }
                 .foregroundStyle(DS.ColorToken.textPrimary)
-
-            Text(label)
-                .appTextStyle(.caption)
-                .foregroundStyle(DS.ColorToken.textTertiary)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, DS.Spacing.space4)
-        .background(DS.ColorToken.bgSecondary)
-        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous)
-                .stroke(DS.ColorToken.borderDefault, lineWidth: 0.5)
-        )
-    }
-
-    @ViewBuilder
-    private func profileSection<Content: View>(header: String?, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.space2) {
-            if let header {
-                Text(header)
-                    .appTextStyle(.overline)
-                    .foregroundStyle(DS.ColorToken.textTertiary)
-                    .padding(.leading, DS.Spacing.space1)
             }
 
-            content()
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(DS.ColorToken.bgSecondary)
-                .overlay(
-                    RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous)
-                        .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous))
+            Section {
+                Button {
+                    session.signOut()
+                } label: {
+                    Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+                        .foregroundStyle(DS.ColorToken.error)
+                }
+            }
+        }
+        .navigationTitle("Settings")
+        .alert("Clear Image Cache", isPresented: $showClearCacheAlert) {
+            Button("Clear", role: .destructive) {
+                RecipeImageCache.shared.clear()
+                RecipeImageDiskCache.clear()
+                AvatarCache.clear()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("All cached images will be removed and re-downloaded when needed.")
+        }
+        .task { await refreshNotificationStatus() }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            Task { await refreshNotificationStatus() }
         }
     }
 
+    private func refreshNotificationStatus() async {
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        notificationsAuthorized = settings.authorizationStatus == .authorized
+    }
+
+    private func handleNotificationToggle() {
+        Task {
+            let center = UNUserNotificationCenter.current()
+            let settings = await center.notificationSettings()
+
+            if settings.authorizationStatus == .notDetermined {
+                let granted = (try? await center.requestAuthorization(options: [.alert, .badge, .sound])) ?? false
+                notificationsAuthorized = granted
+            } else if let url = URL(string: UIApplication.openNotificationSettingsURLString) {
+                await UIApplication.shared.open(url)
+            }
+        }
+    }
 }
 
-// MARK: - Edit Profile
+// MARK: - Account Settings
 
-struct EditProfileView: View {
+struct AccountSettingsView: View {
     @EnvironmentObject private var session: AppSession
-    @Environment(\.dismiss) private var dismiss
+
+    // Profile editing state
     @State private var nicknameText = ""
+    @State private var displayNameText = ""
     @State private var selectedDietType: GenerationOptions.DietType = .any
     @State private var selectedRestrictions: Set<GenerationOptions.DietaryRestriction> = []
+    @State private var selectedSkillLevel: Int = 1
     @State private var showImagePicker = false
     @State private var selectedImage: UIImage?
     @State private var isSaving = false
 
+    // Account state
+    @State private var showPaywall = false
+    @State private var showCustomerCenter = false
+
     private var nicknameChanged: Bool {
-        let cleaned = nicknameText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return cleaned != (session.currentUserNickname ?? "")
+        nicknameText.trimmingCharacters(in: .whitespacesAndNewlines) != (session.currentUserNickname ?? "")
     }
 
-    private var dietChanged: Bool {
-        selectedDietType != session.currentUserDietaryPreference
+    private var displayNameChanged: Bool {
+        displayNameText.trimmingCharacters(in: .whitespacesAndNewlines) != (session.currentUserDisplayName ?? "")
     }
 
-    private var restrictionsChanged: Bool {
-        selectedRestrictions != session.currentUserDietaryRestrictions
+    private var dietaryCooldownDaysRemaining: Int? {
+        guard let updatedAt = session.dietaryUpdatedAt else { return nil }
+        let daysSince = Calendar.current.dateComponents([.day], from: updatedAt, to: Date()).day ?? 0
+        let remaining = 15 - daysSince
+        return remaining > 0 ? remaining : nil
+    }
+
+    private var dietaryCooldownMessage: String? {
+        guard let remaining = dietaryCooldownDaysRemaining else { return nil }
+        return "You can change your diet & restrictions again in \(remaining) day\(remaining == 1 ? "" : "s")."
     }
 
     private var cooldownMessage: String? {
@@ -243,14 +130,22 @@ struct EditProfileView: View {
         return "You can change your nickname again in \(remaining) day\(remaining == 1 ? "" : "s")."
     }
 
+    private var hasChanges: Bool {
+        selectedImage != nil
+        || nicknameChanged
+        || displayNameChanged
+        || selectedDietType != session.currentUserDietaryPreference
+        || selectedRestrictions != session.currentUserDietaryRestrictions
+        || selectedSkillLevel != session.currentUserCookingSkillLevel
+    }
+
     var body: some View {
-        ScrollView {
+        ScrollView(showsIndicators: false) {
             VStack(spacing: DS.Spacing.space6) {
-                // Profile picture
+
+                // MARK: Profile Picture
                 VStack(spacing: DS.Spacing.space3) {
-                    Button {
-                        showImagePicker = true
-                    } label: {
+                    Button { showImagePicker = true } label: {
                         ZStack(alignment: .bottomTrailing) {
                             if let selectedImage {
                                 Image(uiImage: selectedImage)
@@ -278,10 +173,7 @@ struct EditProfileView: View {
                                 .frame(width: 28, height: 28)
                                 .background(DS.ColorToken.primary)
                                 .clipShape(Circle())
-                                .overlay(
-                                    Circle()
-                                        .stroke(DS.ColorToken.bgPrimary, lineWidth: 2)
-                                )
+                                .overlay(Circle().stroke(DS.ColorToken.bgPrimary, lineWidth: 2))
                         }
                     }
                     .buttonStyle(.plain)
@@ -291,9 +183,9 @@ struct EditProfileView: View {
                         .foregroundStyle(DS.ColorToken.textTertiary)
                 }
                 .frame(maxWidth: .infinity)
-                .padding(.top, DS.Spacing.space4)
+                .padding(.top, DS.Spacing.space2)
 
-                // Nickname
+                // MARK: Nickname
                 VStack(alignment: .leading, spacing: DS.Spacing.space2) {
                     Text("Nickname")
                         .font(.custom("CalSans-Regular", size: 14))
@@ -331,7 +223,32 @@ struct EditProfileView: View {
                     }
                 }
 
-                // Dietary Preference
+                // MARK: Display Name
+                VStack(alignment: .leading, spacing: DS.Spacing.space2) {
+                    Text("Display Name")
+                        .font(.custom("CalSans-Regular", size: 14))
+                        .foregroundStyle(DS.ColorToken.textPrimary)
+
+                    TextField("Enter a display name", text: $displayNameText)
+                        .textInputAutocapitalization(.words)
+                        .autocorrectionDisabled()
+                        .font(.custom("Satoshi Variable", size: 16))
+                        .foregroundStyle(DS.ColorToken.textPrimary)
+                        .padding(.horizontal, DS.Spacing.space3)
+                        .frame(height: 52)
+                        .background(DS.ColorToken.bgSecondary)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
+                                .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+
+                    Text("Your full name or how you'd like to be known.")
+                        .appTextStyle(.caption)
+                        .foregroundStyle(DS.ColorToken.textTertiary)
+                }
+
+                // MARK: Dietary Preference
                 VStack(alignment: .leading, spacing: DS.Spacing.space2) {
                     Text("Dietary Preference")
                         .font(.custom("CalSans-Regular", size: 14))
@@ -339,9 +256,7 @@ struct EditProfileView: View {
 
                     FlowLayout(spacing: DS.Spacing.space2) {
                         ForEach(GenerationOptions.DietType.allCases) { dietType in
-                            Button {
-                                selectedDietType = dietType
-                            } label: {
+                            Button { selectedDietType = dietType } label: {
                                 Text(dietType.rawValue)
                                     .font(.custom("Satoshi Variable", size: 14))
                                     .foregroundStyle(
@@ -357,9 +272,7 @@ struct EditProfileView: View {
                                     .overlay(
                                         Capsule()
                                             .stroke(
-                                                selectedDietType == dietType
-                                                    ? Color.clear
-                                                    : DS.ColorToken.borderDefault,
+                                                selectedDietType == dietType ? Color.clear : DS.ColorToken.borderDefault,
                                                 lineWidth: 1
                                             )
                                     )
@@ -369,12 +282,14 @@ struct EditProfileView: View {
                         }
                     }
 
-                    Text("This is used as your default diet when generating recipes.")
+                    Text("Used as your default diet when generating recipes.")
                         .appTextStyle(.caption)
                         .foregroundStyle(DS.ColorToken.textTertiary)
                 }
+                .opacity(dietaryCooldownDaysRemaining != nil ? 0.5 : 1)
+                .disabled(dietaryCooldownDaysRemaining != nil)
 
-                // Dietary Restrictions
+                // MARK: Dietary Restrictions
                 VStack(alignment: .leading, spacing: DS.Spacing.space2) {
                     Text("Dietary Restrictions")
                         .font(.custom("CalSans-Regular", size: 14))
@@ -384,30 +299,19 @@ struct EditProfileView: View {
                         ForEach(GenerationOptions.DietaryRestriction.allCases) { restriction in
                             let isSelected = selectedRestrictions.contains(restriction)
                             Button {
-                                if isSelected {
-                                    selectedRestrictions.remove(restriction)
-                                } else {
-                                    selectedRestrictions.insert(restriction)
-                                }
+                                if isSelected { selectedRestrictions.remove(restriction) }
+                                else { selectedRestrictions.insert(restriction) }
                             } label: {
                                 Text(restriction.rawValue)
                                     .font(.custom("Satoshi Variable", size: 14))
-                                    .foregroundStyle(
-                                        isSelected ? .white : DS.ColorToken.textSecondary
-                                    )
+                                    .foregroundStyle(isSelected ? .white : DS.ColorToken.textSecondary)
                                     .padding(.horizontal, DS.Spacing.space3)
                                     .padding(.vertical, DS.Spacing.space2)
-                                    .background(
-                                        isSelected
-                                            ? DS.ColorToken.primary
-                                            : DS.ColorToken.bgSecondary
-                                    )
+                                    .background(isSelected ? DS.ColorToken.primary : DS.ColorToken.bgSecondary)
                                     .overlay(
                                         Capsule()
                                             .stroke(
-                                                isSelected
-                                                    ? Color.clear
-                                                    : DS.ColorToken.borderDefault,
+                                                isSelected ? Color.clear : DS.ColorToken.borderDefault,
                                                 lineWidth: 1
                                             )
                                     )
@@ -417,87 +321,263 @@ struct EditProfileView: View {
                         }
                     }
 
-                    Text("These are applied by default when generating recipes.")
+                    Text("Applied by default when generating recipes.")
+                        .appTextStyle(.caption)
+                        .foregroundStyle(DS.ColorToken.textTertiary)
+                }
+                .opacity(dietaryCooldownDaysRemaining != nil ? 0.5 : 1)
+                .disabled(dietaryCooldownDaysRemaining != nil)
+
+                if let message = dietaryCooldownMessage {
+                    HStack(spacing: DS.Spacing.space2) {
+                        Image(systemName: "clock.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(DS.ColorToken.warning)
+                        Text(message)
+                            .appTextStyle(.caption)
+                            .foregroundStyle(DS.ColorToken.warning)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                // MARK: Cooking Skill Level
+                VStack(alignment: .leading, spacing: DS.Spacing.space2) {
+                    Text("Cooking Skill Level")
+                        .font(.custom("CalSans-Regular", size: 14))
+                        .foregroundStyle(DS.ColorToken.textPrimary)
+
+                    let skillOptions: [(level: Int, label: String)] = [
+                        (1, "I cook like I'm in college"),
+                        (2, "I can cook a decent meal"),
+                        (3, "Just call me Gordon Ramsay"),
+                    ]
+
+                    VStack(spacing: DS.Spacing.space2) {
+                        ForEach(skillOptions, id: \.level) { option in
+                            let isSelected = selectedSkillLevel == option.level
+                            Button { selectedSkillLevel = option.level } label: {
+                                HStack {
+                                    Text(option.label)
+                                        .font(.custom("Satoshi Variable", size: 14))
+                                        .foregroundStyle(isSelected ? .white : DS.ColorToken.textSecondary)
+                                    Spacer()
+                                    if isSelected {
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 12, weight: .bold))
+                                            .foregroundStyle(.white)
+                                    }
+                                }
+                                .padding(.horizontal, DS.Spacing.space3)
+                                .padding(.vertical, DS.Spacing.space3)
+                                .background(isSelected ? DS.ColorToken.primary : DS.ColorToken.bgSecondary)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
+                                        .stroke(
+                                            isSelected ? Color.clear : DS.ColorToken.borderDefault,
+                                            lineWidth: 1
+                                        )
+                                )
+                                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+
+                    Text("Recipes will be tailored to your skill level.")
                         .appTextStyle(.caption)
                         .foregroundStyle(DS.ColorToken.textTertiary)
                 }
 
-                // Save button
-                Button {
-                    save()
-                } label: {
+                // MARK: Save Button
+                Button { save() } label: {
                     HStack(spacing: DS.Spacing.space2) {
-                        if isSaving {
-                            ProgressView()
-                                .tint(.white)
-                        }
+                        if isSaving { ProgressView().tint(.white) }
                         Text("Save Changes")
                     }
                     .font(.custom("Satoshi Variable", size: 16).weight(.semibold))
                     .foregroundStyle(.white)
                     .frame(maxWidth: .infinity)
                     .frame(height: 52)
-                    .background(DS.ColorToken.primary)
+                    .background(hasChanges ? DS.ColorToken.primary : DS.ColorToken.primary.opacity(0.4))
                     .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
                 }
                 .buttonStyle(.plain)
-                .disabled(isSaving)
+                .disabled(isSaving || !hasChanges)
+
+                Divider()
+                    .padding(.vertical, DS.Spacing.space2)
+
+                // MARK: Phone
+                profileCard(header: "Phone") {
+                    HStack(spacing: DS.Spacing.space3) {
+                        Image(systemName: "phone.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(DS.ColorToken.primary)
+                            .frame(width: 24)
+
+                        Text(session.currentUserPhone ?? "No phone")
+                            .font(.custom("Satoshi Variable", size: 16))
+                            .foregroundStyle(DS.ColorToken.textPrimary)
+
+                        Spacer()
+                    }
+                    .padding(DS.Spacing.space4)
+                }
+
+                // MARK: Membership Plan
+                profileCard(header: "Membership Plan") {
+                    VStack(spacing: DS.Spacing.space3) {
+                        HStack(spacing: DS.Spacing.space3) {
+                            Image(systemName: session.isPremium ? "sparkles" : "leaf.fill")
+                                .font(.system(size: 20))
+                                .foregroundStyle(session.isPremium ? DS.ColorToken.primary : DS.ColorToken.accent)
+
+                            VStack(alignment: .leading, spacing: DS.Spacing.space1) {
+                                Text(session.isPremium ? "UseUp Pro" : "Free Plan")
+                                    .font(.custom("Satoshi Variable", size: 16))
+                                    .foregroundStyle(DS.ColorToken.textPrimary)
+
+                                Text(session.isPremium ? "Full access to all features" : "Basic pantry tracking & recipe browsing")
+                                    .appTextStyle(.caption)
+                                    .foregroundStyle(DS.ColorToken.textSecondary)
+                            }
+
+                            Spacer()
+
+                            Text("Active")
+                                .appTextStyle(.overline)
+                                .foregroundStyle(DS.ColorToken.accent)
+                                .padding(.horizontal, DS.Spacing.space2)
+                                .padding(.vertical, DS.Spacing.space1)
+                                .background(DS.ColorToken.accentLight)
+                                .clipShape(Capsule())
+                        }
+
+                        if session.isPremium {
+                            Button { showCustomerCenter = true } label: {
+                                Text("Manage Subscription")
+                                    .font(.custom("Satoshi Variable", size: 14))
+                                    .foregroundStyle(DS.ColorToken.primary)
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: 44)
+                                    .background(DS.ColorToken.primaryLight)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
+                                            .stroke(DS.ColorToken.primary.opacity(0.2), lineWidth: 1)
+                                    )
+                                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            Button { showPaywall = true } label: {
+                                HStack(spacing: DS.Spacing.space2) {
+                                    Image(systemName: "sparkles")
+                                        .font(.system(size: 14, weight: .semibold))
+                                    Text("Upgrade to Pro")
+                                        .font(.custom("Satoshi Variable", size: 14))
+                                }
+                                .foregroundStyle(.white)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 44)
+                                .background(
+                                    LinearGradient(
+                                        colors: [DS.ColorToken.berry, DS.ColorToken.lavender],
+                                        startPoint: .topTrailing,
+                                        endPoint: .bottomLeading
+                                    )
+                                )
+                                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+
+                            Button {
+                                Task { try? await RevenueCatManager.shared.restorePurchases() }
+                            } label: {
+                                Text("Restore Purchases")
+                                    .font(.custom("Satoshi Variable", size: 13))
+                                    .foregroundStyle(DS.ColorToken.textSecondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(DS.Spacing.space4)
+                }
             }
             .padding(.horizontal, DS.Spacing.space5)
+            .padding(.top, DS.Spacing.space4)
             .padding(.bottom, DS.Spacing.space24)
         }
         .background(DS.ColorToken.bgPrimary)
-        .navigationTitle("Edit Profile")
+        .navigationTitle("Account Settings")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            nicknameText = session.currentUserNickname ?? ""
+            displayNameText = session.currentUserDisplayName ?? ""
+            selectedDietType = session.currentUserDietaryPreference
+            selectedRestrictions = session.currentUserDietaryRestrictions
+            selectedSkillLevel = session.currentUserCookingSkillLevel
+            session.nicknameError = nil
+        }
         .sheet(isPresented: $showImagePicker) {
             ImagePicker(image: $selectedImage)
         }
-        .onAppear {
-            nicknameText = session.currentUserNickname ?? ""
-            selectedDietType = session.currentUserDietaryPreference
-            selectedRestrictions = session.currentUserDietaryRestrictions
-            session.nicknameError = nil
+        .sheet(isPresented: $showPaywall) {
+            PaywallView()
+                .onPurchaseCompleted { _ in showPaywall = false }
+                .onRestoreCompleted { _ in showPaywall = false }
+        }
+        .sheet(isPresented: $showCustomerCenter) {
+            CustomerCenterView()
         }
     }
 
     private func save() {
         let hasNewPhoto = selectedImage != nil
         let hasNicknameChange = nicknameChanged
-        let hasDietChange = dietChanged
-        let hasRestrictionsChange = restrictionsChanged
+        let hasDisplayNameChange = displayNameChanged
+        let hasDietChange = selectedDietType != session.currentUserDietaryPreference
+        let hasRestrictionsChange = selectedRestrictions != session.currentUserDietaryRestrictions
+        let hasSkillLevelChange = selectedSkillLevel != session.currentUserCookingSkillLevel
 
-        guard hasNewPhoto || hasNicknameChange || hasDietChange || hasRestrictionsChange else {
-            dismiss()
-            return
-        }
+        guard hasNewPhoto || hasNicknameChange || hasDisplayNameChange || hasDietChange || hasRestrictionsChange || hasSkillLevelChange else { return }
 
         Task {
             isSaving = true
 
-            if let selectedImage, let data = selectedImage.jpegData(compressionQuality: 0.8) {
+            if let img = selectedImage, let data = img.jpegData(compressionQuality: 0.8) {
                 await session.updateProfilePhoto(data)
             }
-
             if hasNicknameChange {
                 let cleaned = nicknameText.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !cleaned.isEmpty {
-                    await session.updateNickname(cleaned)
-                }
+                if !cleaned.isEmpty { await session.updateNickname(cleaned) }
             }
-
-            if hasDietChange {
-                await session.updateDietaryPreference(dietType: selectedDietType)
+            if hasDisplayNameChange {
+                await session.updateDisplayName(displayNameText)
             }
-
-            if hasRestrictionsChange {
-                await session.updateDietaryRestrictions(restrictions: selectedRestrictions)
-            }
+            if hasDietChange { await session.updateDietaryPreference(dietType: selectedDietType) }
+            if hasRestrictionsChange { await session.updateDietaryRestrictions(restrictions: selectedRestrictions) }
+            if hasSkillLevelChange { await session.updateCookingSkillLevel(level: selectedSkillLevel) }
 
             isSaving = false
+        }
+    }
 
-            if session.nicknameError == nil {
-                dismiss()
-            }
+    @ViewBuilder
+    private func profileCard<Content: View>(header: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.space2) {
+            Text(header)
+                .appTextStyle(.overline)
+                .foregroundStyle(DS.ColorToken.textTertiary)
+                .padding(.leading, DS.Spacing.space1)
+
+            content()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(DS.ColorToken.bgSecondary)
+                .overlay(
+                    RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous)
+                        .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous))
         }
     }
 }
@@ -536,147 +616,4 @@ private struct ImagePicker: UIViewControllerRepresentable {
             parent.dismiss()
         }
     }
-}
-
-// MARK: - Settings
-
-struct SettingsView: View {
-    @EnvironmentObject private var session: AppSession
-
-    var body: some View {
-        Form {
-            Section("Appearance") {
-                Toggle("Dark Mode", isOn: $session.isDarkMode)
-            }
-
-            Section {
-                NavigationLink {
-                    AccountSettingsView()
-                } label: {
-                    Label("Account Settings", systemImage: "person.crop.circle")
-                }
-            }
-
-            Section {
-                Button {
-                    session.signOut()
-                } label: {
-                    Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
-                        .foregroundStyle(DS.ColorToken.error)
-                }
-            }
-        }
-        .navigationTitle("Settings")
-    }
-}
-
-// MARK: - Account Settings
-
-private struct AccountSettingsView: View {
-    @EnvironmentObject private var session: AppSession
-
-    var body: some View {
-        ScrollView {
-            VStack(spacing: DS.Spacing.space5) {
-                // Phone
-                profileCard(header: "Phone") {
-                    HStack(spacing: DS.Spacing.space3) {
-                        Image(systemName: "phone.fill")
-                            .font(.system(size: 16))
-                            .foregroundStyle(DS.ColorToken.primary)
-                            .frame(width: 24)
-
-                        Text(session.currentUserPhone ?? "No phone")
-                            .font(.custom("Satoshi Variable", size: 16))
-                            .foregroundStyle(DS.ColorToken.textPrimary)
-
-                        Spacer()
-                    }
-                    .padding(DS.Spacing.space4)
-                }
-
-
-                // Membership Plan
-                profileCard(header: "Membership Plan") {
-                    VStack(spacing: DS.Spacing.space3) {
-                        HStack(spacing: DS.Spacing.space3) {
-                            Image(systemName: "leaf.fill")
-                                .font(.system(size: 20))
-                                .foregroundStyle(DS.ColorToken.accent)
-
-                            VStack(alignment: .leading, spacing: DS.Spacing.space1) {
-                                Text("Free Plan")
-                                    .font(.custom("Satoshi Variable", size: 16))
-                                    .foregroundStyle(DS.ColorToken.textPrimary)
-
-                                Text("Basic pantry tracking & recipe browsing")
-                                    .appTextStyle(.caption)
-                                    .foregroundStyle(DS.ColorToken.textSecondary)
-                            }
-
-                            Spacer()
-
-                            Text("Active")
-                                .appTextStyle(.overline)
-                                .foregroundStyle(DS.ColorToken.accent)
-                                .padding(.horizontal, DS.Spacing.space2)
-                                .padding(.vertical, DS.Spacing.space1)
-                                .background(DS.ColorToken.accentLight)
-                                .clipShape(Capsule())
-                        }
-
-                        Button {
-                            // TODO: upgrade flow
-                        } label: {
-                            HStack(spacing: DS.Spacing.space2) {
-                                Image(systemName: "sparkles")
-                                    .font(.system(size: 14, weight: .semibold))
-                                Text("Upgrade to Pro")
-                                    .font(.custom("Satoshi Variable", size: 14))
-                            }
-                            .foregroundStyle(.white)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 44)
-                            .background(
-                                LinearGradient(
-                                    colors: [DS.ColorToken.berry, DS.ColorToken.lavender],
-                                    startPoint: .topTrailing,
-                                    endPoint: .bottomLeading
-                                )
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(DS.Spacing.space4)
-                }
-            }
-            .padding(.horizontal, DS.Spacing.space5)
-            .padding(.top, DS.Spacing.space3)
-            .padding(.bottom, DS.Spacing.space24)
-        }
-        .background(DS.ColorToken.bgPrimary)
-        .navigationTitle("Account Settings")
-        .navigationBarTitleDisplayMode(.inline)
-    }
-
-    @ViewBuilder
-    private func profileCard<Content: View>(header: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.space2) {
-            Text(header)
-                .appTextStyle(.overline)
-                .foregroundStyle(DS.ColorToken.textTertiary)
-                .padding(.leading, DS.Spacing.space1)
-
-            content()
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(DS.ColorToken.bgSecondary)
-                .overlay(
-                    RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous)
-                        .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous))
-        }
-    }
-
 }
