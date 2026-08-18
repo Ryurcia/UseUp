@@ -1,4 +1,5 @@
 import SwiftUI
+import PhosphorSwift
 
 struct PantryView: View {
     @EnvironmentObject private var pantryStore: PantryStore
@@ -9,19 +10,24 @@ struct PantryView: View {
     @State private var debouncedSearch = ""
     @State private var searchDebounceTask: Task<Void, Never>?
     @State private var selectedCategories: Set<PantryCategory> = []
-    @State private var selectedStorageFilters: Set<StorageFilter> = []
-    @State private var filterExpiringSoon = false
+    @State private var selectedStorageFilters: Set<IngredientStorageFilter> = []
+    @State private var selectedFreshnessTier: FreshnessTier? = nil
+    @State private var sortOption: SortOption = .expiration
     @State private var showingAddSheet = false
     @State private var showingFilterSheet = false
     @State private var showingSettings = false
     @State private var ingredientPendingDelete: Ingredient?
     @State private var ingredientBeingEdited: Ingredient?
     @State private var ingredientBeingUsed: Ingredient?
-    @State private var ingredientBeingExtended: Ingredient?
-    @State private var expandedIngredientID: UUID?
+    @State private var selectedIngredient: Ingredient?
     @State private var cachedFilteredIngredients: [Ingredient] = []
+    @State private var cachedDashboardBaseIngredients: [Ingredient] = []
+    @State private var visibleCount = PantryView.pageSize
+    @State private var pendingIngredient: PendingIngredient? = nil
+    @State private var duplicateExisting: Ingredient? = nil
+    @State private var showDuplicateAlert = false
     private var hasActiveFilters: Bool {
-        !selectedStorageFilters.isEmpty || !selectedCategories.isEmpty || filterExpiringSoon
+        !selectedStorageFilters.isEmpty || !selectedCategories.isEmpty
     }
     private var greetingName: String {
         if let displayName = session.currentUserDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -31,34 +37,54 @@ struct PantryView: View {
         return "there"
     }
 
-    private var expiringSoonItems: [Ingredient] {
-        pantryStore.ingredients
-            .filter { $0.expirationDate != nil && ($0.daysUntilExpiration ?? Int.max) <= 5 }
-            .sorted { ($0.daysUntilExpiration ?? Int.max) < ($1.daysUntilExpiration ?? Int.max) }
+    static let pageSize = 15
+
+    private var showSkeleton: Bool {
+        pantryStore.isLoading && pantryStore.ingredients.isEmpty
+    }
+
+    private var visibleIngredients: [Ingredient] {
+        Array(cachedFilteredIngredients.prefix(visibleCount))
+    }
+
+    private var hasMoreToShow: Bool {
+        cachedFilteredIngredients.count > visibleCount
+    }
+
+    private func loadMore() {
+        visibleCount += Self.pageSize
     }
 
     private func recomputeFilteredIngredients() {
-        cachedFilteredIngredients = pantryStore.ingredients
-            .filter { ingredient in
-                let trimmedSearch = debouncedSearch.trimmingCharacters(in: .whitespacesAndNewlines)
-                let matchesSearch = trimmedSearch.isEmpty || ingredient.name.localizedCaseInsensitiveContains(trimmedSearch)
-                let matchesCategory = selectedCategories.isEmpty || selectedCategories.contains { $0.matches(ingredient: ingredient) }
-                let matchesStorage = selectedStorageFilters.isEmpty || selectedStorageFilters.contains { $0.matches(ingredient: ingredient) }
-                let matchesExpiring = !filterExpiringSoon || (ingredient.daysUntilExpiration ?? Int.max) <= 5
-                return matchesSearch && matchesCategory && matchesStorage && matchesExpiring
-            }
-            .sorted { lhs, rhs in
-                let lhsExpiring = lhs.expirationDate != nil && (lhs.daysUntilExpiration ?? Int.max) <= 5
-                    && !pantryStore.dismissedIngredientIds.contains(lhs.id)
-                let rhsExpiring = rhs.expirationDate != nil && (rhs.daysUntilExpiration ?? Int.max) <= 5
-                    && !pantryStore.dismissedIngredientIds.contains(rhs.id)
+        // Search + category + storage applied, but *not* the freshness-tier filter — this is the
+        // base set the dashboard computes its counts from, so selecting a tier never changes the
+        // counts shown for the other tiers. Cached (like cachedFilteredIngredients below) so it's
+        // computed once per relevant change rather than on every body evaluation.
+        let dashboardBase = pantryStore.ingredients.filter { ingredient in
+            let trimmedSearch = debouncedSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+            let matchesSearch = trimmedSearch.isEmpty || ingredient.name.localizedCaseInsensitiveContains(trimmedSearch)
+            let matchesCategory = selectedCategories.isEmpty || selectedCategories.contains { $0.matches(ingredient: ingredient) }
+            let matchesStorage = selectedStorageFilters.isEmpty || selectedStorageFilters.contains { $0.matches(ingredient: ingredient) }
+            return matchesSearch && matchesCategory && matchesStorage
+        }
+        cachedDashboardBaseIngredients = dashboardBase
 
-                if lhsExpiring != rhsExpiring { return lhsExpiring }
-                if lhsExpiring && rhsExpiring {
-                    return (lhs.daysUntilExpiration ?? Int.max) < (rhs.daysUntilExpiration ?? Int.max)
-                }
-                return lhs.loggedAt > rhs.loggedAt
+        let filtered = dashboardBase.filter { ingredient in
+            guard let tier = selectedFreshnessTier else { return true }
+            return tier.matches(ingredient.freshnessState)
+        }
+
+        switch sortOption {
+        case .expiration:
+            cachedFilteredIngredients = filtered.sorted {
+                ($0.daysUntilExpiration ?? Int.max) < ($1.daysUntilExpiration ?? Int.max)
             }
+        case .alphabetical:
+            cachedFilteredIngredients = filtered.sorted {
+                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+        }
+        visibleCount = Self.pageSize
     }
 
     var body: some View {
@@ -78,50 +104,89 @@ struct PantryView: View {
             .onChange(of: debouncedSearch) { _, _ in recomputeFilteredIngredients() }
             .onChange(of: selectedCategories) { _, _ in recomputeFilteredIngredients() }
             .onChange(of: selectedStorageFilters) { _, _ in recomputeFilteredIngredients() }
-            .onChange(of: filterExpiringSoon) { _, _ in recomputeFilteredIngredients() }
+            .onChange(of: selectedFreshnessTier) { _, _ in recomputeFilteredIngredients() }
+            .onChange(of: sortOption) { _, _ in recomputeFilteredIngredients() }
             .onChange(of: pantryStore.ingredients) { _, _ in recomputeFilteredIngredients() }
     }
 
     private var withSheets: some View {
         withOverlays
             .sheet(isPresented: $showingAddSheet) {
-                AddIngredientSheet { name, amount, category, location, expirationDate in
-                    withAnimation {
-                        pantryStore.addIngredient(name: name, amount: amount, category: category, location: location, expirationDate: expirationDate)
+                AddIngredientSheet { name, amount, category, location, expirationDate, icon in
+                    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    if let existing = pantryStore.ingredients.first(where: { $0.name.lowercased() == trimmed }) {
+                        pendingIngredient = PendingIngredient(name: name, amount: amount, category: category,
+                                                              location: location, expirationDate: expirationDate, icon: icon)
+                        duplicateExisting = existing
+                        showDuplicateAlert = true
+                    } else {
+                        withAnimation {
+                            pantryStore.addIngredient(name: name, amount: amount, category: category,
+                                                      location: location, expirationDate: expirationDate, icon: icon)
+                        }
                     }
                 }
             }
             .sheet(item: $ingredientBeingEdited) { ingredient in
-                EditIngredientSheet(ingredient: ingredient) { name, amount, category, location, expirationDate in
+                EditIngredientSheet(ingredient: ingredient) { name, amount, category, location, expirationDate, icon in
                     withAnimation {
                         pantryStore.updateIngredient(
                             id: ingredient.id, name: name, amount: amount,
-                            category: category, location: location, expirationDate: expirationDate
+                            category: category, location: location, expirationDate: expirationDate, icon: icon
                         )
                     }
                 }
             }
-            .sheet(item: $ingredientBeingExtended) { ingredient in
-                ExtendExpirationSheet(ingredient: ingredient) { newDate in
-                    pantryStore.updateIngredient(
-                        id: ingredient.id, name: ingredient.name, amount: ingredient.amount,
-                        category: ingredient.category, location: ingredient.location,
-                        expirationDate: newDate
-                    )
-                }
-                .presentationDetents([.medium])
-            }
             .sheet(item: $ingredientBeingUsed) { ingredient in
                 UseIngredientSheet(ingredient: ingredient) { newAmount in
                     withAnimation { pantryStore.useIngredient(id: ingredient.id, newAmount: newAmount) }
-                    if newAmount == nil { activityStore.logEvent(type: "item_saved") }
+                    if newAmount == nil { activityStore.logEvent(type: .itemSaved) }
                 }
                 .presentationDetents([.medium])
+            }
+            .sheet(item: $selectedIngredient) { ingredient in
+                IngredientDetailSheet(
+                    item: ingredient,
+                    onUse: {
+                        selectedIngredient = nil
+                        ingredientBeingUsed = ingredient
+                    },
+                    onEdit: {
+                        selectedIngredient = nil
+                        ingredientBeingEdited = ingredient
+                    }
+                )
+                .presentationDetents([.height(430)])
+                .presentationDragIndicator(.hidden)
+            }
+            .alert("Already in Your Pantry", isPresented: $showDuplicateAlert, presenting: duplicateExisting) { existing in
+                Button("Edit Existing") {
+                    ingredientBeingEdited = existing
+                    pendingIngredient = nil
+                    duplicateExisting = nil
+                }
+                Button("Save as New") {
+                    if let p = pendingIngredient {
+                        withAnimation {
+                            pantryStore.addIngredient(name: p.name, amount: p.amount, category: p.category,
+                                                      location: p.location, expirationDate: p.expirationDate,
+                                                      icon: p.icon, force: true)
+                        }
+                    }
+                    pendingIngredient = nil
+                    duplicateExisting = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    pendingIngredient = nil
+                    duplicateExisting = nil
+                }
+            } message: { existing in
+                Text("\(existing.name.capitalized) is already logged in your pantry.")
             }
             .alert("Delete ingredient?", isPresented: isShowingDeleteAlert, presenting: ingredientPendingDelete) { ingredient in
                 Button("Cancel", role: .cancel) { ingredientPendingDelete = nil }
                 Button("Delete", role: .destructive) {
-                    if ingredient.isExpired { activityStore.logEvent(type: "item_wasted") }
+                    if ingredient.isExpired { activityStore.logEvent(type: .itemWasted) }
                     withAnimation { pantryStore.deleteIngredient(id: ingredient.id) }
                     ingredientPendingDelete = nil
                 }
@@ -131,26 +196,26 @@ struct PantryView: View {
             .sheet(isPresented: $showingFilterSheet) {
                 FilterSheet(
                     selectedStorageFilters: $selectedStorageFilters,
-                    selectedCategories: $selectedCategories,
-                    filterExpiringSoon: $filterExpiringSoon
+                    selectedCategories: $selectedCategories
                 )
                 .presentationDetents([.large])
             }
             .sheet(isPresented: $showingSettings) {
                 NavigationStack { SettingsView() }
+                    .preferredColorScheme(session.preferredColorScheme)
             }
     }
 
     private var withOverlays: some View {
         mainContent
-            .background(DS.ColorToken.bgPrimary)
+            .background(Sourdough.Colors.canvas)
             .overlay { dimBackground }
             .overlay(alignment: .bottomTrailing) { fabButton }
             .toolbar(.hidden, for: .navigationBar)
     }
 
     @ViewBuilder private var dimBackground: some View {
-        if showingAddSheet || showingFilterSheet || showingSettings || ingredientBeingEdited != nil || ingredientBeingUsed != nil {
+        if showingAddSheet || showingFilterSheet || showingSettings || ingredientBeingEdited != nil || ingredientBeingUsed != nil || selectedIngredient != nil {
             Color.black.opacity(0.3)
                 .ignoresSafeArea()
                 .animation(.easeInOut(duration: 0.2), value: showingAddSheet)
@@ -158,22 +223,23 @@ struct PantryView: View {
                 .animation(.easeInOut(duration: 0.2), value: showingSettings)
                 .animation(.easeInOut(duration: 0.2), value: ingredientBeingEdited != nil)
                 .animation(.easeInOut(duration: 0.2), value: ingredientBeingUsed != nil)
+                .animation(.easeInOut(duration: 0.2), value: selectedIngredient != nil)
         }
     }
 
     private var fabButton: some View {
         Button { showingAddSheet = true } label: {
-            Image(systemName: "plus")
-                .font(.system(size: 24, weight: .semibold))
-                .foregroundStyle(.white)
+            Ph.plus.bold
+                .frame(width: 24, height: 24)
+                .foregroundStyle(Sourdough.Colors.onAction)
                 .frame(width: 56, height: 56)
                 .background(
                     Circle()
-                        .fill(DS.ColorToken.accent)
-                        .shadow(color: DS.ColorToken.accent.opacity(0.3), radius: 8, x: 0, y: 4)
+                        .fill(Sourdough.Colors.action)
+                        .shadow(color: Sourdough.Ramp.linen900.opacity(0.3), radius: 8, x: 0, y: 4)
                 )
         }
-        .padding(.trailing, DS.Spacing.space5)
+        .padding(.trailing, Sourdough.Spacing.screenMargin)
         .padding(.bottom, 90)
     }
 
@@ -183,95 +249,105 @@ struct PantryView: View {
         VStack(spacing: 0) {
             headerView
 
-            ScrollView(showsIndicators: false) {
-                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                    Group {
-                        searchBar
-                            .padding(.horizontal, DS.Spacing.space5)
+            PantryFreshnessDashboard(
+                ingredients: cachedDashboardBaseIngredients,
+                isLoading: showSkeleton,
+                isPantryEmpty: pantryStore.ingredients.isEmpty,
+                selectedTier: $selectedFreshnessTier,
+                onReviewExpired: { sortOption = .expiration },
+                onAddFirstItem: { showingAddSheet = true }
+            )
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .padding(.bottom, Sourdough.Spacing.betweenBlocks)
 
-                        if !expiringSoonItems.isEmpty {
-                            useUpSoonSection
-                                .padding(.top, DS.Spacing.space4)
-                        }
-                    }
-                    .padding(.bottom, DS.Spacing.space4)
+            searchBar
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                .padding(.top, Sourdough.Spacing.rowInternals)
+                .padding(.bottom, Sourdough.Spacing.rowInternals)
 
-                    Section {
-                        if cachedFilteredIngredients.isEmpty {
-                            VStack(spacing: DS.Spacing.space3) {
-                                Image(systemName: "face.dashed")
-                                    .font(.system(size: 48))
-                                    .foregroundStyle(DS.ColorToken.textTertiary)
-                                Text("Looks like you haven't logged anything")
-                                    .appTextStyle(.bodySM)
-                                    .foregroundStyle(DS.ColorToken.textSecondary)
-                            }
+            List {
+                Section {
+                    if showSkeleton {
+                        pantrySkeletonContent
+                            .transition(.opacity)
+                            .listRowInsets(EdgeInsets())
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                    } else if cachedFilteredIngredients.isEmpty {
+                        Text("No items")
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                            .sourdoughTextStyle(.body)
                             .frame(maxWidth: .infinity, alignment: .center)
-                            .padding(.horizontal, DS.Spacing.space5)
-                            .padding(.top, DS.Spacing.space8)
-                        } else {
-                            ForEach(cachedFilteredIngredients) { item in
-                                ExpandableIngredientRow(
-                                    item: item,
-                                    isExpanded: expandedIngredientID == item.id,
-                                    onTap: {
-                                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                                            expandedIngredientID = expandedIngredientID == item.id ? nil : item.id
-                                        }
-                                    },
-                                    onUse: {
-                                        expandedIngredientID = nil
-                                        ingredientBeingUsed = item
-                                    },
-                                    onEdit: {
-                                        expandedIngredientID = nil
-                                        ingredientBeingEdited = item
-                                    },
-                                    onDelete: {
-                                        expandedIngredientID = nil
-                                        ingredientPendingDelete = item
-                                    },
-                                    onExtend: {
-                                        expandedIngredientID = nil
-                                        ingredientBeingExtended = item
-                                    }
-                                )
-                                .padding(.horizontal, DS.Spacing.space5)
-                                .padding(.bottom, DS.Spacing.space2)
+                            .padding(.vertical, Sourdough.Spacing.aboveSectionHead)
+                            .listRowInsets(EdgeInsets())
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                    } else {
+                        ForEach(visibleIngredients) { item in
+                            ExpandableIngredientRow(
+                                item: item,
+                                onSelect: { selectedIngredient = item },
+                                onDelete: { ingredientPendingDelete = item }
+                            )
+                            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                            .listRowInsets(EdgeInsets())
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                        }
+
+                        if hasMoreToShow {
+                            HStack {
+                                Spacer()
+                                ProgressView()
+                                    .padding(.vertical, Sourdough.Spacing.screenMargin)
+                                Spacer()
                             }
+                            .listRowInsets(EdgeInsets())
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                            .onAppear { loadMore() }
                         }
-                    } header: {
-                        VStack(alignment: .leading, spacing: DS.Spacing.space3) {
-                            pantryListHeader
-                            categoryChipsRow
-                        }
-                        .padding(.horizontal, DS.Spacing.space5)
-                        .padding(.vertical, DS.Spacing.space3)
-                        .background(DS.ColorToken.bgPrimary)
                     }
+                } header: {
+                    VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {
+                        pantryListHeader
+                        itemCountRow
+                    }
+                    .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                    .padding(.vertical, Sourdough.Spacing.rowInternals)
+                    .background(Sourdough.Colors.canvas)
+                    .listRowInsets(EdgeInsets())
                 }
-                .padding(.top, DS.Spacing.space4)
-                .padding(.bottom, DS.Spacing.space24)
+
+                Color.clear
+                    .frame(height: Sourdough.Spacing.underTitle * 2)
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
             }
+            .listStyle(.plain)
+            .listRowSpacing(Sourdough.Spacing.insideChip)
+            .scrollIndicators(.hidden)
             .scrollContentBackground(.hidden)
+            .animation(.easeInOut(duration: DS.Motion.normal), value: showSkeleton)
         }
     }
 
     private var headerView: some View {
-        VStack(spacing: DS.Spacing.space3) {
-            HStack(spacing: DS.Spacing.space4) {
+        VStack(spacing: Sourdough.Spacing.rowInternals) {
+            HStack(spacing: Sourdough.Spacing.screenMargin) {
                 Text("Today is \(Date.now, format: .dateTime.month(.wide).day())")
-                    .font(.custom("Satoshi Variable", size: 22).weight(.semibold))
-                    .foregroundStyle(DS.ColorToken.textPrimary)
+                    .foregroundStyle(Sourdough.Colors.mutedInk)
+                    .sourdoughTextStyle(.subhead)
 
                 Spacer()
 
                 Button {
                     showingSettings = true
                 } label: {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 22, weight: .regular))
-                        .foregroundStyle(DS.ColorToken.textSecondary)
+                    Ph.gear.regular
+                        .frame(width: 22, height: 22)
+                        .foregroundStyle(Sourdough.Colors.mutedInk)
                 }
                 .buttonStyle(.plain)
 
@@ -280,211 +356,149 @@ struct PantryView: View {
             }
 
             Text("Hey \(greetingName)! 👋")
-                .font(.custom("CalSans-Regular", size: 36))
-                .kerning(0)
-                .foregroundStyle(DS.ColorToken.textPrimary)
+                .sourdoughTextStyle(.display)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
         }
-        .padding(.horizontal, DS.Spacing.space5)
-        .padding(.top, DS.Spacing.space2)
-        .padding(.bottom, DS.Spacing.space4)
+        .padding(.horizontal, Sourdough.Spacing.screenMargin)
+        .padding(.top, Sourdough.Spacing.iconToLabel)
+        .padding(.bottom, Sourdough.Spacing.betweenBlocks)
     }
 
     private var searchBar: some View {
-        HStack(spacing: DS.Spacing.space2) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(DS.ColorToken.textTertiary)
+        HStack(spacing: Sourdough.Spacing.insideChip) {
+            Ph.magnifyingGlass.regular
+                .frame(width: 18, height: 18)
+                .foregroundStyle(Sourdough.Colors.faintInk)
 
             TextField("Search your pantry", text: $searchText)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-                .appTextStyle(.body)
-                .foregroundStyle(DS.ColorToken.textPrimary)
+                .foregroundStyle(Sourdough.Colors.ink)
+                .sourdoughTextStyle(.body)
         }
-        .padding(.horizontal, DS.Spacing.space3)
+        .padding(.horizontal, Sourdough.Spacing.rowInternals)
         .frame(height: 48)
-        .background(DS.ColorToken.bgSecondary)
-        .overlay(
-            RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
-                .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+        .background(Sourdough.Colors.sunken)
+        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
     }
 
-    // MARK: - Use Up Soon
-
-    private var useUpSoonSection: some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.space3) {
-            HStack(spacing: DS.Spacing.space2) {
-                Circle()
-                    .fill(DS.ColorToken.error)
-                    .frame(width: 8, height: 8)
-                Text("USE UP SOON")
-                    .font(.custom("Satoshi Variable", size: 13).weight(.bold))
-                    .tracking(0.5)
-                    .foregroundStyle(DS.ColorToken.textPrimary)
-                Text("\(expiringSoonItems.count)")
-                    .font(.custom("Satoshi Variable", size: 11).weight(.bold))
-                    .foregroundStyle(.white)
-                    .frame(minWidth: 20, minHeight: 20)
-                    .background(DS.ColorToken.error)
-                    .clipShape(Circle())
-                Spacer()
-            }
-            .padding(.horizontal, DS.Spacing.space5)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: DS.Spacing.space3) {
-                    ForEach(expiringSoonItems) { item in
-                        expiringItemCard(item)
-                    }
-                }
-                .padding(.horizontal, DS.Spacing.space5)
-            }
-            .mask(
-                LinearGradient(
-                    stops: [
-                        .init(color: .black, location: 0),
-                        .init(color: .black, location: 0.8),
-                        .init(color: .clear, location: 1.0)
-                    ],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-            )
-        }
-    }
-
-    private func expiringItemCard(_ item: Ingredient) -> some View {
-        let days = item.daysUntilExpiration ?? 0
-        let (badgeText, badgeFg, badgeBg) = expiringCardBadgeStyle(days: days)
-
-        return VStack(alignment: .leading, spacing: DS.Spacing.space2) {
-            Text(badgeText)
-                .font(.custom("Satoshi Variable", size: 12).weight(.semibold))
-                .foregroundStyle(badgeFg)
-                .padding(.horizontal, DS.Spacing.space2)
-                .padding(.vertical, 3)
-                .background(badgeBg)
-                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous))
-
-            Text(item.name.capitalized)
-                .font(.custom("Satoshi Variable", size: 18).weight(.bold))
-                .foregroundStyle(DS.ColorToken.textPrimary)
-                .lineLimit(2)
-
-            HStack(spacing: 3) {
-                if let amount = item.amount, !amount.isEmpty {
-                    Text(amount)
-                    Text("·")
-                }
-                Text(item.location.title)
-            }
-            .font(.custom("Satoshi Variable", size: 13))
-            .foregroundStyle(DS.ColorToken.textSecondary)
-        }
-        .padding(DS.Spacing.space4)
-        .frame(width: 162, alignment: .topLeading)
-        .background(DS.ColorToken.bgSecondary)
-        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous)
-                .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
-        )
-    }
-
-    private func expiringCardBadgeStyle(days: Int) -> (String, Color, Color) {
-        if days <= 0 {
-            return ("Today", DS.ColorToken.error, DS.ColorToken.error.opacity(0.15))
-        } else if days == 1 {
-            return ("1 day left", DS.ColorToken.error, DS.ColorToken.error.opacity(0.15))
-        } else if days <= 3 {
-            return ("\(days) days left", DS.ColorToken.warning, DS.ColorToken.warning.opacity(0.15))
-        } else {
-            return ("\(days) days left", DS.ColorToken.warning, DS.ColorToken.warning.opacity(0.15))
-        }
-    }
-
-    // MARK: - Pantry List Header + Category Chips
+    // MARK: - Pantry List Header + Sort/Filter Controls
 
     private var pantryListHeader: some View {
         HStack {
             Text("Your Pantry")
-                .font(.custom("CalSans-Regular", size: 22))
-                .foregroundStyle(DS.ColorToken.textPrimary)
+                .foregroundStyle(Sourdough.Colors.ink)
+                .sourdoughTextStyle(.title2)
 
             Spacer()
 
-            HStack(spacing: DS.Spacing.space2) {
-                let count = pantryStore.ingredients.count
-                Text("\(count) item\(count == 1 ? "" : "s")")
-                    .font(.custom("Satoshi Variable", size: 14))
-                    .foregroundStyle(DS.ColorToken.textSecondary)
-
-                Button {
-                    showingFilterSheet = true
-                } label: {
-                    Image(systemName: hasActiveFilters
-                          ? "line.3.horizontal.decrease.circle.fill"
-                          : "line.3.horizontal.decrease")
-                        .font(.system(size: 20, weight: .medium))
-                        .foregroundStyle(
-                            hasActiveFilters ? DS.ColorToken.primary : DS.ColorToken.textSecondary
-                        )
-                }
-                .buttonStyle(.plain)
-            }
+            sortFilterRow
         }
     }
 
-    private var categoryChipsRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: DS.Spacing.space2) {
-                categoryChip(label: "All", isSelected: selectedCategories.isEmpty) {
-                    selectedCategories.removeAll()
-                }
-                ForEach(PantryCategory.allCases) { category in
-                    categoryChip(label: category.label, isSelected: selectedCategories.contains(category)) {
-                        if selectedCategories.count == 1 && selectedCategories.contains(category) {
-                            selectedCategories.removeAll()
-                        } else {
-                            selectedCategories = [category]
+    private var sortFilterRow: some View {
+        HStack(spacing: Sourdough.Spacing.insideChip) {
+            sortMenu
+            filterButton
+        }
+    }
+
+    private var itemCountRow: some View {
+        let count = cachedFilteredIngredients.count
+        return Text("\(count) item\(count == 1 ? "" : "s")")
+            .foregroundStyle(Sourdough.Colors.mutedInk)
+            .sourdoughTextStyle(.numeric)
+    }
+
+    private var sortMenu: some View {
+        Menu {
+            ForEach(SortOption.allCases) { option in
+                Button {
+                    sortOption = option
+                } label: {
+                    Label {
+                        Text(option.label)
+                    } icon: {
+                        if sortOption == option {
+                            Ph.check.regular
                         }
                     }
                 }
             }
-        }
-        .mask(
-            LinearGradient(
-                stops: [
-                    .init(color: .black, location: 0),
-                    .init(color: .black, location: 0.8),
-                    .init(color: .clear, location: 1.0)
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
+        } label: {
+            HStack(spacing: Sourdough.Spacing.iconToLabel) {
+                Ph.arrowsDownUp.regular
+                    .frame(width: 14, height: 14)
+                Text("Sort")
+                    .foregroundStyle(Sourdough.Colors.ink)
+                    .sourdoughTextStyle(.subhead)
+                Ph.caretDown.regular
+                    .frame(width: 11, height: 11)
+            }
+            .foregroundStyle(Sourdough.Colors.mutedInk)
+            .padding(.horizontal, Sourdough.Spacing.rowInternals)
+            .frame(height: 36)
+            .background(Sourdough.Colors.sunken)
+            .overlay(
+                Capsule().stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
             )
-        )
+            .clipShape(Capsule())
+        }
     }
 
-    private func categoryChip(label: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(label)
-                .font(.custom("Satoshi Variable", size: 14).weight(.medium))
-                .foregroundStyle(isSelected ? .white : DS.ColorToken.textSecondary)
-                .padding(.horizontal, DS.Spacing.space4)
-                .padding(.vertical, DS.Spacing.space2)
-                .background(isSelected ? DS.ColorToken.accent : DS.ColorToken.bgSecondary)
-                .overlay(
-                    Capsule()
-                        .stroke(isSelected ? Color.clear : DS.ColorToken.borderDefault, lineWidth: 1)
-                )
-                .clipShape(Capsule())
+    private var filterButton: some View {
+        Button {
+            showingFilterSheet = true
+        } label: {
+            HStack(spacing: Sourdough.Spacing.iconToLabel) {
+                Group {
+                    if hasActiveFilters {
+                        Ph.fadersHorizontal.fill
+                    } else {
+                        Ph.fadersHorizontal.regular
+                    }
+                }
+                .frame(width: 14, height: 14)
+                Text("Filter")
+                    .foregroundStyle(hasActiveFilters ? Sourdough.Colors.onAction : Sourdough.Colors.ink)
+                    .sourdoughTextStyle(.subhead)
+            }
+            .foregroundStyle(hasActiveFilters ? Sourdough.Colors.onAction : Sourdough.Colors.mutedInk)
+            .padding(.horizontal, Sourdough.Spacing.rowInternals)
+            .frame(height: 36)
+            .background(hasActiveFilters ? Sourdough.Ramp.sage500 : Sourdough.Colors.sunken)
+            .overlay(
+                Capsule().stroke(hasActiveFilters ? Color.clear : Sourdough.Colors.interactiveBorder, lineWidth: 1)
+            )
+            .clipShape(Capsule())
         }
         .buttonStyle(.plain)
+    }
+
+    private static let skeletonRowWidths: [(nameWidth: CGFloat, metaWidth: CGFloat)] = [
+        (nameWidth: 120, metaWidth: 80),
+        (nameWidth: 96,  metaWidth: 68),
+        (nameWidth: 148, metaWidth: 90),
+        (nameWidth: 108, metaWidth: 72),
+        (nameWidth: 132, metaWidth: 76),
+        (nameWidth: 88,  metaWidth: 64),
+        (nameWidth: 116, metaWidth: 84),
+    ]
+
+    private var pantrySkeletonContent: some View {
+        VStack(spacing: Sourdough.Spacing.insideChip) {
+            ForEach(Self.skeletonRowWidths.indices, id: \.self) { index in
+                PantrySkeletonRow(
+                    nameWidth: Self.skeletonRowWidths[index].nameWidth,
+                    metaWidth: Self.skeletonRowWidths[index].metaWidth
+                )
+            }
+        }
+        .padding(.horizontal, Sourdough.Spacing.screenMargin)
+        .padding(.top, Sourdough.Spacing.insideChip)
     }
 
     private var isShowingDeleteAlert: Binding<Bool> {
@@ -499,131 +513,188 @@ struct PantryView: View {
     }
 }
 
+// MARK: - Pending Ingredient (duplicate flow)
+
+private struct PendingIngredient {
+    let name: String
+    let amount: String?
+    let category: Ingredient.Category
+    let location: Ingredient.StorageLocation
+    let expirationDate: Date?
+    let icon: String?
+}
+
 // MARK: - Extracted Equatable Ingredient Row
 
-private struct IngredientRowContent: View, Equatable {
+struct IngredientRowContent: View, Equatable {
     let item: Ingredient
-
-    private static let expirationDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MMM d yyyy"
-        return formatter
-    }()
-
-    private static let relativeFormatter: RelativeDateTimeFormatter = {
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .abbreviated
-        return f
-    }()
 
     static func == (lhs: IngredientRowContent, rhs: IngredientRowContent) -> Bool {
         lhs.item == rhs.item
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.space2) {
-            HStack(spacing: DS.Spacing.space2) {
-                pillLabel(
-                    text: item.location.title,
-                    foreground: .white,
-                    background: locationColor(item.location)
-                )
-                let (catFg, catBg) = categoryPillColors(for: item.category)
-                pillLabel(
-                    text: item.category.title,
-                    foreground: catFg,
-                    background: catBg
-                )
-            }
+        HStack(spacing: Sourdough.Spacing.rowInternals) {
+            Text(item.icon ?? item.category.icon)
+                .font(.system(size: 22))
+                .frame(width: 44, height: 44)
+                .background(item.freshnessState.style.tint)
+                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.thumbnail, style: .continuous))
 
-            HStack(alignment: .firstTextBaseline, spacing: DS.Spacing.space3) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(item.name.capitalized)
-                    .font(.custom("Satoshi Variable", size: 20).weight(.semibold))
-                    .foregroundStyle(DS.ColorToken.textPrimary)
+                    .sourdoughTextStyle(.rowTitle)
                     .lineLimit(1)
 
-                Spacer(minLength: 0)
-
-                if let amount = item.amount, !amount.isEmpty {
-                    Text(amount)
-                        .font(.custom("Satoshi Variable", size: 16).weight(.semibold))
-                        .foregroundStyle(DS.ColorToken.textPrimary)
+                HStack(spacing: 4) {
+                    if let amount = item.amount, !amount.isEmpty {
+                        Text(amount)
+                        Text("·")
+                    }
+                    Text(item.location.title)
                 }
+                .sourdoughTextStyle(.subhead)
             }
 
-            HStack {
-                Text("Added \(Self.relativeFormatter.localizedString(for: item.loggedAt, relativeTo: Date()))")
-                    .appTextStyle(.caption)
-                    .foregroundStyle(DS.ColorToken.textTertiary)
+            Spacer()
 
-                Spacer()
-
-                if let days = item.daysUntilExpiration {
-                    let (label, fg, _) = expirationStyle(days: days)
-                    Text(label)
-                        .font(.custom("Satoshi Variable", size: 12).weight(.semibold))
-                        .foregroundStyle(fg)
-                } else if let expDate = item.expirationDate {
-                    Text("exp. \(Self.expirationDateFormatter.string(from: expDate))")
-                        .appTextStyle(.caption)
-                        .foregroundStyle(DS.ColorToken.textSecondary)
+            VStack(alignment: .trailing, spacing: 2) {
+                freshnessChip(item: item)
+                if let date = item.expirationDate {
+                    Text("Exp \(Self.formatExpiration(date))")
+                        .foregroundStyle(Sourdough.Colors.faintInk)
+                        .sourdoughTextStyle(.caption)
                 }
             }
         }
-        .padding(.horizontal, DS.Spacing.space5)
-        .padding(.vertical, DS.Spacing.space3)
+        .padding(.horizontal, Sourdough.Spacing.screenMargin)
+        .frame(height: 72)
     }
 
-    private func locationColor(_ location: Ingredient.StorageLocation) -> Color {
-        switch location {
-        case .fridge: return DS.ColorToken.warning
-        case .freezer: return Color(red: 0.25, green: 0.5, blue: 0.9)
-        case .pantry: return DS.ColorToken.accent
+    @ViewBuilder
+    private func freshnessChip(item: Ingredient) -> some View {
+        let state = item.freshnessState
+        FreshnessChip(state: state, dayCountText: Self.chipText(state: state, days: item.daysUntilExpiration))
+    }
+
+    /// Mockup-matching chip copy: "Use today" at day 0, bare day count while soon, "Fresh" (with an
+    /// approximate week count only inside a useful ~2-month window) once comfortably out, "Expired" past.
+    static func chipText(state: Sourdough.FreshnessState, days: Int?) -> String {
+        switch state {
+        case .expired:
+            return "Expired"
+        case .urgent:
+            return "Use today"
+        case .soon:
+            let n = days ?? 0
+            return "\(n) day\(n == 1 ? "" : "s")"
+        case .fresh:
+            guard let days, days > 0 else { return "Fresh" }
+            let weeks = Int((Double(days) / 7.0).rounded())
+            guard weeks >= 1 && weeks <= 8 else { return "Fresh" }
+            return "Fresh · \(weeks) wk\(weeks == 1 ? "" : "s")"
         }
     }
 
-    private func categoryPillColors(for category: Ingredient.Category) -> (Color, Color) {
-        switch category {
-        case .proteins: return (.white, DS.ColorToken.error.opacity(0.85))
-        case .produce: return (.white, DS.ColorToken.primary)
-        case .vegetables: return (.white, DS.ColorToken.accent)
-        case .carbs: return (.white, DS.ColorToken.warning)
-        case .dairy: return (.white, Color(red: 0.2, green: 0.45, blue: 0.85))
-        case .fruits: return (.white, DS.ColorToken.primary)
-        case .condiments: return (DS.ColorToken.textSecondary, DS.ColorToken.bgTertiary)
-        case .other: return (DS.ColorToken.textTertiary, DS.ColorToken.bgTertiary)
+    private static let expirationFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MMM d"
+        return f
+    }()
+
+    static func formatExpiration(_ date: Date) -> String {
+        let year = Calendar.current.component(.year, from: date)
+        let currentYear = Calendar.current.component(.year, from: Date())
+        if year != currentYear {
+            let f = DateFormatter()
+            f.dateFormat = "MMM d, yyyy"
+            return f.string(from: date)
+        }
+        return expirationFormatter.string(from: date)
+    }
+}
+
+extension Ingredient {
+    var freshnessState: Sourdough.FreshnessState {
+        if isExpired { return .expired }
+        guard let days = daysUntilExpiration else { return .fresh }
+        return Sourdough.FreshnessState(daysUntilExpiration: days)
+    }
+}
+
+// MARK: - Skeleton Views
+
+private struct PantrySkeletonRow: View {
+    let nameWidth: CGFloat
+    let metaWidth: CGFloat
+
+    var body: some View {
+        HStack(spacing: Sourdough.Spacing.rowInternals) {
+            RoundedRectangle(cornerRadius: Sourdough.Radius.thumbnail, style: .continuous)
+                .fill(Sourdough.Colors.sunken)
+                .frame(width: 44, height: 44)
+
+            VStack(alignment: .leading, spacing: 4) {
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Sourdough.Colors.sunken)
+                    .frame(width: nameWidth, height: 14)
+
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Sourdough.Colors.sunken)
+                    .frame(width: metaWidth, height: 11)
+            }
+
+            Spacer()
+
+            RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous)
+                .fill(Sourdough.Colors.sunken)
+                .frame(width: 48, height: 22)
+        }
+        .padding(.horizontal, Sourdough.Spacing.screenMargin)
+        .frame(height: 72)
+        .background(Sourdough.Colors.card)
+        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
+        .sourdoughElevation(.hairline, cornerRadius: Sourdough.Radius.card)
+        .redacted(reason: .placeholder)
+    }
+}
+
+private enum SortOption: CaseIterable, Identifiable {
+    case expiration
+    case alphabetical
+
+    var id: Self { self }
+
+    var label: String {
+        switch self {
+        case .expiration:   return "Expiration"
+        case .alphabetical: return "Alphabetical"
         }
     }
+}
 
-    private func pillLabel(text: String, foreground: Color, background: Color) -> some View {
-        Text(text)
-            .appTextStyle(.overline)
-            .foregroundStyle(foreground)
-            .padding(.horizontal, DS.Spacing.space2)
-            .padding(.vertical, DS.Spacing.space1)
-            .background(background)
-            .clipShape(Capsule())
-    }
+/// The 3 selectable tiers driving the freshness dashboard's legend chips/bar segments — deliberately
+/// excludes `.expired` (surfaced separately as "N expired · review", not a selectable tier) and treats
+/// undated items as out of scope entirely (see `PantryFreshnessDashboard`).
+enum FreshnessTier: CaseIterable, Identifiable {
+    case fresh
+    case soon
+    case urgent
 
-    private func expirationStyle(days: Int) -> (String, Color, Color) {
-        if days < 0 {
-            return ("Expired", DS.ColorToken.error, DS.ColorToken.errorLight)
-        } else if days == 0 {
-            return ("Today", DS.ColorToken.error, DS.ColorToken.errorLight)
-        } else if days == 1 {
-            return ("1 day left", DS.ColorToken.error, DS.ColorToken.errorLight)
-        } else if days <= 3 {
-            return ("\(days) days left", DS.ColorToken.warning, DS.ColorToken.warningLight)
-        } else if days <= 5 {
-            return ("\(days) days left", DS.ColorToken.warning, DS.ColorToken.warningLight)
-        } else {
-            return ("\(days) days left", DS.ColorToken.textSecondary, DS.ColorToken.bgSecondary)
+    var id: Self { self }
+
+    func matches(_ state: Sourdough.FreshnessState) -> Bool {
+        switch self {
+        case .fresh:  return state == .fresh
+        case .soon:   return state == .soon
+        case .urgent: return state == .urgent
         }
     }
 }
 
 private enum PantryCategory: String, CaseIterable, Identifiable {
     case proteins
+    case seafood
     case produce
     case vegetables
     case carbs
@@ -635,18 +706,31 @@ private enum PantryCategory: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 
     var label: String { ingredientCategory.title }
-    var icon: String { ingredientCategory.icon }
+    var icon: Image {
+        switch self {
+        case .proteins:   return Ph.hamburger.regular
+        case .seafood:    return Ph.fish.regular
+        case .produce:    return Ph.carrot.regular
+        case .vegetables: return Ph.leaf.regular
+        case .carbs:      return Ph.cake.regular
+        case .dairy:      return Ph.coffee.regular
+        case .fruits:     return Ph.basket.regular
+        case .condiments: return Ph.drop.regular
+        case .other:      return Ph.dotsThreeCircle.regular
+        }
+    }
 
     var ingredientCategory: Ingredient.Category {
         switch self {
-        case .proteins: return .proteins
-        case .produce: return .produce
+        case .proteins:   return .proteins
+        case .seafood:    return .seafood
+        case .produce:    return .produce
         case .vegetables: return .vegetables
-        case .carbs: return .carbs
-        case .dairy: return .dairy
-        case .fruits: return .fruits
+        case .carbs:      return .carbs
+        case .dairy:      return .dairy
+        case .fruits:     return .fruits
         case .condiments: return .condiments
-        case .other: return .other
+        case .other:      return .other
         }
     }
 
@@ -655,130 +739,163 @@ private enum PantryCategory: String, CaseIterable, Identifiable {
     }
 }
 
-private struct ExpandableIngredientRow: View {
+/// A single pantry ingredient card. Tapping presents `IngredientDetailSheet`; swiping reveals delete.
+struct ExpandableIngredientRow: View {
     let item: Ingredient
-    let isExpanded: Bool
-    let onTap: () -> Void
-    let onUse: () -> Void
-    let onEdit: () -> Void
+    let onSelect: () -> Void
     let onDelete: () -> Void
-    let onExtend: () -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
-            IngredientRowContent(item: item)
-
-            if isExpanded {
-                Group {
-                    if item.isExpired {
-                        HStack(spacing: DS.Spacing.space3) {
-                            actionButton(label: "Still good?", icon: "calendar.badge.plus", style: .filled, action: onExtend)
-                            actionButton(label: "Trash", icon: "trash", style: .destructive, action: onDelete)
-                        }
-                    } else {
-                        HStack(spacing: DS.Spacing.space3) {
-                            actionButton(label: "Use", icon: "minus.circle", style: .filled, action: onUse)
-                            actionButton(label: "Edit", icon: "pencil", style: .outlined, action: onEdit)
-                            actionButton(label: "Delete", icon: "trash", style: .destructive, action: onDelete)
-                        }
+        IngredientRowContent(item: item)
+            .background(Sourdough.Colors.card)
+            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
+            .sourdoughElevation(.hairline, cornerRadius: Sourdough.Radius.card)
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onSelect)
+            .swipeActions(edge: .trailing) {
+                Button(role: .destructive, action: onDelete) {
+                    Label {
+                        Text("Delete")
+                    } icon: {
+                        Image(systemName: "trash")
                     }
                 }
-                .padding(.horizontal, DS.Spacing.space4)
-                .padding(.top, DS.Spacing.space3)
-                .padding(.bottom, DS.Spacing.space4)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .tint(Sourdough.Colors.destructive)
             }
-        }
-        .background(item.isExpired ? DS.ColorToken.errorLight : DS.ColorToken.bgSecondary)
-        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous)
-                .stroke(item.isExpired ? DS.ColorToken.error.opacity(0.3) : (isExpanded ? DS.ColorToken.primary.opacity(0.3) : DS.ColorToken.borderDefault), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 2)
-        .contentShape(Rectangle())
-        .onTapGesture(perform: onTap)
-    }
-
-    private enum ActionButtonStyle {
-        case filled      // Solid accent background, white text
-        case outlined    // Border only, no fill
-        case destructive // Tinted red background
-    }
-
-    private func actionButton(label: String, icon: String, style: ActionButtonStyle, action: @escaping () -> Void) -> some View {
-        let foreground: Color
-        let background: Color
-        let border: Color?
-
-        switch style {
-        case .filled:
-            foreground = .white
-            background = DS.ColorToken.accent
-            border = nil
-        case .outlined:
-            foreground = DS.ColorToken.textSecondary
-            background = .clear
-            border = DS.ColorToken.borderDefault
-        case .destructive:
-            foreground = DS.ColorToken.error
-            background = DS.ColorToken.error.opacity(0.1)
-            border = nil
-        }
-
-        return Button(action: action) {
-            HStack(spacing: DS.Spacing.space1) {
-                Image(systemName: icon)
-                    .font(.system(size: 13, weight: .semibold))
-                Text(label)
-                    .font(.custom("Satoshi Variable", size: 14).weight(.semibold))
-            }
-            .foregroundStyle(foreground)
-            .frame(maxWidth: .infinity)
-            .frame(height: 40)
-            .background(background)
-            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
-            .overlay(
-                Group {
-                    if let border {
-                        RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
-                            .stroke(border, lineWidth: 1)
-                    }
-                }
-            )
-        }
-        .buttonStyle(.plain)
     }
 }
 
-private enum StorageFilter: CaseIterable, Identifiable {
-    case fridge
-    case freezer
-    case pantry
+// MARK: - Ingredient Detail Sheet
 
-    var id: String { label }
+struct IngredientDetailSheet: View {
+    let item: Ingredient
+    let onUse: () -> Void
+    let onEdit: () -> Void
 
-    var label: String {
-        switch self {
-        case .fridge: return "Fridge"
-        case .freezer: return "Freezer"
-        case .pantry: return "Pantry"
+    private var state: Sourdough.FreshnessState { item.freshnessState }
+
+    private var statusLabel: String {
+        switch state {
+        case .expired: return "Expired"
+        case .urgent:  return "Use today"
+        case .soon:    return "Expiring soon"
+        case .fresh:   return "Fresh"
         }
     }
 
-    var icon: String {
-        switch self {
-        case .fridge: return "refrigerator"
-        case .freezer: return "snowflake"
-        case .pantry: return "cabinet"
+    /// Ink-safe accent per state, for text sitting directly on the plain canvas/card — distinct from
+    /// `FreshnessStyle.label`, which assumes it's drawn on top of the matching chip fill (e.g. `.urgent`'s
+    /// label is near-white, correct on a solid terracotta chip but unreadable on a plain background).
+    private var statusColor: Color {
+        switch state {
+        case .expired: return Sourdough.Colors.destructive
+        case .urgent:  return Sourdough.Colors.actionInk
+        case .soon:    return Sourdough.Ramp.honey700
+        case .fresh:   return Sourdough.Ramp.sage600
         }
     }
 
-    func matches(ingredient: Ingredient) -> Bool {
-        switch self {
-        case .fridge: return ingredient.location == .fridge
-        case .freezer: return ingredient.location == .freezer
-        case .pantry: return ingredient.location == .pantry
+    var body: some View {
+        VStack(spacing: 0) {
+            Capsule()
+                .fill(Sourdough.Colors.hairline)
+                .frame(width: 36, height: 5)
+                .padding(.top, Sourdough.Spacing.rowInternals)
+                .padding(.bottom, Sourdough.Spacing.betweenBlocks)
+
+            HStack(spacing: Sourdough.Spacing.rowInternals) {
+                Text(item.icon ?? item.category.icon)
+                    .font(.system(size: 30))
+                    .frame(width: 64, height: 64)
+                    .background(Sourdough.Colors.sunken)
+                    .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.name.capitalized)
+                        .foregroundStyle(Sourdough.Colors.ink)
+                        .sourdoughTextStyle(.title2)
+                        .lineLimit(1)
+
+                    if let date = item.expirationDate {
+                        Text("\(statusLabel) · \(IngredientRowContent.formatExpiration(date))")
+                            .foregroundStyle(statusColor)
+                            .sourdoughTextStyle(.subhead)
+                    } else {
+                        Text(statusLabel)
+                            .foregroundStyle(statusColor)
+                            .sourdoughTextStyle(.subhead)
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+
+            VStack(spacing: 0) {
+                detailRow(label: "Quantity", value: (item.amount?.isEmpty == false ? item.amount : nil) ?? "—")
+                detailRow(label: "Location", value: item.location.title)
+                detailRow(label: "Category", value: item.category.title)
+                detailRow(
+                    label: "Expires",
+                    value: item.expirationDate.map(IngredientRowContent.formatExpiration) ?? "—",
+                    valueColor: item.expirationDate != nil ? statusColor : nil
+                )
+            }
+            .padding(.top, Sourdough.Spacing.betweenBlocks)
+
+            GeometryReader { proxy in
+                HStack(spacing: Sourdough.Spacing.insideChip) {
+                    Button(action: onUse) {
+                        Text("Use Up")
+                            .foregroundStyle(Sourdough.Colors.onAction)
+                            .sourdoughTextStyle(.rowTitle)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 52)
+                            .background(Sourdough.Ramp.sage500)
+                            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .frame(width: proxy.size.width * 0.62)
+
+                    Button(action: onEdit) {
+                        Text("Edit")
+                            .foregroundStyle(Sourdough.Colors.ink)
+                            .sourdoughTextStyle(.rowTitle)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 52)
+                            .background(Sourdough.Colors.sunken)
+                            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity)
+                }
+            }
+            .frame(height: 52)
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .padding(.top, Sourdough.Spacing.betweenBlocks)
+            .padding(.bottom, Sourdough.Spacing.screenMargin)
+
+            Spacer(minLength: 0)
+        }
+        .background(Sourdough.Colors.canvas)
+    }
+
+    private func detailRow(label: String, value: String, valueColor: Color? = nil) -> some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(label)
+                    .foregroundStyle(Sourdough.Colors.mutedInk)
+                    .sourdoughTextStyle(.body)
+                Spacer()
+                Text(value)
+                    .foregroundStyle(valueColor ?? Sourdough.Colors.ink)
+                    .sourdoughTextStyle(.rowTitle)
+            }
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .padding(.vertical, Sourdough.Spacing.rowInternals)
+
+            Divider().foregroundStyle(Sourdough.Colors.hairline)
+                .padding(.leading, Sourdough.Spacing.screenMargin)
         }
     }
 }
@@ -793,6 +910,7 @@ private enum StorageFilter: CaseIterable, Identifiable {
 
 private struct AddIngredientSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var session: AppSession
 
     @State private var name = ""
     @State private var amountValue = ""
@@ -801,8 +919,13 @@ private struct AddIngredientSheet: View {
     @State private var location: Ingredient.StorageLocation = .fridge
     @State private var hasExpiration = false
     @State private var expirationDate = Calendar.current.date(byAdding: .day, value: 3, to: Date()) ?? Date()
+    @State private var icon: String? = nil
+    @State private var showBarcodeScanner = false
+    @State private var showPaywall = false
+    @State private var showSpeechRecording = false
+    @State private var speechPermissionDenied = false
 
-    let onSave: (String, String?, Ingredient.Category, Ingredient.StorageLocation, Date?) -> Void
+    let onSave: (String, String?, Ingredient.Category, Ingredient.StorageLocation, Date?, String?) -> Void
 
     private var canSave: Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -825,22 +948,65 @@ private struct AddIngredientSheet: View {
             location: $location,
             hasExpiration: $hasExpiration,
             expirationDate: $expirationDate,
+            icon: $icon,
             canSave: canSave,
             saveLabel: "Add Ingredient",
             onCancel: { dismiss() },
             onSave: {
-                onSave(name, formattedAmount, category, location, hasExpiration ? expirationDate : nil)
+                onSave(name, formattedAmount, category, location, hasExpiration ? expirationDate : nil, icon)
                 dismiss()
+            },
+            onSpeechTap: {
+                guard session.isPremium else { showPaywall = true; return }
+                if #available(iOS 26, *) {
+                    Task {
+                        let granted = await SpeechIngredientRecognizer.requestPermissions()
+                        if granted { showSpeechRecording = true } else { speechPermissionDenied = true }
+                    }
+                }
+            },
+            onBarcodeTap: {
+                if session.isPremium { showBarcodeScanner = true } else { showPaywall = true }
             }
         )
+        .fullScreenCover(isPresented: $showBarcodeScanner) {
+            BarcodeScannerSheet { productName, rawQuantity, productCategory, capturedExpDate in
+                name = productName
+                let parsed = UnitMeasurement.parse(from: rawQuantity)
+                amountValue = parsed.value
+                unit = parsed.unit
+                if let cat = productCategory { category = cat }
+                if let d = capturedExpDate {
+                    hasExpiration = true
+                    expirationDate = d
+                }
+            }
+        }
+        .sheet(isPresented: $showPaywall) {
+            UseUpPaywallView(onDismiss: { showPaywall = false })
+        }
+        .sheet(isPresented: $showSpeechRecording) {
+            if #available(iOS 26, *) {
+                SpeechRecordingSheet { spokenName, rawQuantity in
+                    name = spokenName
+                    if !rawQuantity.isEmpty {
+                        let parsed = UnitMeasurement.parse(from: rawQuantity)
+                        amountValue = parsed.value
+                        unit = parsed.unit
+                    }
+                }
+                .presentationDetents([.medium])
+                .presentationDragIndicator(.visible)
+            }
+        }
     }
 }
 
-private struct EditIngredientSheet: View {
+struct EditIngredientSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     let ingredient: Ingredient
-    let onSave: (String, String?, Ingredient.Category, Ingredient.StorageLocation, Date?) -> Void
+    let onSave: (String, String?, Ingredient.Category, Ingredient.StorageLocation, Date?, String?) -> Void
 
     @State private var name: String
     @State private var amountValue: String
@@ -849,10 +1015,11 @@ private struct EditIngredientSheet: View {
     @State private var location: Ingredient.StorageLocation
     @State private var hasExpiration: Bool
     @State private var expirationDate: Date
+    @State private var icon: String?
 
     init(
         ingredient: Ingredient,
-        onSave: @escaping (String, String?, Ingredient.Category, Ingredient.StorageLocation, Date?) -> Void
+        onSave: @escaping (String, String?, Ingredient.Category, Ingredient.StorageLocation, Date?, String?) -> Void
     ) {
         self.ingredient = ingredient
         self.onSave = onSave
@@ -866,6 +1033,7 @@ private struct EditIngredientSheet: View {
         _location = State(initialValue: ingredient.location)
         _hasExpiration = State(initialValue: ingredient.expirationDate != nil)
         _expirationDate = State(initialValue: ingredient.expirationDate ?? Date())
+        _icon = State(initialValue: ingredient.icon)
     }
 
     private var canSave: Bool {
@@ -889,11 +1057,12 @@ private struct EditIngredientSheet: View {
             location: $location,
             hasExpiration: $hasExpiration,
             expirationDate: $expirationDate,
+            icon: $icon,
             canSave: canSave,
             saveLabel: "Save Changes",
             onCancel: { dismiss() },
             onSave: {
-                onSave(name, formattedAmount, category, location, hasExpiration ? expirationDate : nil)
+                onSave(name, formattedAmount, category, location, hasExpiration ? expirationDate : nil, icon)
                 dismiss()
             }
         )
@@ -911,16 +1080,42 @@ private struct IngredientFormContent: View {
     @Binding var location: Ingredient.StorageLocation
     @Binding var hasExpiration: Bool
     @Binding var expirationDate: Date
+    @Binding var icon: String?
     let canSave: Bool
     let saveLabel: String
     let onCancel: () -> Void
     let onSave: () -> Void
+    var onSpeechTap: (() -> Void)? = nil
+    var onBarcodeTap: (() -> Void)? = nil
 
-    private func storageIcon(for loc: Ingredient.StorageLocation) -> String {
+    static let foodEmojis: [String] = [
+        "🍎", "🍊", "🍋", "🍇", "🍓", "🫐", "🍑", "🍒", "🍍", "🥭",
+        "🍌", "🍉", "🍐", "🥝", "🍅", "🫒",
+        "🥕", "🥦", "🧅", "🧄", "🥬", "🌽", "🫑", "🥒", "🥑", "🍆",
+        "🌶️", "🥔",
+        "🥩", "🍗", "🍖", "🥚", "🫘", "🥜", "🍳",
+        "🐟", "🦐", "🦑", "🦞", "🦀", "🐙", "🦪",
+        "🥛", "🧀", "🧈",
+        "🍞", "🥐", "🥨", "🥞", "🧇", "🍚", "🍜", "🍝", "🫓", "🌾",
+        "🫙", "🧂", "🍯", "🫕", "🫚",
+        "🍄", "🌰", "🥗", "🧊", "🧃",
+    ]
+
+    @State private var showingIconPicker = false
+
+    private var trailingPadding: CGFloat {
+        let hasSpeech = onSpeechTap != nil
+        let hasBarcode = onBarcodeTap != nil
+        let iconCount = (hasSpeech ? 1 : 0) + (hasBarcode ? 1 : 0)
+        guard iconCount > 0 else { return Sourdough.Spacing.screenMargin }
+        return Sourdough.Spacing.screenMargin + CGFloat(iconCount) * 28 + CGFloat(iconCount - 1) * 16
+    }
+
+    private func storageIcon(for loc: Ingredient.StorageLocation) -> Image {
         switch loc {
-        case .fridge: return "refrigerator"
-        case .freezer: return "snowflake"
-        case .pantry: return "cabinet"
+        case .fridge: return Ph.doorOpen.regular
+        case .freezer: return Ph.snowflake.regular
+        case .pantry: return Ph.archive.regular
         }
     }
 
@@ -928,71 +1123,136 @@ private struct IngredientFormContent: View {
         VStack(spacing: 0) {
             // Handle + header
             Capsule()
-                .fill(DS.ColorToken.borderDefault)
+                .fill(Sourdough.Colors.hairline)
                 .frame(width: 36, height: 5)
-                .padding(.top, DS.Spacing.space3)
-                .padding(.bottom, DS.Spacing.space4)
+                .padding(.top, Sourdough.Spacing.rowInternals)
+                .padding(.bottom, Sourdough.Spacing.insideChip)
+
+            HStack {
+                Text(title)
+                    .foregroundStyle(Sourdough.Colors.ink)
+                    .sourdoughTextStyle(.title1)
+                Spacer()
+                Button("Cancel", action: onCancel)
+                    .foregroundStyle(Sourdough.Colors.mutedInk)
+                    .sourdoughTextStyle(.caption)
+                    .buttonStyle(.plain)
+            }
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .padding(.bottom, Sourdough.Spacing.rowInternals)
 
             ScrollView(showsIndicators: false) {
-                VStack(spacing: DS.Spacing.space6) {
-                    // Title + cancel
-                    HStack {
-                        Text(title)
-                            .appTextStyle(.heading2)
-                            .foregroundStyle(DS.ColorToken.textPrimary)
+                VStack(spacing: Sourdough.Spacing.betweenBlocks) {
+                    // Icon + Name field
+                    VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
+                        // Icon selector centered above the name field
+                        Button {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                                showingIconPicker.toggle()
+                            }
+                        } label: {
+                            ZStack {
+                                Circle()
+                                    .fill(Sourdough.Colors.sunken)
+                                    .overlay(
+                                        Circle()
+                                            .stroke(
+                                                showingIconPicker ? Sourdough.Ramp.sage500 : Sourdough.Colors.interactiveBorder,
+                                                lineWidth: showingIconPicker ? 2 : 1
+                                            )
+                                    )
+                                    .frame(width: 80, height: 80)
+                                Text(icon ?? category.icon)
+                                    .font(.system(size: 40))
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.bottom, Sourdough.Spacing.iconToLabel)
 
-                        Spacer()
-
-                        Button("Cancel", action: onCancel)
-                            .font(.custom("Satoshi Variable", size: 14).weight(.medium))
-                            .foregroundStyle(DS.ColorToken.textSecondary)
-                            .buttonStyle(.plain)
-                    }
-
-                    // Name field
-                    VStack(alignment: .leading, spacing: DS.Spacing.space2) {
                         Text("Ingredient Name")
-                            .appTextStyle(.caption)
-                            .foregroundStyle(DS.ColorToken.textSecondary)
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                            .sourdoughTextStyle(.caption)
 
-                        TextField("e.g. Chicken breast", text: $name)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .appTextStyle(.body)
-                            .foregroundStyle(DS.ColorToken.textPrimary)
-                            .padding(.horizontal, DS.Spacing.space3)
-                            .frame(height: 48)
-                            .background(DS.ColorToken.bgSecondary)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
-                                    .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                        // Text field with scan/speech icons inside trailing edge
+                        ZStack(alignment: .trailing) {
+                            TextField("e.g. Chicken breast", text: $name)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .foregroundStyle(Sourdough.Colors.ink)
+                                .sourdoughTextStyle(.body)
+                                .padding(.leading, Sourdough.Spacing.screenMargin)
+                                .padding(.trailing, trailingPadding)
+                                .frame(height: 48)
+                                .background(Sourdough.Colors.sunken)
+                                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+
+                            HStack(spacing: Sourdough.Spacing.screenMargin) {
+                                if #available(iOS 26, *), let onSpeechTap {
+                                    Button(action: onSpeechTap) {
+                                        Ph.microphone.regular
+                                            .frame(width: 16, height: 16)
+                                            .foregroundStyle(Sourdough.Colors.actionInk)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                if let onBarcodeTap {
+                                    Button(action: onBarcodeTap) {
+                                        Ph.barcode.regular
+                                            .frame(width: 16, height: 16)
+                                            .foregroundStyle(Sourdough.Colors.actionInk)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .padding(.trailing, Sourdough.Spacing.screenMargin)
+                        }
+
+                        if showingIconPicker {
+                            LazyVGrid(
+                                columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7),
+                                spacing: 4
+                            ) {
+                                ForEach(IngredientFormContent.foodEmojis, id: \.self) { emoji in
+                                    Button {
+                                        icon = icon == emoji ? nil : emoji
+                                    } label: {
+                                        Text(emoji)
+                                            .font(.system(size: 24))
+                                            .frame(width: 44, height: 44)
+                                            .background(icon == emoji ? Sourdough.Ramp.sage500.opacity(0.15) : Color.clear)
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: Sourdough.Radius.tile, style: .continuous)
+                                                    .stroke(icon == emoji ? Sourdough.Ramp.sage500 : Color.clear, lineWidth: 1.5)
+                                            )
+                                            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.tile, style: .continuous))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                        }
                     }
 
                     // Amount field
-                    VStack(alignment: .leading, spacing: DS.Spacing.space2) {
+                    VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
                         Text("Amount")
-                            .appTextStyle(.caption)
-                            .foregroundStyle(DS.ColorToken.textSecondary)
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                            .sourdoughTextStyle(.caption)
 
-                        HStack(spacing: DS.Spacing.space2) {
+                        HStack(spacing: Sourdough.Spacing.insideChip) {
                             TextField("e.g. 500", text: $amountValue)
                                 .keyboardType(.decimalPad)
                                 .onChange(of: amountValue) { _, newValue in
                                     let filtered = newValue.filter { $0.isNumber || $0 == "." }
                                     if filtered != newValue { amountValue = filtered }
                                 }
-                                .appTextStyle(.body)
-                                .foregroundStyle(DS.ColorToken.textPrimary)
-                                .padding(.horizontal, DS.Spacing.space3)
+                                .foregroundStyle(Sourdough.Colors.ink)
+                                .sourdoughTextStyle(.body)
+                                .padding(.horizontal, Sourdough.Spacing.rowInternals)
                                 .frame(height: 48)
-                                .background(DS.ColorToken.bgSecondary)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
-                                        .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
-                                )
-                                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                                .background(Sourdough.Colors.sunken)
+                                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
 
                             Menu {
                                 ForEach(UnitMeasurement.allCases) { u in
@@ -1002,77 +1262,76 @@ private struct IngredientFormContent: View {
                                         HStack {
                                             Text(u.displayName)
                                             if unit == u {
-                                                Image(systemName: "checkmark")
+                                                Ph.check.regular.frame(width: 16, height: 16)
                                             }
                                         }
                                     }
                                 }
                             } label: {
-                                HStack(spacing: DS.Spacing.space1) {
+                                HStack(spacing: Sourdough.Spacing.iconToLabel) {
                                     Text(unit.label.isEmpty ? "Unit" : unit.label)
-                                        .font(.custom("Satoshi Variable", size: 14).weight(.medium))
                                         .foregroundStyle(
                                             unit == .none
-                                                ? DS.ColorToken.textTertiary
-                                                : DS.ColorToken.textPrimary
+                                                ? Sourdough.Colors.faintInk
+                                                : Sourdough.Colors.ink
                                         )
-                                    Image(systemName: "chevron.down")
-                                        .font(.system(size: 11, weight: .medium))
-                                        .foregroundStyle(DS.ColorToken.textTertiary)
+                                        .sourdoughTextStyle(.caption)
+                                    Ph.caretDown.regular
+                                        .frame(width: 11, height: 11)
+                                        .foregroundStyle(Sourdough.Colors.faintInk)
                                 }
-                                .padding(.horizontal, DS.Spacing.space3)
+                                .padding(.horizontal, Sourdough.Spacing.rowInternals)
                                 .frame(height: 48)
-                                .background(DS.ColorToken.bgSecondary)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
-                                        .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
-                                )
-                                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                                .background(Sourdough.Colors.sunken)
+                                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
                             }
                         }
                     }
 
                     // Category
-                    VStack(alignment: .leading, spacing: DS.Spacing.space2) {
+                    VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
                         Text("Category")
-                            .appTextStyle(.caption)
-                            .foregroundStyle(DS.ColorToken.textSecondary)
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                            .sourdoughTextStyle(.caption)
 
                         LazyVGrid(columns: [
-                            GridItem(.flexible(), spacing: DS.Spacing.space2),
-                            GridItem(.flexible(), spacing: DS.Spacing.space2),
-                            GridItem(.flexible(), spacing: DS.Spacing.space2)
-                        ], spacing: DS.Spacing.space2) {
+                            GridItem(.flexible(), spacing: Sourdough.Spacing.insideChip),
+                            GridItem(.flexible(), spacing: Sourdough.Spacing.insideChip),
+                            GridItem(.flexible(), spacing: Sourdough.Spacing.insideChip)
+                        ], spacing: Sourdough.Spacing.insideChip) {
                             ForEach(Ingredient.Category.allCases) { cat in
                                 Button {
                                     category = cat
                                 } label: {
-                                    HStack(spacing: DS.Spacing.space1) {
-                                        Image(systemName: cat.icon)
-                                            .font(.system(size: 12))
+                                    HStack(spacing: Sourdough.Spacing.iconToLabel) {
+                                        Text(cat.icon)
+                                            .font(.system(size: 18))
                                         Text(cat.title)
-                                            .font(.custom("Satoshi Variable", size: 13).weight(.medium))
+                                            .foregroundStyle(
+                                                category == cat ? Sourdough.Colors.onAction : Sourdough.Colors.mutedInk
+                                            )
+                                            .sourdoughTextStyle(.caption)
                                     }
                                     .foregroundStyle(
-                                        category == cat ? .white : DS.ColorToken.textSecondary
+                                        category == cat ? Sourdough.Colors.onAction : Sourdough.Colors.mutedInk
                                     )
                                     .frame(maxWidth: .infinity)
                                     .frame(height: 40)
                                     .background(
                                         category == cat
-                                            ? DS.ColorToken.primary
-                                            : DS.ColorToken.bgSecondary
+                                            ? Sourdough.Ramp.sage500
+                                            : Sourdough.Colors.sunken
                                     )
                                     .overlay(
-                                        RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
+                                        RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous)
                                             .stroke(
                                                 category == cat
                                                     ? Color.clear
-                                                    : DS.ColorToken.borderDefault,
+                                                    : Sourdough.Colors.interactiveBorder,
                                                 lineWidth: 1
                                             )
                                     )
-                                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                                    .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -1080,42 +1339,45 @@ private struct IngredientFormContent: View {
                     }
 
                     // Storage location
-                    VStack(alignment: .leading, spacing: DS.Spacing.space2) {
+                    VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
                         Text("Storage Location")
-                            .appTextStyle(.caption)
-                            .foregroundStyle(DS.ColorToken.textSecondary)
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                            .sourdoughTextStyle(.caption)
 
-                        HStack(spacing: DS.Spacing.space2) {
+                        HStack(spacing: Sourdough.Spacing.insideChip) {
                             ForEach(Ingredient.StorageLocation.allCases) { loc in
                                 Button {
                                     location = loc
                                 } label: {
-                                    HStack(spacing: DS.Spacing.space2) {
-                                        Image(systemName: storageIcon(for: loc))
-                                            .font(.system(size: 14))
+                                    HStack(spacing: Sourdough.Spacing.insideChip) {
+                                        storageIcon(for: loc)
+                                            .frame(width: 14, height: 14)
                                         Text(loc.title)
-                                            .font(.custom("Satoshi Variable", size: 14).weight(.medium))
+                                            .foregroundStyle(
+                                                location == loc ? Sourdough.Colors.onAction : Sourdough.Colors.mutedInk
+                                            )
+                                            .sourdoughTextStyle(.caption)
                                     }
                                     .foregroundStyle(
-                                        location == loc ? .white : DS.ColorToken.textSecondary
+                                        location == loc ? Sourdough.Colors.onAction : Sourdough.Colors.mutedInk
                                     )
                                     .frame(maxWidth: .infinity)
                                     .frame(height: 44)
                                     .background(
                                         location == loc
-                                            ? DS.ColorToken.primary
-                                            : DS.ColorToken.bgSecondary
+                                            ? Sourdough.Ramp.sage500
+                                            : Sourdough.Colors.sunken
                                     )
                                     .overlay(
-                                        RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
+                                        RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous)
                                             .stroke(
                                                 location == loc
                                                     ? Color.clear
-                                                    : DS.ColorToken.borderDefault,
+                                                    : Sourdough.Colors.interactiveBorder,
                                                 lineWidth: 1
                                             )
                                     )
-                                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                                    .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -1123,30 +1385,26 @@ private struct IngredientFormContent: View {
                     }
 
                     // Expiration
-                    VStack(alignment: .leading, spacing: DS.Spacing.space3) {
+                    VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {
                         Text("Expiration Date")
-                            .appTextStyle(.caption)
-                            .foregroundStyle(DS.ColorToken.textSecondary)
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                            .sourdoughTextStyle(.caption)
 
                         HStack {
                             Text("Has expiration date")
-                                .font(.custom("Satoshi Variable", size: 15).weight(.regular))
-                                .foregroundStyle(DS.ColorToken.textPrimary)
+                                .foregroundStyle(Sourdough.Colors.ink)
+                                .sourdoughTextStyle(.body)
 
                             Spacer()
 
                             Toggle("", isOn: $hasExpiration.animation(DS.Motion.easeOut))
                                 .labelsHidden()
-                                .tint(DS.ColorToken.primary)
+                                .tint(Sourdough.Ramp.sage500)
                         }
-                        .padding(.horizontal, DS.Spacing.space3)
+                        .padding(.horizontal, Sourdough.Spacing.rowInternals)
                         .frame(height: 48)
-                        .background(DS.ColorToken.bgSecondary)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
-                                .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                        .background(Sourdough.Colors.sunken)
+                        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
 
                         if hasExpiration {
                             DatePicker(
@@ -1155,115 +1413,131 @@ private struct IngredientFormContent: View {
                                 displayedComponents: .date
                             )
                             .datePickerStyle(.graphical)
-                            .tint(DS.ColorToken.primary)
-                            .padding(.horizontal, DS.Spacing.space2)
-                            .background(DS.ColorToken.bgSecondary)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
-                                    .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
+                            .tint(Sourdough.Ramp.sage500)
+                            .padding(.horizontal, Sourdough.Spacing.insideChip)
+                            .background(Sourdough.Colors.sunken)
+                            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.tile, style: .continuous))
                             .transition(.opacity.combined(with: .move(edge: .top)))
                         }
                     }
                 }
-                .padding(.horizontal, DS.Spacing.space5)
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
             }
+            .scrollDismissesKeyboard(.immediately)
 
-            // Save button
-            Button(action: onSave) {
-                Text(saveLabel)
-                    .font(.custom("Satoshi Variable", size: 16).weight(.semibold))
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 52)
-                    .background(canSave ? DS.ColorToken.primary : DS.ColorToken.primary.opacity(0.4))
-                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+            VStack(spacing: Sourdough.Spacing.rowInternals) {
+                Button(action: onSave) {
+                    Text(saveLabel)
+                        .foregroundStyle(Sourdough.Colors.onAction)
+                        .sourdoughTextStyle(.rowTitle)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 52)
+                        .background(canSave ? Sourdough.Colors.action : Sourdough.Colors.action.opacity(0.4))
+                        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSave)
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
             }
-            .buttonStyle(.plain)
-            .disabled(!canSave)
-            .padding(.horizontal, DS.Spacing.space5)
-            .padding(.top, DS.Spacing.space3)
-            .padding(.bottom, DS.Spacing.space4)
+            .padding(.top, Sourdough.Spacing.rowInternals)
+            .padding(.bottom, Sourdough.Spacing.rowInternals)
+            .background(
+                LinearGradient(
+                    colors: [Sourdough.Colors.canvas.opacity(0), Sourdough.Colors.canvas],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
         }
-        .background(DS.ColorToken.bgPrimary)
+        .background(Sourdough.Colors.canvas)
     }
 }
 
 // MARK: - Use Ingredient Sheet
 
-private struct UseIngredientSheet: View {
+struct UseIngredientSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     let ingredient: Ingredient
     let onUse: (String?) -> Void
 
     @State private var usageText = ""
+    @State private var usageUnit: QuantityConverter.Unit
     @State private var useAll = false
 
-    private let parsed: (value: String, unit: UnitMeasurement)
+    private let pantryParsed: QuantityConverter.Parsed?
 
-    private var isParseable: Bool {
-        !parsed.value.isEmpty && Double(parsed.value) != nil
+    init(ingredient: Ingredient, onUse: @escaping (String?) -> Void) {
+        self.ingredient = ingredient
+        self.onUse = onUse
+        let p = QuantityConverter.parse(ingredient.amount ?? "")
+        self.pantryParsed = p
+        _usageUnit = State(initialValue: p?.unit ?? .gram)
     }
 
-    private var currentValue: Double? {
-        Double(parsed.value)
+    // Units the user can choose from — same category as what's stored
+    private var compatibleUnits: [QuantityConverter.Unit] {
+        switch pantryParsed?.unit.category {
+        case .weight:  return [.gram, .kilogram, .ounce, .pound]
+        case .volume:  return [.milliliter, .liter, .cup, .tablespoon, .teaspoon]
+        case .count:   return [.piece]
+        default:       return []
+        }
+    }
+
+    private var isParseable: Bool { pantryParsed != nil }
+
+    private var overflowError: String? {
+        guard !useAll,
+              let usageVal = Double(usageText.trimmingCharacters(in: .whitespaces)),
+              usageVal > 0,
+              let pantry = pantryParsed else { return nil }
+        let usageBase = usageUnit.toBase(usageVal)
+        guard usageBase > pantry.toBase() else { return nil }
+        let availInUsageUnit = QuantityConverter.formatQuantity(usageUnit.fromBase(pantry.toBase()))
+        return "Not enough — only \(ingredient.amount ?? "") / \(availInUsageUnit) \(usageUnit.label) available"
     }
 
     private var canConfirm: Bool {
         if useAll { return true }
         let trimmed = usageText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if isParseable {
-            guard let usage = Double(trimmed), usage > 0 else { return false }
-            return true
-        }
-        return !trimmed.isEmpty
-    }
-
-    init(ingredient: Ingredient, onUse: @escaping (String?) -> Void) {
-        self.ingredient = ingredient
-        self.onUse = onUse
-        self.parsed = UnitMeasurement.parse(from: ingredient.amount)
+        guard let val = Double(trimmed), val > 0 else { return false }
+        return overflowError == nil
     }
 
     var body: some View {
         VStack(spacing: 0) {
             Capsule()
-                .fill(DS.ColorToken.borderDefault)
+                .fill(Sourdough.Colors.hairline)
                 .frame(width: 36, height: 5)
-                .padding(.top, DS.Spacing.space3)
-                .padding(.bottom, DS.Spacing.space4)
+                .padding(.top, Sourdough.Spacing.rowInternals)
+                .padding(.bottom, Sourdough.Spacing.betweenBlocks)
 
-            VStack(spacing: DS.Spacing.space6) {
-                // Header
+            VStack(spacing: Sourdough.Spacing.betweenBlocks) {
                 HStack {
                     Text("Use Ingredient")
-                        .appTextStyle(.heading2)
-                        .foregroundStyle(DS.ColorToken.textPrimary)
-
+                        .foregroundStyle(Sourdough.Colors.ink)
+                        .sourdoughTextStyle(.title1)
                     Spacer()
-
                     Button("Cancel") { dismiss() }
-                        .font(.custom("Satoshi Variable", size: 14).weight(.medium))
-                        .foregroundStyle(DS.ColorToken.textSecondary)
+                        .foregroundStyle(Sourdough.Colors.mutedInk)
+                        .sourdoughTextStyle(.caption)
                         .buttonStyle(.plain)
                 }
 
-                // Ingredient info
-                VStack(alignment: .leading, spacing: DS.Spacing.space1) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(ingredient.name.capitalized)
-                        .appTextStyle(.heading3)
-                        .foregroundStyle(DS.ColorToken.textPrimary)
+                        .foregroundStyle(Sourdough.Colors.ink)
+                        .sourdoughTextStyle(.title2)
 
                     if let amount = ingredient.amount, !amount.isEmpty {
-                        Text("Current: \(amount)")
-                            .appTextStyle(.bodySM)
-                            .foregroundStyle(DS.ColorToken.textSecondary)
+                        Text("Available: \(amount)")
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                            .sourdoughTextStyle(.subhead)
                     } else {
                         Text("No amount set")
-                            .appTextStyle(.bodySM)
-                            .foregroundStyle(DS.ColorToken.textTertiary)
+                            .foregroundStyle(Sourdough.Colors.faintInk)
+                            .sourdoughTextStyle(.subhead)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1274,178 +1548,176 @@ private struct UseIngredientSheet: View {
                     unparseableModeContent
                 }
             }
-            .padding(.horizontal, DS.Spacing.space5)
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
 
             Spacer()
 
-            // Confirm button
             Button(action: confirm) {
                 Text("Confirm")
-                    .font(.custom("Satoshi Variable", size: 16).weight(.semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Sourdough.Colors.onAction)
+                    .sourdoughTextStyle(.rowTitle)
                     .frame(maxWidth: .infinity)
                     .frame(height: 52)
-                    .background(canConfirm ? DS.ColorToken.accent : DS.ColorToken.accent.opacity(0.4))
-                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                    .background(canConfirm ? Sourdough.Ramp.sage500 : Sourdough.Ramp.sage500.opacity(0.4))
+                    .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
             }
             .buttonStyle(.plain)
             .disabled(!canConfirm)
-            .padding(.horizontal, DS.Spacing.space5)
-            .padding(.top, DS.Spacing.space3)
-            .padding(.bottom, DS.Spacing.space4)
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .padding(.top, Sourdough.Spacing.rowInternals)
+            .padding(.bottom, Sourdough.Spacing.rowInternals)
         }
-        .background(DS.ColorToken.bgPrimary)
+        .background(Sourdough.Colors.canvas)
     }
 
     // MARK: - Mode A: Parseable amount
 
     private var parseableModeContent: some View {
-        VStack(spacing: DS.Spacing.space4) {
-            VStack(alignment: .leading, spacing: DS.Spacing.space2) {
+        VStack(spacing: Sourdough.Spacing.rowInternals) {
+            VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
                 Text("How much are you using?")
-                    .appTextStyle(.caption)
-                    .foregroundStyle(DS.ColorToken.textSecondary)
+                    .foregroundStyle(Sourdough.Colors.mutedInk)
+                    .sourdoughTextStyle(.caption)
 
-                HStack(spacing: DS.Spacing.space2) {
-                    TextField("e.g. 100", text: $usageText)
+                HStack(spacing: Sourdough.Spacing.insideChip) {
+                    TextField("0", text: $usageText)
                         .keyboardType(.decimalPad)
                         .onChange(of: usageText) { _, newValue in
                             let filtered = newValue.filter { $0.isNumber || $0 == "." }
                             if filtered != newValue { usageText = filtered }
                         }
                         .disabled(useAll)
-                        .appTextStyle(.body)
-                        .foregroundStyle(useAll ? DS.ColorToken.textTertiary : DS.ColorToken.textPrimary)
-                        .padding(.horizontal, DS.Spacing.space3)
+                        .foregroundStyle(useAll ? Sourdough.Colors.faintInk : Sourdough.Colors.ink)
+                        .sourdoughTextStyle(.body)
+                        .padding(.horizontal, Sourdough.Spacing.rowInternals)
                         .frame(height: 48)
-                        .background(DS.ColorToken.bgSecondary)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
-                                .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                        .background(Sourdough.Colors.sunken)
+                        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
 
-                    if parsed.unit != .none {
-                        Text(parsed.unit.label)
-                            .font(.custom("Satoshi Variable", size: 14).weight(.medium))
-                            .foregroundStyle(DS.ColorToken.textSecondary)
-                            .padding(.horizontal, DS.Spacing.space3)
+                    if !compatibleUnits.isEmpty {
+                        Menu {
+                            ForEach(compatibleUnits, id: \.label) { unit in
+                                Button {
+                                    usageUnit = unit
+                                } label: {
+                                    HStack {
+                                        Text(unit.label)
+                                        if usageUnit.label == unit.label {
+                                            Ph.check.regular.frame(width: 16, height: 16)
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: Sourdough.Spacing.iconToLabel) {
+                                Text(usageUnit.label)
+                                    .foregroundStyle(Sourdough.Colors.ink)
+                                    .sourdoughTextStyle(.caption)
+                                Ph.caretDown.regular
+                                    .frame(width: 11, height: 11)
+                                    .foregroundStyle(Sourdough.Colors.faintInk)
+                            }
+                            .padding(.horizontal, Sourdough.Spacing.rowInternals)
                             .frame(height: 48)
-                            .background(DS.ColorToken.bgSecondary)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
-                                    .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                            .background(Sourdough.Colors.sunken)
+                            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+                        }
+                        .disabled(useAll)
                     }
+                }
+
+                if let error = overflowError {
+                    Label {
+                        Text(error)
+                            .foregroundStyle(Sourdough.Colors.destructive)
+                            .sourdoughTextStyle(.subhead)
+                    } icon: {
+                        Ph.warningCircle.fill.frame(width: 16, height: 16)
+                            .foregroundStyle(Sourdough.Colors.destructive)
+                    }
+                        .padding(.horizontal, Sourdough.Spacing.iconToLabel)
                 }
             }
 
             HStack {
                 Text("Use All")
-                    .font(.custom("Satoshi Variable", size: 15).weight(.regular))
-                    .foregroundStyle(DS.ColorToken.textPrimary)
-
+                    .foregroundStyle(Sourdough.Colors.ink)
+                    .sourdoughTextStyle(.body)
                 Spacer()
-
                 Toggle("", isOn: $useAll)
                     .labelsHidden()
-                    .tint(DS.ColorToken.accent)
+                    .tint(Sourdough.Ramp.sage500)
             }
-            .padding(.horizontal, DS.Spacing.space3)
+            .padding(.horizontal, Sourdough.Spacing.rowInternals)
             .frame(height: 48)
-            .background(DS.ColorToken.bgSecondary)
-            .overlay(
-                RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
-                    .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+            .background(Sourdough.Colors.sunken)
+            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
         }
     }
 
     // MARK: - Mode B: Unparseable / nil amount
 
     private var unparseableModeContent: some View {
-        VStack(spacing: DS.Spacing.space4) {
+        VStack(spacing: Sourdough.Spacing.rowInternals) {
             HStack {
                 Text("Use All")
-                    .font(.custom("Satoshi Variable", size: 15).weight(.regular))
-                    .foregroundStyle(DS.ColorToken.textPrimary)
-
+                    .foregroundStyle(Sourdough.Colors.ink)
+                    .sourdoughTextStyle(.body)
                 Spacer()
-
                 Toggle("", isOn: $useAll)
                     .labelsHidden()
-                    .tint(DS.ColorToken.accent)
+                    .tint(Sourdough.Ramp.sage500)
             }
-            .padding(.horizontal, DS.Spacing.space3)
+            .padding(.horizontal, Sourdough.Spacing.rowInternals)
             .frame(height: 48)
-            .background(DS.ColorToken.bgSecondary)
-            .overlay(
-                RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
-                    .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+            .background(Sourdough.Colors.sunken)
+            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
 
             if !useAll {
-                VStack(alignment: .leading, spacing: DS.Spacing.space2) {
+                VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
                     Text("How much are you using?")
-                        .appTextStyle(.caption)
-                        .foregroundStyle(DS.ColorToken.textSecondary)
+                        .foregroundStyle(Sourdough.Colors.mutedInk)
+                        .sourdoughTextStyle(.caption)
 
                     TextField("e.g. 2 cups", text: $usageText)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .appTextStyle(.body)
-                        .foregroundStyle(DS.ColorToken.textPrimary)
-                        .padding(.horizontal, DS.Spacing.space3)
+                        .foregroundStyle(Sourdough.Colors.ink)
+                        .sourdoughTextStyle(.body)
+                        .padding(.horizontal, Sourdough.Spacing.rowInternals)
                         .frame(height: 48)
-                        .background(DS.ColorToken.bgSecondary)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
-                                .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                        .background(Sourdough.Colors.sunken)
+                        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
                 }
             }
         }
     }
 
-    // MARK: - Confirm logic
+    // MARK: - Confirm
 
     private func confirm() {
         if useAll {
             onUse(nil)
-        } else if isParseable, let current = currentValue, let usage = Double(usageText) {
-            let remaining = current - usage
-            if remaining <= 0 {
-                onUse(nil)
-            } else {
-                let formatted = remaining.truncatingRemainder(dividingBy: 1) == 0
-                    ? String(Int(remaining)) : String(remaining)
-                let newAmount = parsed.unit == .none ? formatted : "\(formatted) \(parsed.unit.label)"
-                onUse(newAmount)
-            }
+            dismiss()
+            return
+        }
+
+        guard let pantry = pantryParsed,
+              let usageVal = Double(usageText.trimmingCharacters(in: .whitespaces)) else {
+            onUse(nil)
+            dismiss()
+            return
+        }
+
+        let usageBase = usageUnit.toBase(usageVal)
+        let remainingBase = pantry.toBase() - usageBase
+
+        if remainingBase <= 0 {
+            onUse(nil)
         } else {
-            // Unparseable current amount — try to parse the usage input and subtract
-            let usageParsed = UnitMeasurement.parse(from: usageText)
-            if let usageVal = Double(usageParsed.value),
-               let amount = ingredient.amount,
-               let currentParsed = Double(UnitMeasurement.parse(from: amount).value) {
-                let remaining = currentParsed - usageVal
-                if remaining <= 0 {
-                    onUse(nil)
-                } else {
-                    let currentUnit = UnitMeasurement.parse(from: amount).unit
-                    let formatted = remaining.truncatingRemainder(dividingBy: 1) == 0
-                        ? String(Int(remaining)) : String(remaining)
-                    let newAmount = currentUnit == .none ? formatted : "\(formatted) \(currentUnit.label)"
-                    onUse(newAmount)
-                }
-            } else {
-                // Can't subtract, just remove
-                onUse(nil)
-            }
+            let remainingInStoredUnit = pantry.unit.fromBase(remainingBase)
+            let formatted = QuantityConverter.formatQuantity(remainingInStoredUnit)
+            onUse("\(formatted) \(pantry.unit.label)")
         }
         dismiss()
     }
@@ -1458,6 +1730,7 @@ private enum UnitMeasurement: String, CaseIterable, Identifiable {
     case g
     case kg
     case oz
+    case floz
     case lb
     case ml
     case l
@@ -1474,6 +1747,7 @@ private enum UnitMeasurement: String, CaseIterable, Identifiable {
         case .g: return "g"
         case .kg: return "kg"
         case .oz: return "oz"
+        case .floz: return "fl oz"
         case .lb: return "lb"
         case .ml: return "ml"
         case .l: return "L"
@@ -1490,6 +1764,7 @@ private enum UnitMeasurement: String, CaseIterable, Identifiable {
         case .g: return "Grams (g)"
         case .kg: return "Kilograms (kg)"
         case .oz: return "Ounces (oz)"
+        case .floz: return "Fluid Ounces (fl oz)"
         case .lb: return "Pounds (lb)"
         case .ml: return "Milliliters (ml)"
         case .l: return "Liters (L)"
@@ -1503,7 +1778,9 @@ private enum UnitMeasurement: String, CaseIterable, Identifiable {
     static func parse(from amount: String?) -> (value: String, unit: UnitMeasurement) {
         guard let amount, !amount.isEmpty else { return ("", .none) }
 
-        for u in UnitMeasurement.allCases where u != .none {
+        let sorted = UnitMeasurement.allCases.filter { $0 != .none }
+            .sorted { $0.label.count > $1.label.count }
+        for u in sorted {
             if amount.hasSuffix(" \(u.label)") {
                 let value = String(amount.dropLast(u.label.count + 1))
                 return (value, u)
@@ -1514,86 +1791,239 @@ private enum UnitMeasurement: String, CaseIterable, Identifiable {
     }
 }
 
+@available(iOS 26, *)
+private struct SpeechRecordingSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let onResult: (String, String) -> Void
+
+    @State private var recognizer = SpeechIngredientRecognizer()
+    @State private var liveTranscript = ""
+    @State private var ring1 = false
+    @State private var ring2 = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Capsule()
+                .fill(Sourdough.Colors.hairline)
+                .frame(width: 36, height: 5)
+                .padding(.top, Sourdough.Spacing.rowInternals)
+                .padding(.bottom, Sourdough.Spacing.aboveSectionHead)
+
+            Spacer()
+
+            // Ripple animation + mic icon
+            ZStack {
+                Circle()
+                    .stroke(Sourdough.Colors.action.opacity(0.25), lineWidth: 2)
+                    .frame(width: 100, height: 100)
+                    .scaleEffect(ring1 ? 2.4 : 1.0)
+                    .opacity(ring1 ? 0 : 1)
+
+                Circle()
+                    .stroke(Sourdough.Colors.action.opacity(0.25), lineWidth: 2)
+                    .frame(width: 100, height: 100)
+                    .scaleEffect(ring2 ? 2.4 : 1.0)
+                    .opacity(ring2 ? 0 : 1)
+
+                Circle()
+                    .fill(Sourdough.Colors.action.opacity(0.1))
+                    .frame(width: 100, height: 100)
+
+                Ph.microphone.regular
+                    .frame(width: 36, height: 36)
+                    .foregroundStyle(Sourdough.Colors.action)
+            }
+            .frame(width: 160, height: 160)
+            .onAppear {
+                withAnimation(.easeOut(duration: 1.5).repeatForever(autoreverses: false)) {
+                    ring1 = true
+                }
+                withAnimation(.easeOut(duration: 1.5).delay(0.75).repeatForever(autoreverses: false)) {
+                    ring2 = true
+                }
+            }
+
+            Text("Speak clearly and concisely")
+                .foregroundStyle(Sourdough.Colors.faintInk)
+                .sourdoughTextStyle(.subhead)
+                .padding(.top, Sourdough.Spacing.rowInternals)
+
+            Text(liveTranscript.isEmpty ? "Listening…" : liveTranscript)
+                .foregroundStyle(liveTranscript.isEmpty ? Sourdough.Colors.faintInk : Sourdough.Colors.ink)
+                .sourdoughTextStyle(.body)
+                .multilineTextAlignment(.center)
+                .lineLimit(3)
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                .padding(.top, Sourdough.Spacing.aboveSectionHead)
+                .animation(DS.Motion.easeDefault, value: liveTranscript)
+
+            Spacer()
+
+            Button { stopAndDismiss() } label: {
+                Text("Stop")
+                    .foregroundStyle(Sourdough.Colors.onDestructive)
+                    .sourdoughTextStyle(.rowTitle)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 52)
+                    .background(Sourdough.Colors.destructive)
+                    .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .padding(.top, Sourdough.Spacing.rowInternals)
+            .padding(.bottom, Sourdough.Spacing.rowInternals)
+        }
+        .background(Sourdough.Colors.canvas)
+        .task {
+            recognizer.onUpdate = { text in liveTranscript = text }
+            recognizer.onFinal = { text in
+                let parsed = SpeechIngredientRecognizer.parseIngredient(from: text)
+                onResult(parsed.name, parsed.quantity)
+                dismiss()
+            }
+            try? recognizer.start()
+        }
+        .onDisappear { recognizer.stop() }
+    }
+
+    private func stopAndDismiss() {
+        let lastTranscript = liveTranscript
+        recognizer.onFinal = nil
+        recognizer.stop()
+        if !lastTranscript.isEmpty {
+            let parsed = SpeechIngredientRecognizer.parseIngredient(from: lastTranscript)
+            onResult(parsed.name, parsed.quantity)
+        }
+        dismiss()
+    }
+}
+
 private struct FilterSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @Binding var selectedStorageFilters: Set<StorageFilter>
+    @EnvironmentObject private var pantryStore: PantryStore
+    @Binding var selectedStorageFilters: Set<IngredientStorageFilter>
     @Binding var selectedCategories: Set<PantryCategory>
-    @Binding var filterExpiringSoon: Bool
 
     private var hasActiveFilters: Bool {
-        !selectedStorageFilters.isEmpty || !selectedCategories.isEmpty || filterExpiringSoon
+        !selectedStorageFilters.isEmpty || !selectedCategories.isEmpty
+    }
+
+    private var storageSummary: String {
+        if let only = selectedStorageFilters.first, selectedStorageFilters.count == 1 {
+            return only.label
+        }
+        return "All storage"
+    }
+
+    private var categorySummary: String {
+        if selectedCategories.isEmpty {
+            return "every category"
+        }
+        if let only = selectedCategories.first, selectedCategories.count == 1 {
+            return only.label
+        }
+        return "\(selectedCategories.count) categories"
+    }
+
+    private var previewResultCount: Int {
+        pantryStore.ingredients.filter { ingredient in
+            let matchesCategory = selectedCategories.isEmpty || selectedCategories.contains { $0.matches(ingredient: ingredient) }
+            let matchesStorage = selectedStorageFilters.isEmpty || selectedStorageFilters.contains { $0.matches(ingredient: ingredient) }
+            return matchesCategory && matchesStorage
+        }.count
+    }
+
+    private func categoryCount(_ category: PantryCategory) -> Int {
+        pantryStore.ingredients.filter { category.matches(ingredient: $0) }.count
+    }
+
+    private func storageCount(_ filter: IngredientStorageFilter?) -> Int {
+        guard let filter else { return pantryStore.ingredients.count }
+        return pantryStore.ingredients.filter { filter.matches(ingredient: $0) }.count
     }
 
     var body: some View {
         VStack(spacing: 0) {
             Capsule()
-                .fill(DS.ColorToken.borderDefault)
+                .fill(Sourdough.Colors.hairline)
                 .frame(width: 36, height: 5)
-                .padding(.top, DS.Spacing.space3)
-                .padding(.bottom, DS.Spacing.space4)
+                .padding(.top, Sourdough.Spacing.rowInternals)
+                .padding(.bottom, Sourdough.Spacing.betweenBlocks)
 
             ScrollView(showsIndicators: false) {
-                VStack(spacing: DS.Spacing.space6) {
-                    HStack {
-                        Text("Filters")
-                            .appTextStyle(.heading2)
-                            .foregroundStyle(DS.ColorToken.textPrimary)
+                VStack(spacing: Sourdough.Spacing.betweenBlocks) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Filters")
+                                .foregroundStyle(Sourdough.Colors.ink)
+                                .sourdoughTextStyle(.title1)
 
-                        Spacer()
+                            Spacer()
 
-                        if hasActiveFilters {
-                            Button {
-                                selectedStorageFilters.removeAll()
-                                selectedCategories.removeAll()
-                                filterExpiringSoon = false
-                            } label: {
-                                Text("Reset")
-                                    .font(.custom("Satoshi Variable", size: 14).weight(.medium))
-                                    .foregroundStyle(DS.ColorToken.primary)
+                            if hasActiveFilters {
+                                Button {
+                                    selectedStorageFilters.removeAll()
+                                    selectedCategories.removeAll()
+                                } label: {
+                                    Text("Clear")
+                                        .foregroundStyle(Sourdough.Colors.actionInk)
+                                        .sourdoughTextStyle(.caption)
+                                        .padding(.horizontal, Sourdough.Spacing.rowInternals)
+                                        .padding(.vertical, Sourdough.Spacing.insideChip)
+                                        .overlay(
+                                            Capsule()
+                                                .stroke(Sourdough.Colors.actionInk, lineWidth: 1)
+                                        )
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
                         }
-                    }
 
-                    // Expires Soon
-                    filterRow(
-                        icon: "clock.badge.exclamationmark",
-                        label: "Expires Soon",
-                        isSelected: filterExpiringSoon
-                    ) {
-                        filterExpiringSoon.toggle()
+                        Text("\(storageSummary) · \(categorySummary)")
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                            .sourdoughTextStyle(.subhead)
                     }
 
                     // Storage section
-                    VStack(alignment: .leading, spacing: DS.Spacing.space3) {
-                        Text("Storage")
-                            .appTextStyle(.heading3)
-                            .foregroundStyle(DS.ColorToken.textSecondary)
+                    VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {
+                        Text("STORAGE")
+                            .foregroundStyle(Sourdough.Colors.faintInk)
+                            .sourdoughTextStyle(.sectionHead)
 
-                        VStack(spacing: DS.Spacing.space2) {
-                            ForEach(StorageFilter.allCases) { filter in
-                                filterRow(
+                        filterGrid {
+                            filterCard(
+                                icon: nil,
+                                label: "All",
+                                count: storageCount(nil),
+                                isSelected: selectedStorageFilters.isEmpty
+                            ) {
+                                selectedStorageFilters.removeAll()
+                            }
+                            ForEach(IngredientStorageFilter.allCases) { filter in
+                                filterCard(
                                     icon: filter.icon,
                                     label: filter.label,
+                                    count: storageCount(filter),
                                     isSelected: selectedStorageFilters.contains(filter)
                                 ) {
-                                    toggleSet(&selectedStorageFilters, filter)
+                                    selectedStorageFilters = [filter]
                                 }
                             }
                         }
                     }
 
                     // Category section
-                    VStack(alignment: .leading, spacing: DS.Spacing.space3) {
-                        Text("Category")
-                            .appTextStyle(.heading3)
-                            .foregroundStyle(DS.ColorToken.textSecondary)
+                    VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {
+                        Text("CATEGORY")
+                            .foregroundStyle(Sourdough.Colors.faintInk)
+                            .sourdoughTextStyle(.sectionHead)
 
-                        VStack(spacing: DS.Spacing.space2) {
+                        filterGrid {
                             ForEach(PantryCategory.allCases) { category in
-                                filterRow(
+                                filterCard(
                                     icon: category.icon,
                                     label: category.label,
+                                    count: categoryCount(category),
                                     isSelected: selectedCategories.contains(category)
                                 ) {
                                     toggleSet(&selectedCategories, category)
@@ -1601,84 +2031,86 @@ private struct FilterSheet: View {
                             }
                         }
                     }
+
                 }
-                .padding(.horizontal, DS.Spacing.space5)
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
             }
 
             Button {
                 dismiss()
             } label: {
-                Text("Apply Filters")
-                    .font(.custom("Satoshi Variable", size: 16).weight(.semibold))
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 52)
-                    .background(DS.ColorToken.primary)
-                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                HStack {
+                    Text("Apply filters")
+                        .foregroundStyle(Sourdough.Colors.onAction)
+                        .sourdoughTextStyle(.rowTitle)
+
+                    Spacer()
+
+                    let count = previewResultCount
+                    Text("\(count) item\(count == 1 ? "" : "s")")
+                        .foregroundStyle(Sourdough.Colors.onAction)
+                        .sourdoughTextStyle(.numeric)
+                }
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                .frame(maxWidth: .infinity)
+                .frame(height: 52)
+                .background(Sourdough.Colors.action)
+                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, DS.Spacing.space5)
-            .padding(.top, DS.Spacing.space3)
-            .padding(.bottom, DS.Spacing.space4)
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .padding(.top, Sourdough.Spacing.rowInternals)
+            .padding(.bottom, Sourdough.Spacing.betweenBlocks)
         }
     }
 
-    private func toggleSet<T: Hashable>(_ set: inout Set<T>, _ item: T) {
-        if set.contains(item) {
-            set.remove(item)
-        } else {
-            set.insert(item)
-        }
+    @ViewBuilder
+    private func filterGrid<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        LazyVGrid(
+            columns: [
+                GridItem(.flexible(), spacing: Sourdough.Spacing.rowInternals),
+                GridItem(.flexible(), spacing: Sourdough.Spacing.rowInternals)
+            ],
+            spacing: Sourdough.Spacing.rowInternals,
+            content: content
+        )
     }
 
-    private func filterRow(
-        icon: String,
+    private func filterCard(
+        icon: Image?,
         label: String,
+        count: Int,
         isSelected: Bool,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            HStack(spacing: DS.Spacing.space3) {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 20))
-                    .foregroundStyle(
-                        isSelected
-                            ? DS.ColorToken.primary
-                            : DS.ColorToken.textTertiary
-                    )
+            HStack(spacing: Sourdough.Spacing.insideChip) {
+                if let icon {
+                    icon
+                        .frame(width: 18, height: 18)
+                        .foregroundStyle(isSelected ? Sourdough.Colors.onAction : Sourdough.Colors.mutedInk)
+                }
 
-                Image(systemName: icon)
-                    .font(.system(size: 18))
-                    .foregroundStyle(
-                        isSelected
-                            ? DS.ColorToken.primary
-                            : DS.ColorToken.textSecondary
-                    )
-                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(label)
+                        .foregroundStyle(isSelected ? Sourdough.Colors.onAction : Sourdough.Colors.ink)
+                        .sourdoughTextStyle(.rowTitle)
 
-                Text(label)
-                    .font(.custom("Satoshi Variable", size: 16).weight(.medium))
-                    .foregroundStyle(DS.ColorToken.textPrimary)
+                    Text("\(count) item\(count == 1 ? "" : "s")")
+                        .foregroundStyle(isSelected ? Sourdough.Colors.onAction.opacity(0.85) : Sourdough.Colors.faintInk)
+                        .sourdoughTextStyle(.caption)
+                }
 
-                Spacer()
+                Spacer(minLength: 0)
             }
-            .padding(.horizontal, DS.Spacing.space5)
-            .frame(height: 48)
-            .background(
-                isSelected
-                    ? DS.ColorToken.primaryLight
-                    : DS.ColorToken.bgSecondary
-            )
-            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
+            .padding(Sourdough.Spacing.rowInternals)
+            .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
+            .background(isSelected ? Sourdough.Ramp.sage500 : Sourdough.Colors.card)
             .overlay(
-                RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
-                    .stroke(
-                        isSelected
-                            ? DS.ColorToken.primary.opacity(0.3)
-                            : DS.ColorToken.borderDefault,
-                        lineWidth: 1
-                    )
+                RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous)
+                    .stroke(isSelected ? Color.clear : Sourdough.Colors.interactiveBorder, lineWidth: 1)
             )
+            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
         }
         .buttonStyle(.plain)
     }
@@ -1687,57 +2119,3 @@ private struct FilterSheet: View {
 
 // MARK: - Extend Expiration Sheet
 
-private struct ExtendExpirationSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    let ingredient: Ingredient
-    let onSave: (Date) -> Void
-
-    @State private var newDate: Date = Calendar.current.date(byAdding: .day, value: 3, to: Date()) ?? Date()
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Capsule()
-                .fill(DS.ColorToken.borderDefault)
-                .frame(width: 36, height: 5)
-                .padding(.top, DS.Spacing.space3)
-                .padding(.bottom, DS.Spacing.space4)
-
-            Text("Set a new expiration date for \(ingredient.name.capitalized).")
-                .appTextStyle(.bodySM)
-                .foregroundStyle(DS.ColorToken.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, DS.Spacing.space4)
-                .padding(.horizontal, DS.Spacing.space5)
-                .padding(.bottom, DS.Spacing.space4)
-
-            DatePicker(
-                "",
-                selection: $newDate,
-                in: Date()...,
-                displayedComponents: .date
-            )
-            .datePickerStyle(.graphical)
-            .tint(DS.ColorToken.accent)
-            .padding(.horizontal, DS.Spacing.space3)
-
-            Spacer()
-
-            Button {
-                onSave(newDate)
-                dismiss()
-            } label: {
-                Text("Extend Expiration")
-                    .font(.custom("Satoshi Variable", size: 16).weight(.semibold))
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 52)
-                    .background(DS.ColorToken.accent)
-                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, DS.Spacing.space5)
-            .padding(.bottom, DS.Spacing.space4)
-        }
-        .background(DS.ColorToken.bgPrimary)
-    }
-}

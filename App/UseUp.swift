@@ -23,19 +23,21 @@ struct UseUp: App {
                 .environmentObject(activityStore)
                 .environmentObject(revenueCatManager)
                 .tint(DS.ColorToken.primary)
-                .preferredColorScheme(session.isDarkMode ? .dark : .light)
+                .preferredColorScheme(session.preferredColorScheme)
                 .task {
                     await session.restoreSession()
                     pantryStore.userId = session.currentUserId
                     savedRecipesStore.userId = session.currentUserId
                     savedRecipesStore.currentUserNickname = session.currentUserNickname
                     activityStore.userId = session.currentUserId
+
+                    if session.isAuthenticated, let userId = session.currentUserId {
+                        await revenueCatManager.logIn(userId: userId.uuidString)
+                    }
+
+                    session.isCheckingSession = false
+
                     if session.isAuthenticated {
-                        // Log in to RevenueCat with the user's Supabase ID
-                        if let userId = session.currentUserId {
-                            await revenueCatManager.logIn(userId: userId.uuidString)
-                            session.isPremium = revenueCatManager.isPremium
-                        }
                         async let recipes: Void = savedRecipesStore.fetchRecipes()
                         async let ingredients: Void = pantryStore.fetchIngredients()
                         _ = await (recipes, ingredients)
@@ -48,6 +50,7 @@ struct UseUp: App {
                     if newPhase == .active, session.isAuthenticated {
                         Task {
                             await revenueCatManager.checkEntitlements()
+                            await session.refreshPremiumStatus()
                             await pantryStore.fetchIngredients()
                             await ExpirationNotificationScheduler.rescheduleAll(for: pantryStore.ingredients)
                         }
@@ -72,7 +75,13 @@ struct UseUp: App {
                     }
                 }
                 .onChange(of: revenueCatManager.isPremium) { _, isPremium in
-                    session.isPremium = isPremium
+                    if isPremium {
+                        session.isPremium = true
+                        session.hasSeenOnboardingPaywall = true
+                    } else {
+                        session.isPremium = false
+                        Task { await session.refreshPremiumStatus() }
+                    }
                 }
                 .onTapGesture {
                     UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)

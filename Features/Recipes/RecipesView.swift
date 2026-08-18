@@ -1,4 +1,5 @@
 import SwiftUI
+import PhosphorSwift
 
 #Preview("Recipes") {
     PreviewContainer {
@@ -95,10 +96,10 @@ struct CachedRecipeImage: View {
                     .scaledToFill()
             } else {
                 ZStack {
-                    DS.ColorToken.bgTertiary
-                    Image(systemName: "photo")
-                        .font(.system(size: 24))
-                        .foregroundStyle(DS.ColorToken.textTertiary)
+                    Sourdough.Colors.sunken
+                    Ph.image.regular
+                        .frame(width: 24, height: 24)
+                        .foregroundStyle(Sourdough.Colors.faintInk)
                 }
             }
         }
@@ -181,32 +182,73 @@ struct CachedRecipeImage: View {
 
 // MARK: - Recipe Card
 
-private struct RecipeCard: View, Equatable {
+/// Bundles the `onReport`/`onRate`/`onSave` wiring every `RecipeCard` call site rebuilds from the
+/// same `recipe`/`savedRecipesStore` pair — only the report/rate target state differs per caller.
+@MainActor
+struct RecipeCardActions {
+    let onReport: (() -> Void)?
+    let onRate: (() -> Void)?
+    let onSave: () -> Void
+
+    init(
+        recipe: Recipe,
+        savedRecipesStore: SavedRecipesStore,
+        reportRecipe: @escaping (Recipe) -> Void,
+        rateRecipe: @escaping (Recipe) -> Void
+    ) {
+        onReport = (recipe.isUserShared && recipe.createdBy != savedRecipesStore.userId?.uuidString)
+            ? { reportRecipe(recipe) } : nil
+        onRate = recipe.rating > 0 ? { rateRecipe(recipe) } : nil
+        onSave = {
+            savedRecipesStore.isSaved(recipe)
+                ? savedRecipesStore.unsaveRecipe(recipe)
+                : savedRecipesStore.saveRecipe(recipe)
+        }
+    }
+}
+
+struct RecipeCard: View, Equatable {
     let recipe: Recipe
+    var showBadge: Bool = true
+    var isSaved: Bool = false
+    var onReport: (() -> Void)? = nil
+    var onRate: (() -> Void)? = nil
+    var onSave: (() -> Void)? = nil
 
     static func == (lhs: RecipeCard, rhs: RecipeCard) -> Bool {
         lhs.recipe.id == rhs.recipe.id
             && lhs.recipe.rating == rhs.recipe.rating
             && lhs.recipe.title == rhs.recipe.title
             && lhs.recipe.imagePath == rhs.recipe.imagePath
+            && lhs.isSaved == rhs.isSaved
+    }
+
+    private var cardTags: [(text: String, isDiet: Bool)] {
+        var labels: [(text: String, isDiet: Bool)] = []
+        if recipe.dietType != "any" {
+            labels.append((recipe.dietType.capitalized, true))
+        }
+        for r in recipe.dietaryRestrictions {
+            labels.append((r, false))
+        }
+        return labels
+    }
+
+    private var ratingString: String {
+        recipe.rating.truncatingRemainder(dividingBy: 1) == 0
+            ? String(format: "%.0f", recipe.rating)
+            : String(format: "%.1f", recipe.rating)
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 6) {
             Color.clear
                 .aspectRatio(4/3, contentMode: .fit)
                 .overlay {
                     if recipe.isAIGenerated && recipe.imageData == nil && recipe.imagePath == nil {
-                        ZStack {
-                            LinearGradient(
-                                colors: [DS.ColorToken.primary, DS.ColorToken.accent],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                            Image(systemName: "fork.knife")
-                                .font(.system(size: 36, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.85))
-                        }
+                        Image("AI_GEN")
+                            .resizable()
+                            .scaledToFill()
                     } else {
                         CachedRecipeImage(recipeID: recipe.id, imageData: recipe.imageData, imagePath: recipe.imagePath, thumbnail: true)
                     }
@@ -214,8 +256,8 @@ private struct RecipeCard: View, Equatable {
                 .clipped()
                 .overlay(alignment: .topLeading) {
                     Text("\(recipe.timeMinutes) min")
-                        .font(.custom("Satoshi Variable", size: 11).weight(.bold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Sourdough.Colors.heroTitleOnDark)
+                        .sourdoughTextStyle(.caption)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .background(Color.black.opacity(0.45))
@@ -223,97 +265,88 @@ private struct RecipeCard: View, Equatable {
                         .padding(8)
                 }
                 .overlay(alignment: .topTrailing) {
-                    if recipe.isAIGenerated {
-                        AIGeneratedBadge()
-                            .padding(8)
-                    }
-                }
-                .overlay(alignment: .bottomTrailing) {
-                    if recipe.rating > 0 {
-                        HStack(spacing: 2) {
-                            Image(systemName: "star.fill")
-                                .font(.system(size: 9))
-                                .foregroundStyle(DS.ColorToken.warning)
-                            Text(recipe.rating.truncatingRemainder(dividingBy: 1) == 0
-                                 ? String(format: "%.0f", recipe.rating)
-                                 : String(format: "%.1f", recipe.rating))
-                                .font(.custom("Satoshi Variable", size: 11).weight(.bold))
-                                .foregroundStyle(.white)
+                    HStack(spacing: 4) {
+                        if recipe.rating > 0 {
+                            let ratingPill = HStack(spacing: 2) {
+                                Ph.star.fill
+                                    .frame(width: 9, height: 9)
+                                    .foregroundStyle(Sourdough.Ramp.honeyDark)
+                                Text(ratingString)
+                                    .foregroundStyle(Sourdough.Colors.heroTitleOnDark)
+                                    .sourdoughTextStyle(.caption)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.black.opacity(0.45))
+                            .clipShape(Capsule())
+
+                            if let onRate {
+                                Button(action: onRate) { ratingPill }.buttonStyle(.plain)
+                            } else {
+                                ratingPill
+                            }
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.black.opacity(0.6))
-                        .clipShape(Capsule())
-                        .padding(8)
+                        if let onReport {
+                            Button(action: onReport) {
+                                Ph.flag.regular
+                                    .frame(width: 11, height: 11)
+                                    .foregroundStyle(Sourdough.Colors.heroTitleOnDark)
+                                    .padding(6)
+                                    .background(Color.black.opacity(0.45))
+                                    .clipShape(Circle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        if recipe.isAIGenerated {
+                            AIGeneratedBadge()
+                        }
                     }
+                    .padding(8)
                 }
+                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
+                .shadow(color: Sourdough.Ramp.linen900.opacity(0.08), radius: 4, x: 0, y: 2)
 
-            VStack(alignment: .leading, spacing: DS.Spacing.space1) {
+            VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
                 Text(recipe.title)
-                    .font(.custom("Satoshi Variable", size: 14).weight(.medium))
-                    .foregroundStyle(DS.ColorToken.textPrimary)
-                    .lineLimit(1)
-                    .multilineTextAlignment(.leading)
-
-                Text(recipe.summary.isEmpty ? " " : recipe.summary)
-                    .font(.system(size: 12))
-                    .foregroundStyle(DS.ColorToken.textSecondary)
+                    .foregroundStyle(Sourdough.Colors.ink)
+                    .sourdoughTextStyle(.rowTitle)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                if !recipe.dietaryRestrictions.isEmpty || recipe.dietType != "any" {
-                    let allLabels: [(text: String, isDiet: Bool)] = {
-                        var labels: [(String, Bool)] = []
-                        if recipe.dietType != "any" {
-                            labels.append((recipe.dietType.capitalized, true))
-                        }
-                        for r in recipe.dietaryRestrictions {
-                            labels.append((r, false))
-                        }
-                        return labels
-                    }()
-                    let maxVisible = 2
-                    let visible = Array(allLabels.prefix(maxVisible))
-                    let overflow = allLabels.count - maxVisible
-
+                let tags = cardTags
+                if !tags.isEmpty {
+                    let visibleTags = Array(tags.prefix(2))
+                    let overflow = tags.count - visibleTags.count
                     HStack(spacing: 4) {
-                        ForEach(visible.indices, id: \.self) { i in
-                            Text(visible[i].text)
-                                .font(.custom("Satoshi Variable", size: 9).weight(.semibold))
-                                .foregroundStyle(visible[i].isDiet ? DS.ColorToken.accent : DS.ColorToken.primary)
-                                .lineLimit(1)
+                        ForEach(visibleTags.indices, id: \.self) { i in
+                            Text(visibleTags[i].text)
+                                .foregroundStyle(Sourdough.Colors.onAction)
+                                .sourdoughTextStyle(.caption)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
-                                .background(visible[i].isDiet ? DS.ColorToken.accentLight : DS.ColorToken.primaryLight)
+                                .background(visibleTags[i].isDiet ? Sourdough.Ramp.sage500 : Sourdough.Ramp.honey600)
                                 .clipShape(Capsule())
                         }
-
                         if overflow > 0 {
                             Text("+\(overflow) more")
-                                .font(.custom("Satoshi Variable", size: 9).weight(.semibold))
-                                .foregroundStyle(DS.ColorToken.textTertiary)
+                                .foregroundStyle(Sourdough.Colors.mutedInk)
+                                .sourdoughTextStyle(.caption)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
-                                .background(DS.ColorToken.bgSecondary)
+                                .background(Sourdough.Colors.sunken)
                                 .clipShape(Capsule())
-                                .overlay(
-                                    Capsule()
-                                        .stroke(DS.ColorToken.borderDefault, lineWidth: 0.5)
-                                )
                         }
                     }
                 }
             }
-            .padding(DS.Spacing.space2)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(.horizontal, 2)
         }
-        .background(DS.ColorToken.bgSecondary)
-        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
-        .shadow(color: .black.opacity(0.08), radius: 4, x: 0, y: 2)
     }
 }
 
 struct RecipesView: View {
+    @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var savedRecipesStore: SavedRecipesStore
     @EnvironmentObject private var pantryStore: PantryStore
 
@@ -323,13 +356,20 @@ struct RecipesView: View {
     @State private var showingSettings = false
     @State private var showingShareSheet = false
     @State private var selectedRecipe: Recipe?
+    @State private var recipeToReport: Recipe?
+    @State private var reportError: String?
     @State private var navigateToRecipe: Recipe?
+    @State private var allergenPendingRecipe: Recipe?
+    @State private var allergenWarningDetected: [String] = []
+    @State private var ratingsRecipe: Recipe?
     @State private var showingFilterSheet = false
     @State private var selectedCuisine: Cuisine?
     @State private var maxPrepTime: Int?
     @State private var selectedIngredients: Set<String> = []
     @State private var selectedDietaryFilters: Set<String> = []
     @State private var cachedCommunityCategories: [RecipeCategory] = []
+    @State private var showcaseItem: (recipe: Recipe, ingredient: Ingredient)? = nil
+    @State private var useUpSoonRecipes: [Recipe] = []
     @State private var navigateToCategory: RecipeCategory?
 
     private enum QuickFilter: String, CaseIterable {
@@ -388,29 +428,38 @@ struct RecipesView: View {
         applyQuickFilter(applyFilters(savedRecipesStore.communityRecipes))
     }
 
-    private var showcaseItem: (recipe: Recipe, ingredient: Ingredient)? {
+    // Computed once from pantry + community recipes (see recomputeUseUpMatches), not on every render.
+    private func recomputeUseUpMatches() {
         let expiring = pantryStore.ingredients
             .filter { $0.expirationDate != nil && ($0.daysUntilExpiration ?? Int.max) >= 0 && ($0.daysUntilExpiration ?? Int.max) <= 5 }
             .sorted { ($0.daysUntilExpiration ?? Int.max) < ($1.daysUntilExpiration ?? Int.max) }
+
+        guard !expiring.isEmpty else {
+            showcaseItem = nil
+            useUpSoonRecipes = []
+            return
+        }
+
+        let community = savedRecipesStore.communityRecipes
+
+        // Showcase: first expiring ingredient that has a matching community recipe.
+        var showcase: (recipe: Recipe, ingredient: Ingredient)? = nil
         for ingredient in expiring {
             let name = ingredient.name.lowercased()
-            if let match = savedRecipesStore.communityRecipes.first(where: { recipe in
+            if let match = community.first(where: { recipe in
                 recipe.ingredientsUsed.contains(where: {
                     $0.name.lowercased().contains(name) || name.contains($0.name.lowercased())
                 })
             }) {
-                return (match, ingredient)
+                showcase = (match, ingredient)
+                break
             }
         }
-        return nil
-    }
+        showcaseItem = showcase
 
-    private var useUpSoonRecipes: [Recipe] {
-        let expiringNames = pantryStore.ingredients
-            .filter { $0.expirationDate != nil && ($0.daysUntilExpiration ?? Int.max) >= 0 && ($0.daysUntilExpiration ?? Int.max) <= 5 }
-            .map { $0.name.lowercased() }
-        guard !expiringNames.isEmpty else { return [] }
-        return savedRecipesStore.communityRecipes.filter { recipe in
+        // Use-up list: all community recipes using any expiring ingredient.
+        let expiringNames = expiring.map { $0.name.lowercased() }
+        useUpSoonRecipes = community.filter { recipe in
             recipe.ingredientsUsed.contains(where: { ing in
                 expiringNames.contains(where: {
                     ing.name.lowercased().contains($0) || $0.contains(ing.name.lowercased())
@@ -433,22 +482,23 @@ struct RecipesView: View {
         VStack(spacing: 0) {
             headerView
 
-            VStack(spacing: DS.Spacing.space3) {
+            VStack(spacing: Sourdough.Spacing.rowInternals) {
                 searchBar
                 quickFilterChips
             }
-            .padding(.horizontal, DS.Spacing.space5)
-            .padding(.top, DS.Spacing.space4)
-            .padding(.bottom, DS.Spacing.space2)
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .padding(.top, Sourdough.Spacing.rowInternals)
+            .padding(.bottom, Sourdough.Spacing.insideChip)
 
             recipeScrollContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .background(DS.ColorToken.bgPrimary)
+                .background(Sourdough.Colors.canvas)
         }
-        .background(DS.ColorToken.bgPrimary)
+        .background(Sourdough.Colors.canvas)
         .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showingSettings) {
             NavigationStack { SettingsView() }
+                .preferredColorScheme(session.preferredColorScheme)
         }
         .sheet(isPresented: $showingShareSheet) {
             ShareRecipeSheet()
@@ -466,6 +516,37 @@ struct RecipesView: View {
         .sheet(item: $selectedRecipe) { recipe in
             RecipePreviewSheet(recipe: recipe) {
                 selectedRecipe = nil
+                let detected = detectAllergens(
+                    in: recipe,
+                    userAllergies: session.currentUserAllergies,
+                    customAllergy: session.currentUserCustomAllergy
+                )
+                if detected.isEmpty {
+                    navigateToRecipe = recipe
+                } else {
+                    allergenWarningDetected = detected
+                    allergenPendingRecipe = recipe
+                }
+            }
+        }
+        .sheet(item: $recipeToReport) { recipe in
+            ReportContentSheet(subject: .recipe(name: recipe.title)) { category, description in
+                Task {
+                    do {
+                        try await savedRecipesStore.reportRecipe(recipe, category: category, description: description)
+                    } catch {
+                        reportError = error.localizedDescription.contains("duplicate") || error.localizedDescription.contains("unique")
+                            ? "You've already reported this recipe."
+                            : "Failed to submit report. Please try again."
+                    }
+                }
+            }
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
+        }
+        .reportErrorAlert($reportError)
+        .sheet(item: $allergenPendingRecipe) { recipe in
+            AllergenWarningSheet(recipeName: recipe.title) {
                 navigateToRecipe = recipe
             }
         }
@@ -474,6 +555,9 @@ struct RecipesView: View {
         }
         .navigationDestination(item: $navigateToCategory) { category in
             CategoryRecipesView(category: category)
+        }
+        .navigationDestination(item: $ratingsRecipe) { recipe in
+            RecipeRatingsView(recipe: recipe)
         }
         .onChange(of: searchText) { _, newValue in
             searchDebounceTask?.cancel()
@@ -488,94 +572,99 @@ struct RecipesView: View {
         }
         .onAppear {
             cachedCommunityCategories = buildCategories(from: filteredCommunityRecipes)
+            recomputeUseUpMatches()
         }
         .onChange(of: filteredCommunityRecipes) { _, newRecipes in
             cachedCommunityCategories = buildCategories(from: newRecipes)
+        }
+        .onChange(of: pantryStore.ingredients) { _, _ in
+            recomputeUseUpMatches()
+        }
+        .onChange(of: savedRecipesStore.communityRecipes) { _, _ in
+            recomputeUseUpMatches()
         }
     }
 
     // MARK: - Header
 
     private var headerView: some View {
-        HStack(spacing: DS.Spacing.space4) {
+        HStack(spacing: Sourdough.Spacing.screenMargin) {
             Text("Recipes")
-                .font(.custom("CalSans-Regular", size: 28))
-                .foregroundStyle(DS.ColorToken.textPrimary)
+                .foregroundStyle(Sourdough.Colors.ink)
+                .sourdoughTextStyle(.title1)
 
             Spacer()
 
             Button {
                 showingShareSheet = true
             } label: {
-                HStack(spacing: DS.Spacing.space1) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 14, weight: .semibold))
+                HStack(spacing: Sourdough.Spacing.iconToLabel) {
+                    Ph.plus.regular
+                        .frame(width: 14, height: 14)
                     Text("Share")
-                        .font(.custom("Satoshi Variable", size: 14).weight(.semibold))
+                        .foregroundStyle(Sourdough.Colors.onAction)
+                        .sourdoughTextStyle(.caption)
                 }
-                .foregroundStyle(.white)
-                .padding(.horizontal, DS.Spacing.space3)
+                .foregroundStyle(Sourdough.Colors.onAction)
+                .padding(.horizontal, Sourdough.Spacing.rowInternals)
                 .frame(height: 34)
-                .background(DS.ColorToken.primary)
+                .background(Sourdough.Colors.action)
                 .clipShape(Capsule())
             }
             .buttonStyle(.plain)
 
             Button { showingSettings = true } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 22, weight: .regular))
-                    .foregroundStyle(DS.ColorToken.textSecondary)
+                Ph.gear.regular
+                    .frame(width: 22, height: 22)
+                    .foregroundStyle(Sourdough.Colors.mutedInk)
             }
             .buttonStyle(.plain)
             NotificationBellButton()
             ProfileNavButton()
         }
-        .padding(.horizontal, DS.Spacing.space5)
-        .padding(.top, DS.Spacing.space2)
-        .padding(.bottom, DS.Spacing.space4)
+        .padding(.horizontal, Sourdough.Spacing.screenMargin)
+        .padding(.top, Sourdough.Spacing.iconToLabel)
+        .padding(.bottom, Sourdough.Spacing.rowInternals)
     }
 
     // MARK: - Search Bar
 
     private var searchBar: some View {
-        HStack(spacing: DS.Spacing.space2) {
-            HStack(spacing: DS.Spacing.space2) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(DS.ColorToken.textTertiary)
+        HStack(spacing: Sourdough.Spacing.insideChip) {
+            HStack(spacing: Sourdough.Spacing.insideChip) {
+                Ph.magnifyingGlass.regular
+                    .frame(width: 16, height: 16)
+                    .foregroundStyle(Sourdough.Colors.faintInk)
 
                 TextField("Search recipes", text: $searchText)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                    .appTextStyle(.body)
-                    .foregroundStyle(DS.ColorToken.textPrimary)
+                    .foregroundStyle(Sourdough.Colors.ink)
+                    .sourdoughTextStyle(.body)
             }
-            .padding(.horizontal, DS.Spacing.space3)
+            .padding(.horizontal, Sourdough.Spacing.rowInternals)
             .frame(height: 48)
-            .background(DS.ColorToken.bgSecondary)
-            .overlay(
-                RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
-                    .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+            .background(Sourdough.Colors.sunken)
+            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
 
             Button {
                 showingFilterSheet = true
             } label: {
                 ZStack(alignment: .topTrailing) {
-                    Image(systemName: "line.3.horizontal.decrease")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(hasActiveFilters ? DS.ColorToken.primary : DS.ColorToken.textSecondary)
+                    Ph.fadersHorizontal.regular
+                        .frame(width: 16, height: 16)
+                        .foregroundStyle(hasActiveFilters ? Sourdough.Ramp.sage600 : Sourdough.Colors.mutedInk)
                         .frame(width: 48, height: 48)
-                        .background(DS.ColorToken.bgSecondary)
+                        .background(Sourdough.Colors.sunken)
                         .overlay(
-                            RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
-                                .stroke(hasActiveFilters ? DS.ColorToken.primary : DS.ColorToken.borderDefault, lineWidth: 1)
+                            RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous)
+                                .stroke(hasActiveFilters ? Sourdough.Ramp.sage500 : Sourdough.Colors.interactiveBorder, lineWidth: 1)
                         )
-                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
 
                     if hasActiveFilters {
                         Circle()
-                            .fill(DS.ColorToken.primary)
+                            .fill(Sourdough.Ramp.sage500)
                             .frame(width: 8, height: 8)
                             .offset(x: -4, y: 4)
                     }
@@ -589,20 +678,20 @@ struct RecipesView: View {
 
     private var quickFilterChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: DS.Spacing.space2) {
+            HStack(spacing: Sourdough.Spacing.insideChip) {
                 ForEach(QuickFilter.allCases, id: \.self) { filter in
                     Button {
                         withAnimation(.easeInOut(duration: 0.2)) { quickFilter = filter }
                     } label: {
                         Text(filter.rawValue)
-                            .font(.custom("Satoshi Variable", size: 13).weight(.medium))
-                            .foregroundStyle(quickFilter == filter ? .white : DS.ColorToken.textSecondary)
-                            .padding(.horizontal, DS.Spacing.space3)
+                            .foregroundStyle(quickFilter == filter ? Sourdough.Colors.onAction : Sourdough.Colors.mutedInk)
+                            .sourdoughTextStyle(.caption)
+                            .padding(.horizontal, Sourdough.Spacing.rowInternals)
                             .frame(height: 34)
-                            .background(quickFilter == filter ? DS.ColorToken.accent : DS.ColorToken.bgSecondary)
+                            .background(quickFilter == filter ? Sourdough.Ramp.sage500 : Sourdough.Colors.sunken)
                             .overlay(
                                 Capsule().stroke(
-                                    quickFilter == filter ? Color.clear : DS.ColorToken.borderDefault,
+                                    quickFilter == filter ? Color.clear : Sourdough.Colors.interactiveBorder,
                                     lineWidth: 1
                                 )
                             )
@@ -632,19 +721,19 @@ struct RecipesView: View {
         return Group {
             if !hasContent {
                 VStack {
-                    Spacer(minLength: DS.Spacing.space8)
+                    Spacer(minLength: Sourdough.Spacing.aboveSectionHead)
                     Text("No recipes match your filters.")
-                        .appTextStyle(.bodySM)
-                        .foregroundStyle(DS.ColorToken.textSecondary)
+                        .foregroundStyle(Sourdough.Colors.mutedInk)
+                        .sourdoughTextStyle(.subhead)
                         .frame(maxWidth: .infinity, alignment: .center)
                     Spacer()
                 }
             } else {
                 ScrollView(showsIndicators: false) {
-                    LazyVStack(alignment: .leading, spacing: DS.Spacing.space6) {
+                    LazyVStack(alignment: .leading, spacing: Sourdough.Spacing.betweenBlocks) {
                         if let item = showcaseItem {
                             showcaseCardView(recipe: item.recipe, ingredient: item.ingredient)
-                                .padding(.horizontal, DS.Spacing.space5)
+                                .padding(.horizontal, Sourdough.Spacing.screenMargin)
                         }
 
                         if !useUpSoonRecipes.isEmpty {
@@ -655,12 +744,12 @@ struct RecipesView: View {
                             categorySection(category)
                         }
                     }
-                    .padding(.top, DS.Spacing.space3)
-                    .padding(.bottom, DS.Spacing.space24)
+                    .padding(.top, Sourdough.Spacing.rowInternals)
+                    .padding(.bottom, Sourdough.Spacing.underTitle * 2)
                 }
                 .overlay(alignment: .bottom) {
                     LinearGradient(
-                        colors: [DS.ColorToken.bgPrimary, DS.ColorToken.bgPrimary.opacity(0)],
+                        colors: [Sourdough.Colors.canvas, Sourdough.Colors.canvas.opacity(0)],
                         startPoint: .bottom, endPoint: .top
                     )
                     .frame(height: 48)
@@ -671,6 +760,9 @@ struct RecipesView: View {
     }
 
     // MARK: - Showcase Card
+    // The one dark "tonight's recipe" card that anchors the home screen (§2) — a fixed on-dark
+    // surface like OnDarkHeroCard, but with its own top-badge/bookmark overlay layout that doesn't
+    // fit that component's shape, so it's styled directly with the same dark tokens instead.
 
     @ViewBuilder
     private func showcaseCardView(recipe: Recipe, ingredient: Ingredient) -> some View {
@@ -688,7 +780,7 @@ struct RecipesView: View {
                         CachedRecipeImage(recipeID: recipe.id, imageData: recipe.imageData, imagePath: recipe.imagePath, thumbnail: false)
                             .scaledToFill()
                     } else {
-                        LinearGradient(colors: [DS.ColorToken.primary, DS.ColorToken.accent], startPoint: .topLeading, endPoint: .bottomTrailing)
+                        LinearGradient(colors: [Sourdough.Ramp.darkCard, Sourdough.Ramp.darkCanvas], startPoint: .topLeading, endPoint: .bottomTrailing)
                     }
                 }
                 .frame(maxWidth: .infinity, minHeight: 220, maxHeight: 220)
@@ -708,13 +800,13 @@ struct RecipesView: View {
                 VStack {
                     HStack(alignment: .top) {
                         HStack(spacing: 5) {
-                            Circle().fill(DS.ColorToken.warning).frame(width: 6, height: 6)
+                            Circle().fill(Sourdough.Ramp.urgentDarkLabel).frame(width: 6, height: 6)
                             Text("USE \(ingredient.name.uppercased()) · \(urgencyLabel)")
-                                .font(.custom("Satoshi Variable", size: 10).weight(.bold))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(Sourdough.Ramp.urgentDarkLabel)
+                                .sourdoughTextStyle(.caption)
                         }
                         .padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(Color(red: 0.78, green: 0.38, blue: 0.05).opacity(0.9))
+                        .background(Sourdough.Ramp.urgentDarkTint)
                         .clipShape(Capsule())
 
                         Spacer()
@@ -723,74 +815,75 @@ struct RecipesView: View {
                             if isSaved { savedRecipesStore.unsaveRecipe(recipe) }
                             else { savedRecipesStore.saveRecipe(recipe) }
                         } label: {
-                            Image(systemName: isSaved ? "bookmark.fill" : "bookmark")
-                                .font(.system(size: 15, weight: .medium))
-                                .foregroundStyle(.white)
+                            (isSaved ? Ph.bookmark.fill : Ph.bookmark.regular)
+                                .frame(width: 15, height: 15)
+                                .foregroundStyle(Sourdough.Colors.heroTitleOnDark)
                                 .frame(width: 34, height: 34)
                                 .background(Color.black.opacity(0.3))
                                 .clipShape(Circle())
                         }
                         .buttonStyle(.plain)
                     }
-                    .padding(.horizontal, DS.Spacing.space4)
-                    .padding(.top, DS.Spacing.space4)
+                    .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                    .padding(.top, Sourdough.Spacing.screenMargin)
                     Spacer()
                 }
 
                 // Bottom content
-                VStack(alignment: .leading, spacing: DS.Spacing.space1) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text("TONIGHT'S PICK")
-                        .font(.custom("Satoshi Variable", size: 10).weight(.bold))
-                        .foregroundStyle(.white.opacity(0.65))
-                        .tracking(0.8)
+                        .foregroundStyle(Sourdough.Colors.heroMetaOnDark)
+                        .sourdoughTextStyle(.sectionHead)
 
                     Text(recipe.title)
-                        .font(.custom("CalSans-Regular", size: 22))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Sourdough.Colors.heroTitleOnDark)
+                        .sourdoughTextStyle(.title2)
                         .lineLimit(1)
 
                     Text(recipe.summary)
-                        .font(.custom("Satoshi Variable", size: 12))
-                        .foregroundStyle(.white.opacity(0.72))
+                        .foregroundStyle(Sourdough.Colors.heroMetaOnDark)
+                        .sourdoughTextStyle(.caption)
                         .lineLimit(1)
 
-                    HStack(spacing: DS.Spacing.space2) {
+                    HStack(spacing: Sourdough.Spacing.insideChip) {
                         if matchCount > 0 {
                             HStack(spacing: 4) {
-                                Image(systemName: "checkmark").font(.system(size: 9, weight: .bold))
+                                Ph.check.bold.frame(width: 9, height: 9)
                                 Text("\(matchCount)/\(recipe.ingredientsUsed.count) in pantry")
-                                    .font(.custom("Satoshi Variable", size: 11).weight(.semibold))
+                                    .foregroundStyle(Sourdough.Ramp.sageDark)
+                                    .sourdoughTextStyle(.caption)
                             }
-                            .foregroundStyle(DS.ColorToken.success)
+                            .foregroundStyle(Sourdough.Ramp.sageDark)
                             .padding(.horizontal, 8).padding(.vertical, 4)
-                            .background(DS.ColorToken.success.opacity(0.18))
+                            .background(Sourdough.Ramp.sageDark.opacity(0.18))
                             .clipShape(Capsule())
                         }
 
                         HStack(spacing: 4) {
-                            Image(systemName: "clock").font(.system(size: 10))
+                            Ph.clock.regular.frame(width: 10, height: 10)
                             Text("\(recipe.timeMinutes) min")
-                                .font(.custom("Satoshi Variable", size: 11).weight(.semibold))
+                                .foregroundStyle(Sourdough.Colors.heroTitleOnDark)
+                                .sourdoughTextStyle(.caption)
                         }
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Sourdough.Colors.heroTitleOnDark)
                         .padding(.horizontal, 8).padding(.vertical, 4)
                         .background(Color.black.opacity(0.4))
                         .clipShape(Capsule())
 
                         Text("\(recipe.macros.calories)cal")
-                            .font(.custom("Satoshi Variable", size: 11).weight(.semibold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(Sourdough.Colors.heroTitleOnDark)
+                            .sourdoughTextStyle(.caption)
                             .padding(.horizontal, 8).padding(.vertical, 4)
                             .background(Color.black.opacity(0.4))
                             .clipShape(Capsule())
                     }
                     .padding(.top, 2)
                 }
-                .padding(.horizontal, DS.Spacing.space4)
-                .padding(.bottom, DS.Spacing.space4)
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                .padding(.bottom, Sourdough.Spacing.screenMargin)
             }
             .frame(height: 220)
-            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
         }
         .buttonStyle(.plain)
     }
@@ -798,33 +891,47 @@ struct RecipesView: View {
     // MARK: - Use Up Section
 
     private var useUpSection: some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.space3) {
+        VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {
             HStack(alignment: .bottom) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Use up before it expires")
-                        .appTextStyle(.heading3)
-                        .foregroundStyle(DS.ColorToken.textPrimary)
+                        .foregroundStyle(Sourdough.Colors.ink)
+                        .sourdoughTextStyle(.title2)
                     Text("\(useUpSoonRecipes.count) recipe\(useUpSoonRecipes.count == 1 ? "" : "s") for ingredients going bad soon")
-                        .font(.custom("Satoshi Variable", size: 12))
-                        .foregroundStyle(DS.ColorToken.textSecondary)
+                        .foregroundStyle(Sourdough.Colors.mutedInk)
+                        .sourdoughTextStyle(.caption)
                 }
                 Spacer()
                 Text("See all")
-                    .font(.custom("Satoshi Variable", size: 13).weight(.medium))
-                    .foregroundStyle(DS.ColorToken.accent)
+                    .foregroundStyle(Sourdough.Colors.actionInk)
+                    .sourdoughTextStyle(.caption)
             }
-            .padding(.horizontal, DS.Spacing.space5)
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
 
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: DS.Spacing.space3) {
+                LazyHStack(spacing: Sourdough.Spacing.rowInternals) {
                     ForEach(useUpSoonRecipes.prefix(10)) { recipe in
+                        let actions = RecipeCardActions(
+                            recipe: recipe,
+                            savedRecipesStore: savedRecipesStore,
+                            reportRecipe: { recipeToReport = $0 },
+                            rateRecipe: { ratingsRecipe = $0 }
+                        )
                         Button { selectedRecipe = recipe } label: {
-                            RecipeCard(recipe: recipe).frame(width: 185)
+                            RecipeCard(
+                                recipe: recipe,
+                                showBadge: false,
+                                isSaved: savedRecipesStore.isSaved(recipe),
+                                onReport: actions.onReport,
+                                onRate: actions.onRate,
+                                onSave: actions.onSave
+                            )
                         }
                         .buttonStyle(.plain)
+                        .frame(width: 225)
                     }
                 }
-                .padding(.horizontal, DS.Spacing.space5)
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
             }
             .mask(
                 LinearGradient(
@@ -843,36 +950,50 @@ struct RecipesView: View {
     // MARK: - Category Section
 
     private func categorySection(_ category: RecipeCategory) -> some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.space3) {
-            HStack(spacing: DS.Spacing.space2) {
+        VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {
+            HStack(spacing: Sourdough.Spacing.insideChip) {
                 Image(systemName: category.icon)
                     .font(.system(size: 16))
-                    .foregroundStyle(DS.ColorToken.primary)
+                    .foregroundStyle(Sourdough.Ramp.sage600)
                 Text(category.title)
-                    .appTextStyle(.heading3)
-                    .foregroundStyle(DS.ColorToken.textPrimary)
+                    .foregroundStyle(Sourdough.Colors.ink)
+                    .sourdoughTextStyle(.title2)
                 Spacer()
                 if category.recipes.count > 5 {
                     Button { navigateToCategory = category } label: {
                         Text("See More")
-                            .font(.custom("Satoshi Variable", size: 13).weight(.medium))
-                            .foregroundStyle(DS.ColorToken.primary)
+                            .foregroundStyle(Sourdough.Colors.actionInk)
+                            .sourdoughTextStyle(.caption)
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, DS.Spacing.space5)
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
 
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: DS.Spacing.space3) {
+                LazyHStack(spacing: Sourdough.Spacing.rowInternals) {
                     ForEach(category.recipes.prefix(5)) { recipe in
+                        let actions = RecipeCardActions(
+                            recipe: recipe,
+                            savedRecipesStore: savedRecipesStore,
+                            reportRecipe: { recipeToReport = $0 },
+                            rateRecipe: { ratingsRecipe = $0 }
+                        )
                         Button { selectedRecipe = recipe } label: {
-                            RecipeCard(recipe: recipe).frame(width: 185)
+                            RecipeCard(
+                                recipe: recipe,
+                                showBadge: false,
+                                isSaved: savedRecipesStore.isSaved(recipe),
+                                onReport: actions.onReport,
+                                onRate: actions.onRate,
+                                onSave: actions.onSave
+                            )
                         }
                         .buttonStyle(.plain)
+                        .frame(width: 225)
                     }
                 }
-                .padding(.horizontal, DS.Spacing.space5)
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
             }
             .mask(
                 LinearGradient(
@@ -889,11 +1010,6 @@ struct RecipesView: View {
     }
 
     // MARK: - Recipe List (grid, used for saved/your recipes)
-
-    private let gridColumns = [
-        GridItem(.flexible(), spacing: DS.Spacing.space3),
-        GridItem(.flexible(), spacing: DS.Spacing.space3)
-    ]
 
     // MARK: - Categorized Community View
 
@@ -935,55 +1051,19 @@ struct RecipesView: View {
         return categories
     }
 
-    // MARK: - Grid View (Your Recipes / Saved)
-
-    private func recipeGrid(recipes: [Recipe], emptyMessage: String) -> some View {
-        Group {
-            if recipes.isEmpty {
-                Spacer(minLength: DS.Spacing.space8)
-                Text(emptyMessage)
-                    .appTextStyle(.bodySM)
-                    .foregroundStyle(DS.ColorToken.textSecondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                Spacer()
-            } else {
-                ScrollView(showsIndicators: false) {
-                    LazyVGrid(columns: gridColumns, spacing: DS.Spacing.space3) {
-                        ForEach(recipes) { recipe in
-                            Button {
-                                selectedRecipe = recipe
-                            } label: {
-                                RecipeCard(recipe: recipe)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(.horizontal, DS.Spacing.space5)
-                    .padding(.bottom, DS.Spacing.space24)
-                }
-                .overlay(alignment: .bottom) {
-                    LinearGradient(
-                        colors: [DS.ColorToken.bgPrimary, DS.ColorToken.bgPrimary.opacity(0)],
-                        startPoint: .bottom,
-                        endPoint: .top
-                    )
-                    .frame(height: 48)
-                    .allowsHitTesting(false)
-                }
-            }
-        }
-    }
-
 }
 
 // MARK: - Recipe Preview Sheet
 
-private struct RecipePreviewSheet: View {
+struct RecipePreviewSheet: View {
     @EnvironmentObject private var savedRecipesStore: SavedRecipesStore
     @EnvironmentObject private var pantryStore: PantryStore
     @Environment(\.dismiss) private var dismiss
     let recipe: Recipe
     let onViewFull: () -> Void
+
+    @State private var showReportSheet = false
+    @State private var reportError: String?
 
     private var pantryMatchCount: Int {
         let pantryNames = Set(pantryStore.ingredients.map { $0.name.lowercased() })
@@ -992,87 +1072,109 @@ private struct RecipePreviewSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-                // Drag handle
-                Capsule()
-                    .fill(DS.ColorToken.borderDefault)
-                    .frame(width: 36, height: 5)
-                    .padding(.top, DS.Spacing.space3)
-                    .padding(.bottom, DS.Spacing.space4)
+                // Full-width hero image with drag handle overlaid
+                ZStack(alignment: .top) {
+                    CachedRecipeImage(recipeID: recipe.id, imageData: recipe.imageData, imagePath: recipe.imagePath, thumbnail: true)
+                        .frame(height: 240)
+                        .frame(maxWidth: .infinity)
+                        .clipped()
+                    Capsule()
+                        .fill(.white.opacity(0.6))
+                        .frame(width: 36, height: 5)
+                        .padding(.top, Sourdough.Spacing.rowInternals)
+                }
 
                 ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: DS.Spacing.space6) {
-                        // Recipe image
-                        CachedRecipeImage(recipeID: recipe.id, imageData: recipe.imageData, imagePath: recipe.imagePath, thumbnail: true)
-                            .frame(height: 200)
-                            .frame(maxWidth: .infinity)
-                            .clipped()
-                            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
+                    VStack(alignment: .leading, spacing: Sourdough.Spacing.betweenBlocks) {
 
-                        // Title
-                        Text(recipe.title)
-                            .appTextStyle(.heading2)
-                            .foregroundStyle(DS.ColorToken.textPrimary)
+                        // Title + save + flag
+                        HStack(alignment: .top, spacing: Sourdough.Spacing.insideChip) {
+                            Text(recipe.title)
+                                .foregroundStyle(Sourdough.Colors.ink)
+                                .sourdoughTextStyle(.title1)
+                            Spacer()
+                            Button {
+                                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                savedRecipesStore.isSaved(recipe)
+                                    ? savedRecipesStore.unsaveRecipe(recipe)
+                                    : savedRecipesStore.saveRecipe(recipe)
+                            } label: {
+                                (savedRecipesStore.isSaved(recipe) ? Ph.bookmark.fill : Ph.bookmark.regular)
+                                    .frame(width: 18, height: 18)
+                                    .foregroundStyle(savedRecipesStore.isSaved(recipe) ? Sourdough.Ramp.sage500 : Sourdough.Colors.faintInk)
+                            }
+                            .buttonStyle(.plain)
+                            if recipe.isUserShared && recipe.createdBy != savedRecipesStore.userId?.uuidString {
+                                Button { showReportSheet = true } label: {
+                                    Ph.flag.regular
+                                        .frame(width: 18, height: 18)
+                                        .foregroundStyle(Sourdough.Colors.faintInk)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
 
                         // Summary
                         Text(recipe.summary)
-                            .appTextStyle(.body)
-                            .foregroundStyle(DS.ColorToken.textSecondary)
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                            .sourdoughTextStyle(.body)
 
                         // Meta info
-                        HStack(spacing: DS.Spacing.space4) {
-                            Label("\(recipe.timeMinutes) min", systemImage: "clock")
-                            Label("\(recipe.servings) servings", systemImage: "person.2")
+                        HStack(spacing: Sourdough.Spacing.screenMargin) {
+                            Label { Text("\(recipe.timeMinutes) min") } icon: { Ph.clock.regular.frame(width: 14, height: 14) }
+                            Label { Text("\(recipe.servings) servings") } icon: { Ph.users.regular.frame(width: 14, height: 14) }
                         }
-                        .appTextStyle(.bodySM)
-                        .foregroundStyle(DS.ColorToken.textSecondary)
+                        .foregroundStyle(Sourdough.Colors.mutedInk)
+                        .sourdoughTextStyle(.subhead)
 
                         // Dietary pills
                         if !recipe.dietaryRestrictions.isEmpty || recipe.dietType != "any" {
-                            FlowLayout(spacing: DS.Spacing.space1) {
+                            FlowLayout(spacing: Sourdough.Spacing.iconToLabel) {
                                 if recipe.dietType != "any" {
                                     Text(recipe.dietType.capitalized)
-                                        .font(.custom("Satoshi Variable", size: 11).weight(.semibold))
-                                        .foregroundStyle(DS.ColorToken.accent)
+                                        .foregroundStyle(Sourdough.Ramp.sage600)
+                                        .sourdoughTextStyle(.caption)
                                         .padding(.horizontal, 8)
                                         .padding(.vertical, 3)
-                                        .background(DS.ColorToken.accentLight)
+                                        .background(Sourdough.Ramp.sage100)
                                         .clipShape(Capsule())
                                 }
                                 ForEach(recipe.dietaryRestrictions, id: \.self) { restriction in
                                     Text(restriction)
-                                        .font(.custom("Satoshi Variable", size: 11).weight(.semibold))
-                                        .foregroundStyle(DS.ColorToken.primary)
+                                        .foregroundStyle(Sourdough.Ramp.honey600)
+                                        .sourdoughTextStyle(.caption)
                                         .padding(.horizontal, 8)
                                         .padding(.vertical, 3)
-                                        .background(DS.ColorToken.primaryLight)
+                                        .background(Sourdough.Ramp.honey100)
                                         .clipShape(Capsule())
                                 }
                             }
                         }
 
                         if recipe.rating > 0 {
-                            HStack(spacing: DS.Spacing.space2) {
+                            HStack(spacing: Sourdough.Spacing.insideChip) {
                                 StarRatingView(rating: recipe.rating, size: 14)
                                 Text(recipe.rating.truncatingRemainder(dividingBy: 1) == 0
                                      ? String(format: "%.0f", recipe.rating)
                                      : String(format: "%.1f", recipe.rating))
-                                    .appTextStyle(.bodySM)
-                                    .foregroundStyle(DS.ColorToken.textSecondary)
+                                    .foregroundStyle(Sourdough.Colors.mutedInk)
+                                    .sourdoughTextStyle(.subhead)
                             }
                         }
 
                         if let displayName = recipe.createdByName ?? recipe.createdBy {
-                            HStack(spacing: DS.Spacing.space1) {
-                                Image(systemName: "person.circle.fill")
-                                    .font(.system(size: 12))
+                            HStack(spacing: Sourdough.Spacing.iconToLabel) {
+                                Ph.userCircle.fill
+                                    .frame(width: 12, height: 12)
                                 Text("Created by \(displayName)")
+                                    .foregroundStyle(Sourdough.Colors.faintInk)
+                                    .sourdoughTextStyle(.caption)
                             }
-                            .appTextStyle(.caption)
-                            .foregroundStyle(DS.ColorToken.textTertiary)
+                            .foregroundStyle(Sourdough.Colors.faintInk)
                         }
 
                         // Macros summary
-                        HStack(spacing: DS.Spacing.space3) {
+                        HStack(spacing: Sourdough.Spacing.rowInternals) {
                             macroPill("Cal", value: "\(recipe.macros.calories)")
                             macroPill("Protein", value: "\(recipe.macros.proteinG)g")
                             macroPill("Carbs", value: "\(recipe.macros.carbsG)g")
@@ -1081,75 +1183,88 @@ private struct RecipePreviewSheet: View {
 
                         // Ingredients preview
                         if !recipe.ingredientsUsed.isEmpty {
-                            VStack(alignment: .leading, spacing: DS.Spacing.space2) {
+                            VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
                                 Text("Ingredients")
-                                    .appTextStyle(.heading3)
-                                    .foregroundStyle(DS.ColorToken.textPrimary)
+                                    .foregroundStyle(Sourdough.Colors.ink)
+                                    .sourdoughTextStyle(.title2)
 
                                 ForEach(Array(recipe.ingredientsUsed.prefix(5))) { ingredient in
                                     Text("\u{2022} \(ingredient.displayText)")
-                                        .appTextStyle(.bodySM)
-                                        .foregroundStyle(DS.ColorToken.textSecondary)
+                                        .foregroundStyle(Sourdough.Colors.mutedInk)
+                                        .sourdoughTextStyle(.subhead)
                                 }
 
                                 if recipe.ingredientsUsed.count > 5 {
                                     Text("+\(recipe.ingredientsUsed.count - 5) more")
-                                        .appTextStyle(.bodySM)
-                                        .foregroundStyle(DS.ColorToken.textTertiary)
+                                        .foregroundStyle(Sourdough.Colors.faintInk)
+                                        .sourdoughTextStyle(.subhead)
                                 }
 
                                 if pantryMatchCount > 0 {
-                                    HStack(spacing: DS.Spacing.space1) {
-                                        Image(systemName: "checkmark.seal.fill")
-                                            .font(.system(size: 12))
-                                            .foregroundStyle(DS.ColorToken.success)
+                                    HStack(spacing: Sourdough.Spacing.iconToLabel) {
+                                        Ph.sealCheck.fill
+                                            .frame(width: 12, height: 12)
+                                            .foregroundStyle(Sourdough.Ramp.sage600)
                                         Text("You have \(pantryMatchCount) of \(recipe.ingredientsUsed.count) ingredients")
-                                            .appTextStyle(.bodySM)
-                                            .foregroundStyle(DS.ColorToken.success)
+                                            .foregroundStyle(Sourdough.Ramp.sage600)
+                                            .sourdoughTextStyle(.subhead)
                                     }
-                                    .padding(.top, DS.Spacing.space1)
+                                    .padding(.top, Sourdough.Spacing.iconToLabel)
                                 }
                             }
                         }
                     }
-                    .padding(.horizontal, DS.Spacing.space5)
+                    .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                    .padding(.top, Sourdough.Spacing.screenMargin)
                 }
 
                 // View Full Recipe button
                 Button(action: onViewFull) {
                     Text("View Full Recipe")
-                        .font(.custom("Satoshi Variable", size: 16).weight(.semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Sourdough.Colors.onAction)
+                        .sourdoughTextStyle(.rowTitle)
                         .frame(maxWidth: .infinity)
                         .frame(height: 52)
-                        .background(DS.ColorToken.primary)
-                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                        .background(Sourdough.Colors.action)
+                        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
                 }
                 .buttonStyle(.plain)
-                .padding(.horizontal, DS.Spacing.space5)
-                .padding(.top, DS.Spacing.space3)
-                .padding(.bottom, DS.Spacing.space4)
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                .padding(.top, Sourdough.Spacing.rowInternals)
+                .padding(.bottom, Sourdough.Spacing.rowInternals)
             }
-        .background(DS.ColorToken.bgPrimary)
+        .background(Sourdough.Colors.canvas)
+        .sheet(isPresented: $showReportSheet) {
+            ReportContentSheet(subject: .recipe(name: recipe.title)) { category, description in
+                Task {
+                    do {
+                        try await savedRecipesStore.reportRecipe(recipe, category: category, description: description)
+                    } catch {
+                        reportError = error.localizedDescription.contains("duplicate") || error.localizedDescription.contains("unique")
+                            ? "You've already reported this recipe."
+                            : "Failed to submit report. Please try again."
+                    }
+                }
+            }
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
+        }
+        .reportErrorAlert($reportError)
     }
 
     private func macroPill(_ label: String, value: String) -> some View {
-        VStack(spacing: DS.Spacing.space1) {
+        VStack(spacing: Sourdough.Spacing.iconToLabel) {
             Text(value)
-                .appTextStyle(.bodySM)
-                .foregroundStyle(DS.ColorToken.textPrimary)
+                .foregroundStyle(Sourdough.Colors.ink)
+                .sourdoughTextStyle(.numeric)
             Text(label)
-                .appTextStyle(.caption)
-                .foregroundStyle(DS.ColorToken.textTertiary)
+                .foregroundStyle(Sourdough.Colors.faintInk)
+                .sourdoughTextStyle(.caption)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, DS.Spacing.space2)
-        .background(DS.ColorToken.bgSecondary)
-        .overlay(
-            RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
-                .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+        .padding(.vertical, Sourdough.Spacing.insideChip)
+        .background(Sourdough.Colors.sunken)
+        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
     }
 }
 
@@ -1189,16 +1304,16 @@ private struct RecipeFilterSheet: View {
         VStack(spacing: 0) {
             // Drag handle
             Capsule()
-                .fill(DS.ColorToken.borderDefault)
+                .fill(Sourdough.Colors.hairline)
                 .frame(width: 36, height: 5)
-                .padding(.top, DS.Spacing.space3)
-                .padding(.bottom, DS.Spacing.space4)
+                .padding(.top, Sourdough.Spacing.rowInternals)
+                .padding(.bottom, Sourdough.Spacing.betweenBlocks)
 
             // Header
             HStack {
                 Text("Filters")
-                    .appTextStyle(.heading2)
-                    .foregroundStyle(DS.ColorToken.textPrimary)
+                    .foregroundStyle(Sourdough.Colors.ink)
+                    .sourdoughTextStyle(.title1)
 
                 Spacer()
 
@@ -1209,28 +1324,28 @@ private struct RecipeFilterSheet: View {
                         selectedIngredients = []
                         selectedDietaryFilters = []
                     }
-                    .font(.custom("Satoshi Variable", size: 14).weight(.medium))
-                    .foregroundStyle(DS.ColorToken.error)
+                    .foregroundStyle(Sourdough.Colors.actionInk)
+                    .sourdoughTextStyle(.caption)
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, DS.Spacing.space5)
-            .padding(.bottom, DS.Spacing.space6)
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .padding(.bottom, Sourdough.Spacing.betweenBlocks)
 
             ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: DS.Spacing.space6) {
+                VStack(alignment: .leading, spacing: Sourdough.Spacing.betweenBlocks) {
                     // Ingredients filter
                     if !pantryIngredients.isEmpty {
-                        VStack(alignment: .leading, spacing: DS.Spacing.space3) {
+                        VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {
                             Text("Ingredients")
-                                .appTextStyle(.heading3)
-                                .foregroundStyle(DS.ColorToken.textPrimary)
+                                .foregroundStyle(Sourdough.Colors.ink)
+                                .sourdoughTextStyle(.title2)
 
                             Text("Show recipes that use these pantry items")
-                                .appTextStyle(.bodySM)
-                                .foregroundStyle(DS.ColorToken.textTertiary)
+                                .foregroundStyle(Sourdough.Colors.faintInk)
+                                .sourdoughTextStyle(.subhead)
 
-                            FlowLayout(spacing: DS.Spacing.space2) {
+                            FlowLayout(spacing: Sourdough.Spacing.insideChip) {
                                 ForEach(sortedPantryNames, id: \.self) { name in
                                     let key = name.lowercased()
                                     filterChip(name.capitalized, isSelected: selectedIngredients.contains(key)) {
@@ -1246,12 +1361,12 @@ private struct RecipeFilterSheet: View {
                     }
 
                     // Cuisine filter
-                    VStack(alignment: .leading, spacing: DS.Spacing.space3) {
+                    VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {
                         Text("Cuisine")
-                            .appTextStyle(.heading3)
-                            .foregroundStyle(DS.ColorToken.textPrimary)
+                            .foregroundStyle(Sourdough.Colors.ink)
+                            .sourdoughTextStyle(.title2)
 
-                        FlowLayout(spacing: DS.Spacing.space2) {
+                        FlowLayout(spacing: Sourdough.Spacing.insideChip) {
                             filterChip("All", isSelected: selectedCuisine == nil) {
                                 selectedCuisine = nil
                             }
@@ -1265,12 +1380,12 @@ private struct RecipeFilterSheet: View {
                     }
 
                     // Prep time filter
-                    VStack(alignment: .leading, spacing: DS.Spacing.space3) {
+                    VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {
                         Text("Max Prep Time")
-                            .appTextStyle(.heading3)
-                            .foregroundStyle(DS.ColorToken.textPrimary)
+                            .foregroundStyle(Sourdough.Colors.ink)
+                            .sourdoughTextStyle(.title2)
 
-                        FlowLayout(spacing: DS.Spacing.space2) {
+                        FlowLayout(spacing: Sourdough.Spacing.insideChip) {
                             ForEach(Self.prepTimeOptions, id: \.label) { option in
                                 filterChip(option.label, isSelected: maxPrepTime == option.value) {
                                     maxPrepTime = option.value
@@ -1280,12 +1395,12 @@ private struct RecipeFilterSheet: View {
                     }
 
                     // Dietary filter
-                    VStack(alignment: .leading, spacing: DS.Spacing.space3) {
+                    VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {
                         Text("Dietary")
-                            .appTextStyle(.heading3)
-                            .foregroundStyle(DS.ColorToken.textPrimary)
+                            .foregroundStyle(Sourdough.Colors.ink)
+                            .sourdoughTextStyle(.title2)
 
-                        FlowLayout(spacing: DS.Spacing.space2) {
+                        FlowLayout(spacing: Sourdough.Spacing.insideChip) {
                             ForEach(Self.dietaryOptions, id: \.self) { option in
                                 filterChip(option, isSelected: selectedDietaryFilters.contains(option)) {
                                     if selectedDietaryFilters.contains(option) {
@@ -1298,38 +1413,38 @@ private struct RecipeFilterSheet: View {
                         }
                     }
                 }
-                .padding(.horizontal, DS.Spacing.space5)
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
             }
 
             // Done button
             Button { dismiss() } label: {
                 Text("Show Results")
-                    .font(.custom("Satoshi Variable", size: 16).weight(.semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Sourdough.Colors.onAction)
+                    .sourdoughTextStyle(.rowTitle)
                     .frame(maxWidth: .infinity)
                     .frame(height: 52)
-                    .background(DS.ColorToken.primary)
-                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                    .background(Sourdough.Colors.action)
+                    .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, DS.Spacing.space5)
-            .padding(.top, DS.Spacing.space3)
-            .padding(.bottom, DS.Spacing.space4)
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .padding(.top, Sourdough.Spacing.rowInternals)
+            .padding(.bottom, Sourdough.Spacing.rowInternals)
         }
-        .background(DS.ColorToken.bgPrimary)
+        .background(Sourdough.Colors.canvas)
     }
 
     private func filterChip(_ label: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(label)
-                .font(.custom("Satoshi Variable", size: 14).weight(.medium))
-                .foregroundStyle(isSelected ? .white : DS.ColorToken.textSecondary)
-                .padding(.horizontal, DS.Spacing.space5)
+                .foregroundStyle(isSelected ? Sourdough.Colors.onAction : Sourdough.Colors.mutedInk)
+                .sourdoughTextStyle(.caption)
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
                 .frame(height: 36)
-                .background(isSelected ? DS.ColorToken.accent : DS.ColorToken.bgSecondary)
+                .background(isSelected ? Sourdough.Ramp.sage500 : Sourdough.Colors.sunken)
                 .overlay(
                     Capsule()
-                        .stroke(isSelected ? Color.clear : DS.ColorToken.borderDefault, lineWidth: 1)
+                        .stroke(isSelected ? Color.clear : Sourdough.Colors.interactiveBorder, lineWidth: 1)
                 )
                 .clipShape(Capsule())
         }

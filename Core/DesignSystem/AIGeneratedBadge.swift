@@ -1,10 +1,11 @@
 import SwiftUI
+import PhosphorSwift
 
 struct AIGeneratedBadge: View {
     var body: some View {
         HStack(spacing: 4) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 10, weight: .bold))
+            Ph.sparkle.regular
+                .frame(width: 10, height: 10)
             Text("AI Generated")
                 .font(.custom("Satoshi Variable", size: 11).weight(.bold))
         }

@@ -19,6 +19,7 @@ struct Ingredient: Identifiable, Hashable {
 
     enum Category: String, CaseIterable, Identifiable {
         case proteins
+        case seafood
         case produce
         case vegetables
         case carbs
@@ -32,6 +33,7 @@ struct Ingredient: Identifiable, Hashable {
         var title: String {
             switch self {
             case .proteins: return "Proteins"
+            case .seafood:  return "Seafood"
             case .produce: return "Produce"
             case .vegetables: return "Vegetables"
             case .carbs: return "Carbs"
@@ -44,14 +46,15 @@ struct Ingredient: Identifiable, Hashable {
 
         var icon: String {
             switch self {
-            case .proteins: return "fish"
-            case .produce: return "carrot"
-            case .vegetables: return "leaf"
-            case .carbs: return "birthday.cake"
-            case .dairy: return "cup.and.saucer"
-            case .fruits: return "basket"
-            case .condiments: return "drop"
-            case .other: return "ellipsis.circle"
+            case .proteins:   return "🥩"
+            case .seafood:    return "🐟"
+            case .produce:    return "🥕"
+            case .vegetables: return "🥦"
+            case .carbs:      return "🍞"
+            case .dairy:      return "🥛"
+            case .fruits:     return "🍎"
+            case .condiments: return "🫙"
+            case .other:      return "📦"
             }
         }
     }
@@ -64,6 +67,7 @@ struct Ingredient: Identifiable, Hashable {
     var expirationDate: Date?
     var loggedAt: Date
     var notes: String?
+    var icon: String?
 
     init(
         id: UUID = UUID(),
@@ -73,7 +77,8 @@ struct Ingredient: Identifiable, Hashable {
         location: StorageLocation,
         expirationDate: Date? = nil,
         loggedAt: Date = Date(),
-        notes: String? = nil
+        notes: String? = nil,
+        icon: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -83,6 +88,7 @@ struct Ingredient: Identifiable, Hashable {
         self.expirationDate = expirationDate
         self.loggedAt = loggedAt
         self.notes = notes
+        self.icon = icon
     }
 
     var isExpired: Bool {

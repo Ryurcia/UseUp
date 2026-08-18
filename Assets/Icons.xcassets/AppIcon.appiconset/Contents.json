@@ -1,6 +1,19 @@
 {
   "images" : [
     {
+      "filename" : "APP STORE ICON LIGHT MODE.png",
+      "idiom" : "universal",
+      "platform" : "ios",
+      "size" : "1024x1024"
+    },
+    {
+      "appearances" : [
+        {
+          "appearance" : "luminosity",
+          "value" : "dark"
+        }
+      ],
+      "filename" : "APP STORE ICON DARK.png",
       "idiom" : "universal",
       "platform" : "ios",
       "size" : "1024x1024"

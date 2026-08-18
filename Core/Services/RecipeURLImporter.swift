@@ -68,6 +68,13 @@ final class RecipeURLImporter {
             if let recipe = extractRecipeObject(from: obj) {
                 var importData = mapRecipe(recipe, sourceURL: urlString)
                 if importData.title.isEmpty { continue }
+                // Fill missing time/servings from Microdata when JSON-LD didn't have them
+                if importData.timeMinutes.isEmpty {
+                    importData.timeMinutes = extractMicrodataTime(doc) ?? ""
+                }
+                if importData.servings.isEmpty {
+                    importData.servings = extractMicrodataServings(doc) ?? ""
+                }
                 if let imageURLString = extractImageURL(from: recipe),
                    let imageURL = URL(string: imageURLString) {
                     importData.imageData = try? await URLSession.shared.data(from: imageURL).0
@@ -125,9 +132,15 @@ final class RecipeURLImporter {
         data.sourceURL = sourceURL
         data.sourceTitle = data.title
 
-        // Time
-        let duration = string(recipe["totalTime"]) ?? string(recipe["cookTime"]) ?? ""
-        data.timeMinutes = parseISO8601Duration(duration).map { String($0) } ?? ""
+        // Time — prefer totalTime, fall back to prepTime + cookTime sum
+        if let totalStr = string(recipe["totalTime"]), let total = parseISO8601Duration(totalStr), total > 0 {
+            data.timeMinutes = String(total)
+        } else {
+            let prep = string(recipe["prepTime"]).flatMap { parseISO8601Duration($0) } ?? 0
+            let cook = string(recipe["cookTime"]).flatMap { parseISO8601Duration($0) } ?? 0
+            let sum = prep + cook
+            if sum > 0 { data.timeMinutes = String(sum) }
+        }
 
         // Servings
         let yield = string(recipe["recipeYield"]) ?? ""
@@ -268,4 +281,59 @@ final class RecipeURLImporter {
         guard r.location != NSNotFound, let range = Range(r, in: s) else { return nil }
         return Int(s[range])
     }
+
+    // MARK: - Microdata Fallbacks
+
+    private func extractMicrodataTime(_ doc: Document) -> String? {
+        for selector in ["[itemprop='totalTime']", "[itemprop='cookTime']"] {
+            guard let el = try? doc.select(selector).first() else { continue }
+            let value = (try? el.attr("content")).nilIfEmpty
+                ?? (try? el.attr("datetime")).nilIfEmpty
+                ?? (try? el.text()).nilIfEmpty
+                ?? ""
+            if let mins = parseISO8601Duration(value) ?? parsePlainTextTime(value), mins > 0 {
+                return String(mins)
+            }
+        }
+        // Try prepTime + cookTime from Microdata
+        let prep = microdataMinutes(doc, itemprop: "prepTime") ?? 0
+        let cook = microdataMinutes(doc, itemprop: "cookTime") ?? 0
+        let sum = prep + cook
+        return sum > 0 ? String(sum) : nil
+    }
+
+    private func microdataMinutes(_ doc: Document, itemprop: String) -> Int? {
+        guard let el = try? doc.select("[itemprop='\(itemprop)']").first() else { return nil }
+        let value = (try? el.attr("content")).nilIfEmpty
+            ?? (try? el.attr("datetime")).nilIfEmpty
+            ?? (try? el.text()).nilIfEmpty
+            ?? ""
+        return parseISO8601Duration(value) ?? parsePlainTextTime(value)
+    }
+
+    private func extractMicrodataServings(_ doc: Document) -> String? {
+        guard let el = try? doc.select("[itemprop='recipeYield']").first() else { return nil }
+        let value = (try? el.attr("content")).nilIfEmpty ?? (try? el.text()) ?? ""
+        return leadingInteger(from: value).map { String($0) }
+    }
+
+    private func parsePlainTextTime(_ s: String) -> Int? {
+        let lower = s.lowercased()
+        var total = 0
+        let hourPattern = #"(\d+)\s*(?:hours?|hrs?)"#
+        let minPattern  = #"(\d+)\s*(?:minutes?|mins?)"#
+        if let m = try? NSRegularExpression(pattern: hourPattern).firstMatch(in: lower, range: NSRange(lower.startIndex..., in: lower)),
+           let r = Range(m.range(at: 1), in: lower), let h = Int(lower[r]) {
+            total += h * 60
+        }
+        if let m = try? NSRegularExpression(pattern: minPattern).firstMatch(in: lower, range: NSRange(lower.startIndex..., in: lower)),
+           let r = Range(m.range(at: 1), in: lower), let min = Int(lower[r]) {
+            total += min
+        }
+        return total > 0 ? total : nil
+    }
+}
+
+private extension Optional where Wrapped == String {
+    var nilIfEmpty: String? { self.flatMap { $0.isEmpty ? nil : $0 } }
 }

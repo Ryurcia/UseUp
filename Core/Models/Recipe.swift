@@ -38,6 +38,12 @@ enum Cuisine: String, CaseIterable, Identifiable, Hashable {
     }
 }
 
+struct RecipeSubstitution: Hashable {
+    let ingredient: String
+    let substitute: String
+    let note: String
+}
+
 struct Recipe: Identifiable, Hashable {
     static func == (lhs: Recipe, rhs: Recipe) -> Bool { lhs.id == rhs.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
@@ -64,6 +70,7 @@ struct Recipe: Identifiable, Hashable {
     var dietType: String
     var dietaryRestrictions: [String]
     var isAIGenerated: Bool
+    var substitutions: [RecipeSubstitution]
 
     init(
         id: UUID = UUID(),
@@ -87,7 +94,8 @@ struct Recipe: Identifiable, Hashable {
         review: String? = nil,
         dietType: String = "any",
         dietaryRestrictions: [String] = [],
-        isAIGenerated: Bool = false
+        isAIGenerated: Bool = false,
+        substitutions: [RecipeSubstitution] = []
     ) {
         self.id = id
         self.title = title
@@ -111,5 +119,6 @@ struct Recipe: Identifiable, Hashable {
         self.dietType = dietType
         self.dietaryRestrictions = dietaryRestrictions
         self.isAIGenerated = isAIGenerated
+        self.substitutions = substitutions
     }
 }

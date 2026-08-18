@@ -1,6 +1,7 @@
 import SwiftUI
 import PhotosUI
 import AVFoundation
+import PhosphorSwift
 
 #Preview("Share Recipe Sheet") {
     PreviewContainer {
@@ -20,6 +21,7 @@ struct ShareRecipeSheet: View {
     @State private var imageData: Data?
     @State private var showingImageSourcePicker: Bool
     @State private var showingCamera: Bool
+    @State private var showingPhotoPicker: Bool
     @State private var showingCameraDeniedAlert: Bool
     @State private var title: String
     @State private var summary: String
@@ -35,7 +37,6 @@ struct ShareRecipeSheet: View {
     @State private var carbs: String
     @State private var fat: String
     @State private var sources: [(title: String, url: String)]
-    @State private var isEstimatingMacros: Bool
     @State private var isSaving: Bool
     @State private var saveError: String?
 
@@ -47,6 +48,7 @@ struct ShareRecipeSheet: View {
         _imageData = State(initialValue: prefill?.imageData)
         _showingImageSourcePicker = State(initialValue: false)
         _showingCamera = State(initialValue: false)
+        _showingPhotoPicker = State(initialValue: false)
         _showingCameraDeniedAlert = State(initialValue: false)
         _title = State(initialValue: prefill?.title ?? "")
         _summary = State(initialValue: prefill?.summary ?? "")
@@ -71,7 +73,6 @@ struct ShareRecipeSheet: View {
             }
             return []
         }())
-        _isEstimatingMacros = State(initialValue: false)
         _isSaving = State(initialValue: false)
         _saveError = State(initialValue: nil)
     }
@@ -88,24 +89,24 @@ struct ShareRecipeSheet: View {
         VStack(spacing: 0) {
             // Drag handle
             Capsule()
-                .fill(DS.ColorToken.borderDefault)
+                .fill(Sourdough.Colors.hairline)
                 .frame(width: 36, height: 5)
-                .padding(.top, DS.Spacing.space3)
-                .padding(.bottom, DS.Spacing.space4)
+                .padding(.top, Sourdough.Spacing.rowInternals)
+                .padding(.bottom, Sourdough.Spacing.screenMargin)
 
             ScrollView(showsIndicators: false) {
-                VStack(spacing: DS.Spacing.space6) {
+                VStack(spacing: Sourdough.Spacing.betweenBlocks) {
                     // Title + cancel
                     HStack {
                         Text(sheetTitle)
-                            .appTextStyle(.heading2)
-                            .foregroundStyle(DS.ColorToken.textPrimary)
+                            .foregroundStyle(Sourdough.Colors.ink)
+                            .sourdoughTextStyle(.title2)
 
                         Spacer()
 
                         Button("Cancel") { dismiss() }
-                            .font(.custom("Satoshi Variable", size: 14))
-                            .foregroundStyle(DS.ColorToken.textSecondary)
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                            .sourdoughTextStyle(.subhead)
                             .buttonStyle(.plain)
                     }
 
@@ -119,40 +120,40 @@ struct ShareRecipeSheet: View {
                                     .frame(height: 180)
                                     .frame(maxWidth: .infinity)
                                     .clipped()
-                                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
+                                    .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
 
                                 Button {
                                     self.imageData = nil
                                     self.selectedPhoto = nil
                                 } label: {
-                                    Image(systemName: "xmark.circle.fill")
-                                        .font(.system(size: 24))
-                                        .foregroundStyle(.white)
+                                    Ph.xCircle.fill
+                                        .frame(width: 24, height: 24)
+                                        .foregroundStyle(Sourdough.Colors.onAction)
                                         .shadow(radius: 2)
                                 }
                                 .buttonStyle(.plain)
-                                .padding(DS.Spacing.space2)
+                                .padding(Sourdough.Spacing.insideChip)
                             }
                         } else {
                             Button {
                                 showingImageSourcePicker = true
                             } label: {
-                                VStack(spacing: DS.Spacing.space2) {
-                                    Image(systemName: "camera")
-                                        .font(.system(size: 24))
-                                        .foregroundStyle(DS.ColorToken.textTertiary)
+                                VStack(spacing: Sourdough.Spacing.insideChip) {
+                                    Ph.camera.regular
+                                        .frame(width: 24, height: 24)
+                                        .foregroundStyle(Sourdough.Colors.faintInk)
                                     Text("Add Photo")
-                                        .appTextStyle(.bodySM)
-                                        .foregroundStyle(DS.ColorToken.textTertiary)
+                                        .foregroundStyle(Sourdough.Colors.faintInk)
+                                        .sourdoughTextStyle(.subhead)
                                 }
                                 .frame(maxWidth: .infinity)
                                 .frame(height: 120)
-                                .background(DS.ColorToken.bgSecondary)
+                                .background(Sourdough.Colors.sunken)
                                 .overlay(
-                                    RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
-                                        .stroke(DS.ColorToken.borderDefault, style: StrokeStyle(lineWidth: 1, dash: [6]))
+                                    RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous)
+                                        .stroke(Sourdough.Colors.interactiveBorder, style: StrokeStyle(lineWidth: 1, dash: [6]))
                                 )
-                                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
+                                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
                             }
                             .buttonStyle(.plain)
                         }
@@ -168,11 +169,12 @@ struct ShareRecipeSheet: View {
                         Button("Take Photo") {
                             requestCameraAccess()
                         }
-                        PhotosPicker(selection: $selectedPhoto, matching: .images) {
-                            Text("Choose from Library")
+                        Button("Choose from Library") {
+                            showingPhotoPicker = true
                         }
                         Button("Cancel", role: .cancel) {}
                     }
+                    .photosPicker(isPresented: $showingPhotoPicker, selection: $selectedPhoto, matching: .images)
                     .fullScreenCover(isPresented: $showingCamera) {
                         CameraImagePicker(imageData: $imageData)
                             .ignoresSafeArea()
@@ -200,56 +202,33 @@ struct ShareRecipeSheet: View {
 
                     // Cuisine
                     formField("Cuisine") {
-                        FlowLayout(spacing: DS.Spacing.space2) {
-                            ForEach(Cuisine.allCases) { option in
-                                Button {
-                                    cuisine = cuisine == option ? nil : option
-                                } label: {
-                                    Text(option.rawValue)
-                                        .font(.custom("Satoshi Variable", size: 14))
-                                        .foregroundStyle(cuisine == option ? .white : DS.ColorToken.textSecondary)
-                                        .padding(.horizontal, DS.Spacing.space3)
-                                        .frame(height: 36)
-                                        .background(cuisine == option ? DS.ColorToken.midnight : DS.ColorToken.bgSecondary)
-                                        .overlay(
-                                            Capsule()
-                                                .stroke(cuisine == option ? Color.clear : DS.ColorToken.borderDefault, lineWidth: 1)
-                                        )
-                                        .clipShape(Capsule())
-                                }
-                                .buttonStyle(.plain)
-                            }
+                        menuField(
+                            options: Cuisine.allCases,
+                            label: { $0.rawValue },
+                            isSelected: { $0 == cuisine },
+                            currentLabel: cuisine?.rawValue ?? "Select cuisine",
+                            isPlaceholder: cuisine == nil
+                        ) { option in
+                            cuisine = cuisine == option ? nil : option
                         }
                     }
 
                     // Diet Type
                     formField("Diet Type") {
-                        FlowLayout(spacing: DS.Spacing.space2) {
-                            ForEach(GenerationOptions.DietType.allCases) { option in
-                                Button {
-                                    dietType = dietType == option ? .any : option
-                                } label: {
-                                    let isSelected = dietType == option && option != .any
-                                    Text(option.rawValue)
-                                        .font(.custom("Satoshi Variable", size: 14))
-                                        .foregroundStyle(isSelected ? .white : DS.ColorToken.textSecondary)
-                                        .padding(.horizontal, DS.Spacing.space3)
-                                        .frame(height: 36)
-                                        .background(isSelected ? DS.ColorToken.midnight : DS.ColorToken.bgSecondary)
-                                        .overlay(
-                                            Capsule()
-                                                .stroke(isSelected ? Color.clear : DS.ColorToken.borderDefault, lineWidth: 1)
-                                        )
-                                        .clipShape(Capsule())
-                                }
-                                .buttonStyle(.plain)
-                            }
+                        menuField(
+                            options: GenerationOptions.DietType.allCases,
+                            label: { $0.rawValue },
+                            isSelected: { $0 == dietType },
+                            currentLabel: dietType.rawValue,
+                            isPlaceholder: false
+                        ) { option in
+                            dietType = option
                         }
                     }
 
                     // Dietary Restrictions
                     formField("Dietary Restrictions (optional)") {
-                        FlowLayout(spacing: DS.Spacing.space2) {
+                        Menu {
                             ForEach(GenerationOptions.DietaryRestriction.allCases) { option in
                                 Button {
                                     if dietaryRestrictions.contains(option) {
@@ -258,26 +237,40 @@ struct ShareRecipeSheet: View {
                                         dietaryRestrictions.insert(option)
                                     }
                                 } label: {
-                                    let isSelected = dietaryRestrictions.contains(option)
-                                    Text(option.rawValue)
-                                        .font(.custom("Satoshi Variable", size: 14))
-                                        .foregroundStyle(isSelected ? .white : DS.ColorToken.textSecondary)
-                                        .padding(.horizontal, DS.Spacing.space3)
-                                        .frame(height: 36)
-                                        .background(isSelected ? DS.ColorToken.midnight : DS.ColorToken.bgSecondary)
-                                        .overlay(
-                                            Capsule()
-                                                .stroke(isSelected ? Color.clear : DS.ColorToken.borderDefault, lineWidth: 1)
-                                        )
-                                        .clipShape(Capsule())
+                                    HStack {
+                                        Text(option.rawValue)
+                                        if dietaryRestrictions.contains(option) {
+                                            Ph.check.regular.frame(width: 16, height: 16)
+                                        }
+                                    }
                                 }
-                                .buttonStyle(.plain)
                             }
+                        } label: {
+                            HStack {
+                                Text(dietaryRestrictions.isEmpty
+                                     ? "None"
+                                     : dietaryRestrictions.map(\.rawValue).joined(separator: ", "))
+                                    .foregroundStyle(dietaryRestrictions.isEmpty ? Sourdough.Colors.faintInk : Sourdough.Colors.ink)
+                                    .sourdoughTextStyle(.body)
+                                    .lineLimit(1)
+                                Spacer()
+                                Ph.caretDown.regular
+                                    .frame(width: 12, height: 12)
+                                    .foregroundStyle(Sourdough.Colors.faintInk)
+                            }
+                            .padding(.horizontal, Sourdough.Spacing.rowInternals)
+                            .frame(height: 48)
+                            .background(Sourdough.Colors.sunken)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous)
+                                    .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
                         }
                     }
 
                     // Time & Servings
-                    HStack(spacing: DS.Spacing.space3) {
+                    HStack(spacing: Sourdough.Spacing.rowInternals) {
                         formField("Time (min)") {
                             formTextField("e.g. 30", text: $timeMinutes)
                                 .keyboardType(.numberPad)
@@ -291,8 +284,8 @@ struct ShareRecipeSheet: View {
                     // Ingredients
                     formField("Ingredients") {
                         ForEach(ingredients.indices, id: \.self) { index in
-                            VStack(spacing: DS.Spacing.space2) {
-                                HStack(spacing: DS.Spacing.space2) {
+                            VStack(spacing: Sourdough.Spacing.insideChip) {
+                                HStack(spacing: Sourdough.Spacing.insideChip) {
                                     formTextField("Qty", text: Binding(
                                         get: { ingredients[index].quantity },
                                         set: { ingredients[index].quantity = $0 }
@@ -308,21 +301,21 @@ struct ShareRecipeSheet: View {
                                     } label: {
                                         HStack(spacing: 4) {
                                             Text(ingredients[index].unit.isEmpty ? "Unit" : ingredients[index].unit)
-                                                .appTextStyle(.bodySM)
-                                                .foregroundStyle(ingredients[index].unit.isEmpty ? DS.ColorToken.textTertiary : DS.ColorToken.textPrimary)
-                                            Image(systemName: "chevron.down")
-                                                .font(.system(size: 10, weight: .semibold))
-                                                .foregroundStyle(DS.ColorToken.textTertiary)
+                                                .foregroundStyle(ingredients[index].unit.isEmpty ? Sourdough.Colors.faintInk : Sourdough.Colors.ink)
+                                                .sourdoughTextStyle(.subhead)
+                                            Ph.caretDown.bold
+                                                .frame(width: 10, height: 10)
+                                                .foregroundStyle(Sourdough.Colors.faintInk)
                                         }
-                                        .padding(.horizontal, DS.Spacing.space3)
+                                        .padding(.horizontal, Sourdough.Spacing.rowInternals)
                                         .frame(height: 48)
                                         .frame(minWidth: 72)
-                                        .background(DS.ColorToken.bgSecondary)
+                                        .background(Sourdough.Colors.sunken)
                                         .overlay(
-                                            RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
-                                                .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
+                                            RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous)
+                                                .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
                                         )
-                                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                                        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
                                     }
 
                                     formTextField("Ingredient", text: Binding(
@@ -334,8 +327,9 @@ struct ShareRecipeSheet: View {
                                         Button {
                                             ingredients.remove(at: index)
                                         } label: {
-                                            Image(systemName: "minus.circle.fill")
-                                                .foregroundStyle(DS.ColorToken.error)
+                                            Ph.minusCircle.fill
+                                                .frame(width: 16, height: 16)
+                                                .foregroundStyle(Sourdough.Colors.destructive)
                                         }
                                         .buttonStyle(.plain)
                                     }
@@ -346,13 +340,13 @@ struct ShareRecipeSheet: View {
                         Button {
                             ingredients.append((name: "", quantity: "", unit: ""))
                         } label: {
-                            HStack(spacing: DS.Spacing.space1) {
-                                Image(systemName: "plus.circle.fill")
-                                    .font(.system(size: 14))
+                            HStack(spacing: Sourdough.Spacing.iconToLabel) {
+                                Ph.plusCircle.fill
+                                    .frame(width: 14, height: 14)
                                 Text("Add Ingredient")
-                                    .font(.custom("Satoshi Variable", size: 14))
+                                    .sourdoughTextStyle(.subhead)
                             }
-                            .foregroundStyle(DS.ColorToken.primary)
+                            .foregroundStyle(Sourdough.Colors.actionInk)
                         }
                         .buttonStyle(.plain)
                     }
@@ -360,10 +354,10 @@ struct ShareRecipeSheet: View {
                     // Steps
                     formField("Steps") {
                         ForEach(steps.indices, id: \.self) { index in
-                            HStack(spacing: DS.Spacing.space2) {
+                            HStack(spacing: Sourdough.Spacing.insideChip) {
                                 Text("\(index + 1).")
-                                    .appTextStyle(.bodySM)
-                                    .foregroundStyle(DS.ColorToken.textTertiary)
+                                    .foregroundStyle(Sourdough.Colors.faintInk)
+                                    .sourdoughTextStyle(.subhead)
                                     .frame(width: 20)
 
                                 formTextField("Step \(index + 1)", text: $steps[index])
@@ -372,8 +366,9 @@ struct ShareRecipeSheet: View {
                                     Button {
                                         steps.remove(at: index)
                                     } label: {
-                                        Image(systemName: "minus.circle.fill")
-                                            .foregroundStyle(DS.ColorToken.error)
+                                        Ph.minusCircle.fill
+                                            .frame(width: 16, height: 16)
+                                            .foregroundStyle(Sourdough.Colors.destructive)
                                     }
                                     .buttonStyle(.plain)
                                 }
@@ -383,13 +378,13 @@ struct ShareRecipeSheet: View {
                         Button {
                             steps.append("")
                         } label: {
-                            HStack(spacing: DS.Spacing.space1) {
-                                Image(systemName: "plus.circle.fill")
-                                    .font(.system(size: 14))
+                            HStack(spacing: Sourdough.Spacing.iconToLabel) {
+                                Ph.plusCircle.fill
+                                    .frame(width: 14, height: 14)
                                 Text("Add Step")
-                                    .font(.custom("Satoshi Variable", size: 14))
+                                    .sourdoughTextStyle(.subhead)
                             }
-                            .foregroundStyle(DS.ColorToken.primary)
+                            .foregroundStyle(Sourdough.Colors.actionInk)
                         }
                         .buttonStyle(.plain)
                     }
@@ -397,43 +392,22 @@ struct ShareRecipeSheet: View {
                     // Macros
                     formField("Macros (optional)") {
                         LazyVGrid(columns: [
-                            GridItem(.flexible(), spacing: DS.Spacing.space2),
-                            GridItem(.flexible(), spacing: DS.Spacing.space2)
-                        ], spacing: DS.Spacing.space2) {
+                            GridItem(.flexible(), spacing: Sourdough.Spacing.insideChip),
+                            GridItem(.flexible(), spacing: Sourdough.Spacing.insideChip)
+                        ], spacing: Sourdough.Spacing.insideChip) {
                             macroField("Calories", text: $calories)
                             macroField("Protein (g)", text: $protein)
                             macroField("Carbs (g)", text: $carbs)
                             macroField("Fat (g)", text: $fat)
                         }
 
-                        Button(action: estimateMacros) {
-                            HStack(spacing: DS.Spacing.space2) {
-                                if isEstimatingMacros {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                        .tint(DS.ColorToken.primary)
-                                } else {
-                                    Image(systemName: "sparkles")
-                                        .font(.system(size: 14))
-                                }
-                                Text(isEstimatingMacros ? "Estimating..." : "Get AI Estimate")
-                                    .font(.custom("Satoshi Variable", size: 14))
-                            }
-                            .foregroundStyle(DS.ColorToken.primary)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 44)
-                            .background(DS.ColorToken.primaryLight)
-                            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(isEstimatingMacros)
                     }
 
                     // Sources
                     formField("Sources (optional)") {
                         ForEach(sources.indices, id: \.self) { index in
-                            VStack(spacing: DS.Spacing.space2) {
-                                HStack(spacing: DS.Spacing.space2) {
+                            VStack(spacing: Sourdough.Spacing.insideChip) {
+                                HStack(spacing: Sourdough.Spacing.insideChip) {
                                     formTextField("Source title", text: Binding(
                                         get: { sources[index].title },
                                         set: { sources[index].title = $0 }
@@ -442,8 +416,9 @@ struct ShareRecipeSheet: View {
                                     Button {
                                         sources.remove(at: index)
                                     } label: {
-                                        Image(systemName: "minus.circle.fill")
-                                            .foregroundStyle(DS.ColorToken.error)
+                                        Ph.minusCircle.fill
+                                            .frame(width: 16, height: 16)
+                                            .foregroundStyle(Sourdough.Colors.destructive)
                                     }
                                     .buttonStyle(.plain)
                                 }
@@ -460,18 +435,18 @@ struct ShareRecipeSheet: View {
                         Button {
                             sources.append((title: "", url: ""))
                         } label: {
-                            HStack(spacing: DS.Spacing.space1) {
-                                Image(systemName: "plus.circle.fill")
-                                    .font(.system(size: 14))
+                            HStack(spacing: Sourdough.Spacing.iconToLabel) {
+                                Ph.plusCircle.fill
+                                    .frame(width: 14, height: 14)
                                 Text("Add Source")
-                                    .font(.custom("Satoshi Variable", size: 14))
+                                    .sourdoughTextStyle(.subhead)
                             }
-                            .foregroundStyle(DS.ColorToken.primary)
+                            .foregroundStyle(Sourdough.Colors.actionInk)
                         }
                         .buttonStyle(.plain)
                     }
                 }
-                .padding(.horizontal, DS.Spacing.space5)
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
             }
 
             // Save button
@@ -481,29 +456,29 @@ struct ShareRecipeSheet: View {
                         ProgressView().tint(.white)
                     } else {
                         Text(sheetTitle)
-                            .font(.custom("Satoshi Variable", size: 16))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(Sourdough.Colors.onAction)
+                            .sourdoughTextStyle(.rowTitle)
                     }
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: 52)
                 .background(
                     LinearGradient(
-                        colors: [DS.ColorToken.primary, DS.ColorToken.primaryHover],
+                        colors: [Sourdough.Colors.action, Sourdough.Colors.actionInk],
                         startPoint: .topTrailing,
                         endPoint: .bottomLeading
                     )
                     .opacity(canSave && !isSaving ? 1 : 0.4)
                 )
-                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
             }
             .buttonStyle(.plain)
             .disabled(!canSave || isSaving)
-            .padding(.horizontal, DS.Spacing.space5)
-            .padding(.top, DS.Spacing.space3)
-            .padding(.bottom, DS.Spacing.space4)
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .padding(.top, Sourdough.Spacing.rowInternals)
+            .padding(.bottom, Sourdough.Spacing.screenMargin)
         }
-        .background(DS.ColorToken.bgPrimary)
+        .background(Sourdough.Colors.canvas)
         .alert("Could not save recipe", isPresented: Binding(
             get: { saveError != nil },
             set: { if !$0 { saveError = nil } }
@@ -592,32 +567,16 @@ struct ShareRecipeSheet: View {
         }
     }
 
-    private func estimateMacros() {
-        isEstimatingMacros = true
-        Task {
-            try? await Task.sleep(for: .milliseconds(Int.random(in: 800...1200)))
-            let servingCount = max(Int(servings) ?? 1, 1)
-            let ingredientCount = ingredients.filter { !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
-            let baseCal = 250 + ingredientCount * 60
-            let perServing = baseCal / servingCount
-            calories = "\(perServing)"
-            protein = "\(max(8, 18 + ingredientCount * 4) / servingCount)"
-            carbs = "\(max(10, 30 + ingredientCount * 6) / servingCount)"
-            fat = "\(max(5, 12 + ingredientCount * 3) / servingCount)"
-            isEstimatingMacros = false
-        }
-    }
-
     // MARK: - Reusable Components
 
     private func formField<Content: View>(
         _ label: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.space2) {
+        VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
             Text(label)
-                .appTextStyle(.caption)
-                .foregroundStyle(DS.ColorToken.textSecondary)
+                .foregroundStyle(Sourdough.Colors.mutedInk)
+                .sourdoughTextStyle(.caption)
             content()
         }
     }
@@ -625,36 +584,80 @@ struct ShareRecipeSheet: View {
     private func formTextField(_ placeholder: String, text: Binding<String>) -> some View {
         TextField(placeholder, text: text)
             .autocorrectionDisabled()
-            .appTextStyle(.body)
-            .foregroundStyle(DS.ColorToken.textPrimary)
-            .padding(.horizontal, DS.Spacing.space3)
+            .foregroundStyle(Sourdough.Colors.ink)
+            .sourdoughTextStyle(.body)
+            .padding(.horizontal, Sourdough.Spacing.rowInternals)
             .frame(height: 48)
-            .background(DS.ColorToken.bgSecondary)
+            .background(Sourdough.Colors.sunken)
             .overlay(
-                RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
-                    .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
+                RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous)
+                    .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
             )
-            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+    }
+
+    /// Single-select dropdown row shared by the Cuisine and Diet Type fields — same menu/label
+    /// chrome, differing only in the option list and what "selected" means for the caller.
+    private func menuField<T: Hashable>(
+        options: [T],
+        label: @escaping (T) -> String,
+        isSelected: @escaping (T) -> Bool,
+        currentLabel: String,
+        isPlaceholder: Bool,
+        onSelect: @escaping (T) -> Void
+    ) -> some View {
+        Menu {
+            ForEach(options, id: \.self) { option in
+                Button {
+                    onSelect(option)
+                } label: {
+                    HStack {
+                        Text(label(option))
+                        if isSelected(option) {
+                            Ph.check.regular.frame(width: 16, height: 16)
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack {
+                Text(currentLabel)
+                    .foregroundStyle(isPlaceholder ? Sourdough.Colors.faintInk : Sourdough.Colors.ink)
+                    .sourdoughTextStyle(.body)
+                Spacer()
+                Ph.caretDown.regular
+                    .frame(width: 12, height: 12)
+                    .foregroundStyle(Sourdough.Colors.faintInk)
+            }
+            .padding(.horizontal, Sourdough.Spacing.rowInternals)
+            .frame(height: 48)
+            .background(Sourdough.Colors.sunken)
+            .overlay(
+                RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous)
+                    .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+        }
     }
 
     private func macroField(_ label: String, text: Binding<String>) -> some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.space1) {
+        VStack(alignment: .leading, spacing: Sourdough.Spacing.iconToLabel) {
             Text(label)
-                .appTextStyle(.caption)
-                .foregroundStyle(DS.ColorToken.textTertiary)
+                .foregroundStyle(Sourdough.Colors.faintInk)
+                .sourdoughTextStyle(.caption)
 
             TextField("0", text: text)
                 .keyboardType(.numberPad)
-                .appTextStyle(.body)
-                .foregroundStyle(DS.ColorToken.textPrimary)
-                .padding(.horizontal, DS.Spacing.space3)
+                .foregroundStyle(Sourdough.Colors.ink)
+                .sourdoughTextStyle(.body)
+                .padding(.horizontal, Sourdough.Spacing.rowInternals)
                 .frame(height: 48)
-                .background(DS.ColorToken.bgSecondary)
+                .background(Sourdough.Colors.sunken)
                 .overlay(
-                    RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
-                        .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
+                    RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous)
+                        .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
                 )
-                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
         }
     }
 }

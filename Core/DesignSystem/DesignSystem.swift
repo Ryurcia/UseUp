@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import PhosphorSwift
 
 enum DS {
     enum Spacing {
@@ -250,6 +251,31 @@ struct SecondaryButtonStyle: ButtonStyle {
     }
 }
 
+struct OutlineButtonStyle: ButtonStyle {
+    var size: AppButtonSize = .md
+    var fullWidth = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .appTextStyle(size.textStyle)
+            .foregroundStyle(DS.ColorToken.textPrimary)
+            .frame(minWidth: size.minimumWidth)
+            .frame(maxWidth: fullWidth ? .infinity : nil)
+            .frame(height: max(44, size.height))
+            .padding(.vertical, DS.Spacing.space2)
+            .padding(.horizontal, size.horizontalPadding)
+            .background(Color.clear)
+            .overlay(
+                Capsule()
+                    .stroke(Color.gray.opacity(0.5), lineWidth: 1)
+            )
+            .clipShape(Capsule())
+            .contentShape(Capsule())
+            .opacity(configuration.isPressed ? 0.6 : 1)
+            .animation(DS.Motion.easeDefault, value: configuration.isPressed)
+    }
+}
+
 struct AppInputFieldStyle: TextFieldStyle {
     var size: AppInputSize = .md
 
@@ -286,6 +312,19 @@ extension View {
             .lineSpacing(max(0, attributes.lineHeight - attributes.size))
             .kerning(isHeading ? 0 : attributes.tracking)
     }
+
+    /// Standard "Report Error" alert bound to an optional error-message state — the same
+    /// get/set/OK-button boilerplate was hand-rolled at every recipe/review report call site.
+    func reportErrorAlert(_ error: Binding<String?>) -> some View {
+        alert("Report Error", isPresented: Binding(
+            get: { error.wrappedValue != nil },
+            set: { if !$0 { error.wrappedValue = nil } }
+        )) {
+            Button("OK") { error.wrappedValue = nil }
+        } message: {
+            if let err = error.wrappedValue { Text(err) }
+        }
+    }
 }
 
 private extension Color {
@@ -316,137 +355,6 @@ private extension UIColor {
             blue: CGFloat(hex & 0xFF) / 255,
             alpha: alpha
         )
-    }
-}
-
-// MARK: - SVG Icon View
-
-struct SVGIcon: View {
-    let pathData: String
-    let size: CGFloat
-    let strokeWidth: CGFloat
-
-    init(_ pathData: String, size: CGFloat = 24, strokeWidth: CGFloat = 2) {
-        self.pathData = pathData
-        self.size = size
-        self.strokeWidth = strokeWidth
-    }
-
-    var body: some View {
-        SVGPathShape(pathData: pathData)
-            .stroke(
-                style: StrokeStyle(
-                    lineWidth: strokeWidth * (size / 24),
-                    lineCap: .round,
-                    lineJoin: .round
-                )
-            )
-            .frame(width: size, height: size)
-    }
-}
-
-private struct SVGPathShape: Shape {
-    let pathData: String
-
-    func path(in rect: CGRect) -> Path {
-        let scale = min(rect.width, rect.height) / 24
-        var path = Path()
-        let tokens = tokenize(pathData)
-        var i = 0
-        var current = CGPoint.zero
-
-        while i < tokens.count {
-            switch tokens[i] {
-            case "M":
-                let x = num(tokens[i + 1]) * scale
-                let y = num(tokens[i + 2]) * scale
-                current = CGPoint(x: x, y: y)
-                path.move(to: current)
-                i += 3
-            case "L":
-                let x = num(tokens[i + 1]) * scale
-                let y = num(tokens[i + 2]) * scale
-                current = CGPoint(x: x, y: y)
-                path.addLine(to: current)
-                i += 3
-            case "H":
-                let x = num(tokens[i + 1]) * scale
-                current = CGPoint(x: x, y: current.y)
-                path.addLine(to: current)
-                i += 2
-            case "V":
-                let y = num(tokens[i + 1]) * scale
-                current = CGPoint(x: current.x, y: y)
-                path.addLine(to: current)
-                i += 2
-            case "C":
-                let cp1 = CGPoint(x: num(tokens[i + 1]) * scale, y: num(tokens[i + 2]) * scale)
-                let cp2 = CGPoint(x: num(tokens[i + 3]) * scale, y: num(tokens[i + 4]) * scale)
-                let end = CGPoint(x: num(tokens[i + 5]) * scale, y: num(tokens[i + 6]) * scale)
-                path.addCurve(to: end, control1: cp1, control2: cp2)
-                current = end
-                i += 7
-            case "Z":
-                path.closeSubpath()
-                i += 1
-            default:
-                i += 1
-            }
-        }
-
-        return path
-    }
-
-    private func num(_ str: String) -> CGFloat {
-        CGFloat(Double(str) ?? 0)
-    }
-
-    private func tokenize(_ data: String) -> [String] {
-        var tokens: [String] = []
-        var buf = ""
-
-        for ch in data {
-            if "MLHVCSQTAZ".contains(ch) || "mlhvcsqtaz".contains(ch) {
-                if !buf.isEmpty {
-                    tokens.append(contentsOf: splitNumbers(buf))
-                    buf = ""
-                }
-                tokens.append(String(ch))
-            } else {
-                buf.append(ch)
-            }
-        }
-
-        if !buf.isEmpty {
-            tokens.append(contentsOf: splitNumbers(buf))
-        }
-
-        return tokens
-    }
-
-    private func splitNumbers(_ str: String) -> [String] {
-        var results: [String] = []
-        var current = ""
-
-        for ch in str {
-            if ch == "," || ch == " " || ch == "\t" || ch == "\n" {
-                if !current.isEmpty {
-                    results.append(current)
-                    current = ""
-                }
-            } else if ch == "-" && !current.isEmpty && !current.hasSuffix("e") {
-                results.append(current)
-                current = String(ch)
-            } else {
-                current.append(ch)
-            }
-        }
-
-        if !current.isEmpty {
-            results.append(current)
-        }
-
-        return results
     }
 }
 
@@ -498,23 +406,20 @@ struct FlowLayout: Layout {
 
 struct NotificationBellButton: View {
     @EnvironmentObject private var pantryStore: PantryStore
-    @State private var showNotifications = false
+    @EnvironmentObject private var session: AppSession
 
     private var alertItems: [Ingredient] {
-        pantryStore.ingredients.filter { ingredient in
-            guard ingredient.expirationDate != nil else { return false }
-            guard !pantryStore.dismissedIngredientIds.contains(ingredient.id) else { return false }
-            if ingredient.isExpired { return true }
-            if let days = ingredient.daysUntilExpiration, days <= 5 { return true }
-            return false
-        }
+        pantryStore.expiringAlertCandidates()
+            .filter { pantryStore.notifReadTimestamps["expiring_\($0.id)"] == nil }
     }
 
     var body: some View {
-        Button { showNotifications = true } label: {
+        Button {
+            session.showNotifications = true
+        } label: {
             ZStack(alignment: .topTrailing) {
-                Image(systemName: alertItems.isEmpty ? "bell" : "bell.fill")
-                    .font(.system(size: 20))
+                (alertItems.isEmpty ? Ph.bell.regular : Ph.bell.fill)
+                    .frame(width: 20, height: 20)
                     .foregroundStyle(alertItems.isEmpty ? DS.ColorToken.textTertiary : DS.ColorToken.textSecondary)
 
                 if !alertItems.isEmpty {
@@ -529,9 +434,6 @@ struct NotificationBellButton: View {
             }
         }
         .buttonStyle(.plain)
-        .sheet(isPresented: $showNotifications) {
-            NotificationListView()
-        }
     }
 }
 
@@ -553,8 +455,8 @@ struct ProfileNavButton: View {
                     .frame(width: 28, height: 28)
                     .clipShape(Circle())
             } else {
-                Image(systemName: "person.circle.fill")
-                    .font(.system(size: 24))
+                Ph.userCircle.fill
+                    .frame(width: 24, height: 24)
                     .foregroundStyle(DS.ColorToken.textTertiary)
             }
         }
@@ -565,16 +467,4 @@ struct ProfileNavButton: View {
             }
         }
     }
-}
-
-// MARK: - Tab Icon Path Data
-
-enum TabIconPath {
-    static let pantry = "M21.6003 6.29992L2.40091 6.29964L2.39966 6.29998M21.6003 6.29992L21.5997 19.616C21.5997 20.8774 20.5577 21.9 19.2724 21.9H4.72693C3.44161 21.9 2.39966 20.8774 2.39966 19.616V6.29998M21.6003 6.29992L17.7511 2.45145C17.5261 2.2264 17.2209 2.09998 16.9026 2.09998H7.09671C6.77845 2.09998 6.47323 2.2264 6.24819 2.45145L2.39966 6.29998M15.5997 9.89998C15.5997 11.8882 13.9879 13.5 11.9997 13.5C10.0114 13.5 8.39966 11.8882 8.39966 9.89998"
-
-    static let recipe = "M8.57145 2.40002V21.6M17.4857 10.6286H12.6857M17.4857 6.51431H12.6857M5.14288 6.51431H2.40002M5.14288 10.6286H2.40002M5.14288 14.7429H2.40002M6.51431 21.6H18.8572C20.372 21.6 21.6 20.372 21.6 18.8572V5.14288C21.6 3.62804 20.372 2.40002 18.8572 2.40002H6.51431C4.99947 2.40002 3.77145 3.62804 3.77145 5.14288V18.8572C3.77145 20.372 4.99947 21.6 6.51431 21.6Z"
-
-    static let macro = "M9.05647 21V11.024C9.05647 10.4717 9.50419 10.024 10.0565 10.024H14.1147C14.667 10.024 15.1147 10.4717 15.1147 11.024V21M9.05647 21L9.05792 16.6803C9.0581 16.1279 8.61033 15.68 8.05791 15.68H4C3.44772 15.68 3 16.1277 3 16.68V20C3 20.5523 3.44772 21 4 21H9.05647ZM9.05647 21H15.1147M15.1147 21V4C15.1147 3.44772 15.5624 3 16.1147 3H20C20.5523 3 21 3.44772 21 4V20C21 20.5523 20.5523 21 20 21H15.1147Z"
-
-    static let profile = "M12 11C14.2091 11 16 9.20914 16 7C16 4.79086 14.2091 3 12 3C9.79086 3 8 4.79086 8 7C8 9.20914 9.79086 11 12 11ZM12 11C7.02944 11 3 14.1341 3 18V21M12 11C16.9706 11 21 14.1341 21 18V21"
 }

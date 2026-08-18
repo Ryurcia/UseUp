@@ -1,4 +1,5 @@
 import SwiftUI
+import PhosphorSwift
 
 struct HideTabBarKey: PreferenceKey {
     static var defaultValue = false
@@ -28,26 +29,19 @@ enum Tab: Int, CaseIterable {
         }
     }
 
-    var iconPath: String? {
+    var phosphorIcon: Image {
         switch self {
-        case .pantry: return TabIconPath.pantry
-        case .recipes: return TabIconPath.recipe
-        case .generate: return nil
-        case .cookbook: return nil
-        }
-    }
-
-    var systemImage: String? {
-        switch self {
-        case .generate: return "bolt.fill"
-        case .cookbook: return "book.fill"
-        default: return nil
+        case .pantry: return Ph.jarLabel.bold
+        case .recipes: return Ph.notebook.bold
+        case .generate: return Ph.chefHat.bold
+        case .cookbook: return Ph.bookOpenText.bold
         }
     }
 }
 
 struct MainTabView: View {
     let recipeGenerator: RecipeGenerating
+    @EnvironmentObject private var session: AppSession
     @State private var selectedTab: Tab = .pantry
     @State private var slideDirection: Edge = .trailing
     @State private var pantryPath = NavigationPath()
@@ -56,30 +50,64 @@ struct MainTabView: View {
     @State private var cookbookPath = NavigationPath()
     @State private var hideTabBar = false
 
+    private func notificationBinding(for tab: Tab) -> Binding<Bool> {
+        Binding(
+            get: { session.showNotifications && selectedTab == tab },
+            set: { if !$0 { session.showNotifications = false } }
+        )
+    }
+
     var body: some View {
         ZStack {
             ZStack {
-                NavigationStack(path: $pantryPath) { PantryView() }
-                    .opacity(selectedTab == .pantry ? 1 : 0)
-                    .allowsHitTesting(selectedTab == .pantry)
+                NavigationStack(path: $pantryPath) {
+                    PantryView()
+                        .navigationDestination(isPresented: notificationBinding(for: .pantry)) {
+                            NotificationListView()
+                        }
+                }
+                .opacity(selectedTab == .pantry ? 1 : 0)
+                .allowsHitTesting(selectedTab == .pantry)
 
-                NavigationStack(path: $recipesPath) { RecipesView() }
-                    .opacity(selectedTab == .recipes ? 1 : 0)
-                    .allowsHitTesting(selectedTab == .recipes)
+                NavigationStack(path: $recipesPath) {
+                    RecipesView()
+                        .navigationDestination(isPresented: notificationBinding(for: .recipes)) {
+                            NotificationListView()
+                        }
+                }
+                .opacity(selectedTab == .recipes ? 1 : 0)
+                .allowsHitTesting(selectedTab == .recipes)
 
-                NavigationStack(path: $generatePath) { GenerateView(recipeGenerator: recipeGenerator) }
-                    .opacity(selectedTab == .generate ? 1 : 0)
-                    .allowsHitTesting(selectedTab == .generate)
+                NavigationStack(path: $generatePath) {
+                    GenerateView(recipeGenerator: recipeGenerator)
+                        .navigationDestination(isPresented: notificationBinding(for: .generate)) {
+                            NotificationListView()
+                        }
+                }
+                .opacity(selectedTab == .generate ? 1 : 0)
+                .allowsHitTesting(selectedTab == .generate)
 
-                NavigationStack(path: $cookbookPath) { CookbookView(onGenerateTapped: { selectedTab = .generate }) }
-                    .opacity(selectedTab == .cookbook ? 1 : 0)
-                    .allowsHitTesting(selectedTab == .cookbook)
+                NavigationStack(path: $cookbookPath) {
+                    CookbookView()
+                        .navigationDestination(isPresented: notificationBinding(for: .cookbook)) {
+                            NotificationListView()
+                        }
+                }
+                .opacity(selectedTab == .cookbook ? 1 : 0)
+                .allowsHitTesting(selectedTab == .cookbook)
             }
             .onChange(of: selectedTab) { _, _ in
                 pantryPath = NavigationPath()
                 recipesPath = NavigationPath()
                 generatePath = NavigationPath()
                 cookbookPath = NavigationPath()
+                session.showNotifications = false
+            }
+            .onChange(of: session.requestedTab) { _, tab in
+                guard let tab else { return }
+                session.showNotifications = false
+                selectedTab = tab
+                session.requestedTab = nil
             }
             .onPreferenceChange(HideTabBarKey.self) { hideTabBar = $0 }
             .safeAreaInset(edge: .bottom) {
@@ -123,18 +151,31 @@ private struct FloatingTabBar: View {
         }
         .padding(.vertical, DS.Spacing.space2)
         .padding(.horizontal, DS.Spacing.space5)
-        .background(
-            Capsule()
-                .fill(.ultraThinMaterial)
-                .shadow(color: .black.opacity(0.08), radius: 16, x: 0, y: 4)
-                .shadow(color: .black.opacity(0.04), radius: 2, x: 0, y: 1)
-        )
-        .overlay(
-            Capsule()
-                .stroke(DS.ColorToken.borderDefault.opacity(0.3), lineWidth: 0.5)
-        )
+        .modifier(TabBarBackgroundModifier())
         .padding(.horizontal, DS.Spacing.space5)
         .padding(.bottom, DS.Spacing.space2)
+    }
+}
+
+// MARK: - Tab Bar Background Modifier
+
+private struct TabBarBackgroundModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26, *) {
+            content.glassEffect(in: .capsule)
+        } else {
+            content
+                .background(
+                    Capsule()
+                        .fill(.ultraThinMaterial)
+                        .shadow(color: .black.opacity(0.08), radius: 16, x: 0, y: 4)
+                        .shadow(color: .black.opacity(0.04), radius: 2, x: 0, y: 1)
+                )
+                .overlay(
+                    Capsule()
+                        .stroke(DS.ColorToken.borderDefault.opacity(0.3), lineWidth: 0.5)
+                )
+        }
     }
 }
 
@@ -148,12 +189,8 @@ private struct TabBarButton: View {
     var body: some View {
         Button(action: action) {
             VStack(spacing: 4) {
-                if let iconPath = tab.iconPath {
-                    SVGIcon(iconPath, size: 22)
-                } else if let systemImage = tab.systemImage {
-                    Image(systemName: systemImage)
-                        .font(.system(size: 20))
-                }
+                tab.phosphorIcon
+                    .frame(width: 26, height: 26)
 
                 Text(tab.title)
                     .font(.custom("Satoshi Variable", size: 11).weight(isSelected ? .bold : .regular))

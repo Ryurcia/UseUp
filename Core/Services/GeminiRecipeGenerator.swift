@@ -11,7 +11,7 @@ final class GeminiRecipeGenerator: RecipeGenerating {
             throw RecipeGenerationError.noIngredients
         }
 
-        let systemPrompt = RecipePromptBuilder.buildSystemPrompt(recipeCount: recipeCount)
+        let systemPrompt = RecipePromptBuilder.buildSystemPrompt(recipeCount: recipeCount, diversify: options.diversifyIngredients)
         let userPrompt = RecipePromptBuilder.buildUserPrompt(ingredientNames: cleaned, options: options)
 
         let requestBody: [String: Any] = [

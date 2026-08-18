@@ -26,8 +26,11 @@ struct GenerationOptions: Hashable {
 
     var dietType: DietType = .any
     var dietaryRestrictions: Set<DietaryRestriction> = []
+    var allergies: [String] = []
     var maxTimeMinutes: Int = 30
     var targetCalories: Int? = nil
     var cuisine: Cuisine?
     var skillLevel: Int = 1
+    var priorityIngredients: [String] = []
+    var diversifyIngredients: Bool = false
 }

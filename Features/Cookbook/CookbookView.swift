@@ -1,147 +1,139 @@
 import SwiftUI
-import RevenueCatUI
+import PhosphorSwift
 
 struct CookbookView: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var savedRecipesStore: SavedRecipesStore
     @State private var showingSettings = false
-    @State private var showPaywall = false
     @State private var showAddRecipeOptions = false
     @State private var showPasteURLSheet = false
     @State private var cookbookRecipeData: RecipeImportData? = nil
-    @State private var selectedCategory: CookbookCategory = .all
+    @State private var pendingSheetWork: DispatchWorkItem? = nil
+    @State private var selectedTab: CookbookTab = .all
+    @State private var selectedMealFilter: MealFilter? = nil
     @State private var searchText = ""
-    var onGenerateTapped: () -> Void = {}
-
-    private enum CookbookCategory: String, CaseIterable {
-        case all = "All"
-        case breakfast = "Breakfast"
-        case lunch = "Lunch"
-        case dinner = "Dinner"
-        case snack = "Snack"
-
-        var filterValue: String? {
+    @State private var navigateToRecipe: Recipe?
+    @State private var allergenPendingRecipe: Recipe?
+    @State private var allergenWarningDetected: [String] = []
+    private enum CookbookTab: CaseIterable {
+        case all, personal, saved, shared
+        var label: String {
             switch self {
-            case .all: return nil
-            case .breakfast: return "breakfast"
-            case .lunch: return "lunch"
-            case .dinner: return "dinner"
-            case .snack: return "snack"
-            }
-        }
-
-        var icon: String {
-            switch self {
-            case .all: return "book.fill"
-            case .breakfast: return "sunrise.fill"
-            case .lunch: return "sun.max.fill"
-            case .dinner: return "moon.fill"
-            case .snack: return "cup.and.saucer.fill"
+            case .all:      return "All"
+            case .personal: return "Personal"
+            case .saved:    return "Saved"
+            case .shared:   return "Shared"
             }
         }
     }
 
-    private struct CookbookSection: Identifiable {
-        var id: String { title }
-        let title: String
-        let icon: String
-        let category: CookbookCategory?
-        let recipes: [Recipe]
+    private enum MealFilter: String, CaseIterable {
+        case breakfast, lunch, dinner, snack
+        var label: String { rawValue.capitalized }
+        var icon: Image {
+            switch self {
+            case .breakfast: return Ph.sunHorizon.fill
+            case .lunch:     return Ph.sun.fill
+            case .dinner:    return Ph.moon.fill
+            case .snack:     return Ph.coffee.fill
+            }
+        }
     }
 
     private var searchQuery: String {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var filteredSavedRecipes: [Recipe] {
+    private var baseRecipes: [Recipe] {
+        switch selectedTab {
+        case .all:      return savedRecipesStore.savedRecipes
+        case .personal: return savedRecipesStore.savedRecipes.filter { !$0.isUserShared }
+        case .saved:    return savedRecipesStore.savedRecipes.filter { $0.isUserShared }
+        case .shared:   return savedRecipesStore.sharedRecipes
+        }
+    }
+
+    private var filteredRecipes: [Recipe] {
+        var recipes = baseRecipes
+        if let meal = selectedMealFilter {
+            recipes = recipes.filter {
+                savedRecipesStore.savedRecipeCategories[$0.id] == meal.rawValue
+            }
+        }
         let query = searchQuery
-        guard !query.isEmpty else { return savedRecipesStore.savedRecipes }
-        return savedRecipesStore.savedRecipes.filter {
+        guard !query.isEmpty else { return recipes }
+        return recipes.filter {
             $0.title.localizedCaseInsensitiveContains(query) ||
             $0.summary.localizedCaseInsensitiveContains(query)
         }
     }
 
-    private var groupedSections: [CookbookSection] {
-        let recipes = filteredSavedRecipes
-        if selectedCategory != .all {
-            let filtered = recipes.filter {
-                savedRecipesStore.savedRecipeCategories[$0.id] == selectedCategory.filterValue
-            }
-            return filtered.isEmpty ? [] : [CookbookSection(title: selectedCategory.rawValue, icon: selectedCategory.icon, category: selectedCategory, recipes: filtered)]
-        }
-
-        let orderedCategories: [CookbookCategory] = [.breakfast, .lunch, .dinner, .snack]
-        var sections: [CookbookSection] = []
-        for cat in orderedCategories {
-            let catRecipes = recipes.filter {
-                savedRecipesStore.savedRecipeCategories[$0.id] == cat.filterValue
-            }
-            if !catRecipes.isEmpty {
-                sections.append(CookbookSection(title: cat.rawValue, icon: cat.icon, category: cat, recipes: catRecipes))
-            }
-        }
-        let otherRecipes = recipes.filter {
-            savedRecipesStore.savedRecipeCategories[$0.id] == nil
-        }
-        if !otherRecipes.isEmpty {
-            sections.append(CookbookSection(title: "Other", icon: "ellipsis.circle", category: nil, recipes: otherRecipes))
-        }
-        return sections
-    }
-
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: DS.Spacing.space4) {
+            HStack(spacing: Sourdough.Spacing.screenMargin) {
                 Text("Cookbook")
-                    .font(.custom("CalSans-Regular", size: 28))
-                    .foregroundStyle(DS.ColorToken.textPrimary)
+                    .foregroundStyle(Sourdough.Colors.ink)
+                    .sourdoughTextStyle(.title1)
                 Spacer()
+                Button { showAddRecipeOptions = true } label: {
+                    HStack(spacing: Sourdough.Spacing.iconToLabel) {
+                        Ph.plus.regular
+                            .frame(width: 14, height: 14)
+                        Text("Add")
+                            .foregroundStyle(Sourdough.Colors.onAction)
+                            .sourdoughTextStyle(.caption)
+                    }
+                    .foregroundStyle(Sourdough.Colors.onAction)
+                    .padding(.horizontal, Sourdough.Spacing.rowInternals)
+                    .frame(height: 36)
+                    .background(Sourdough.Colors.action)
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
                 Button { showingSettings = true } label: {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 22, weight: .regular))
-                        .foregroundStyle(DS.ColorToken.textSecondary)
+                    Ph.gear.regular
+                        .frame(width: 22, height: 22)
+                        .foregroundStyle(Sourdough.Colors.mutedInk)
                 }
                 .buttonStyle(.plain)
                 NotificationBellButton()
                 ProfileNavButton()
             }
-            .padding(.horizontal, DS.Spacing.space5)
-            .padding(.top, DS.Spacing.space3)
-            .padding(.bottom, DS.Spacing.space2)
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .padding(.top, Sourdough.Spacing.rowInternals)
+            .padding(.bottom, Sourdough.Spacing.insideChip)
 
-            if session.isPremium {
-                premiumContent
-            } else {
-                lockedContent
-            }
+            premiumContent
         }
-        .background(DS.ColorToken.bgPrimary)
+        .background(Sourdough.Colors.canvas)
         .toolbar(.hidden, for: .navigationBar)
-        .navigationDestination(for: Recipe.self) { recipe in
+        .navigationDestination(item: $navigateToRecipe) { recipe in
             RecipeDetailView(recipe: recipe)
+        }
+        .sheet(item: $allergenPendingRecipe) { recipe in
+            AllergenWarningSheet(recipeName: recipe.title) {
+                navigateToRecipe = recipe
+            }
         }
         .sheet(isPresented: $showingSettings) {
             NavigationStack { SettingsView() }
-        }
-        .sheet(isPresented: $showPaywall) {
-            PaywallView()
-                .onPurchaseCompleted { _ in showPaywall = false }
-                .onRestoreCompleted { _ in showPaywall = false }
+                .preferredColorScheme(session.preferredColorScheme)
         }
         .sheet(isPresented: $showAddRecipeOptions) {
             AddRecipeOptionsSheet(
                 onAddManually: {
                     showAddRecipeOptions = false
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-                        cookbookRecipeData = RecipeImportData()
-                    }
+                    pendingSheetWork?.cancel()
+                    let work = DispatchWorkItem { cookbookRecipeData = RecipeImportData() }
+                    pendingSheetWork = work
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: work)
                 },
                 onPasteURL: {
                     showAddRecipeOptions = false
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-                        showPasteURLSheet = true
-                    }
+                    pendingSheetWork?.cancel()
+                    let work = DispatchWorkItem { showPasteURLSheet = true }
+                    pendingSheetWork = work
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: work)
                 }
             )
             .presentationDetents([.height(220)])
@@ -150,11 +142,12 @@ struct CookbookView: View {
         .sheet(isPresented: $showPasteURLSheet) {
             PasteURLSheet { importData in
                 showPasteURLSheet = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-                    cookbookRecipeData = importData
-                }
+                pendingSheetWork?.cancel()
+                let work = DispatchWorkItem { cookbookRecipeData = importData }
+                pendingSheetWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: work)
             }
-            .presentationDetents([.medium])
+            .presentationDetents([.height(210)])
             .presentationDragIndicator(.visible)
         }
         .sheet(item: $cookbookRecipeData) { data in
@@ -162,108 +155,114 @@ struct CookbookView: View {
         }
     }
 
-    // MARK: - Category Tabs
+    // MARK: - Tab Bar
 
-    private var categoryTabs: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: DS.Spacing.space2) {
-                ForEach(CookbookCategory.allCases, id: \.self) { category in
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            selectedCategory = category
-                        }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: category.icon)
-                                .font(.system(size: 12))
-                            Text(category.rawValue)
-                                .font(.custom("Satoshi Variable", size: 13).weight(.medium))
-                        }
-                        .foregroundStyle(selectedCategory == category ? .white : DS.ColorToken.textSecondary)
-                        .padding(.horizontal, DS.Spacing.space3)
+    private var tabBar: some View {
+        HStack(spacing: Sourdough.Spacing.iconToLabel) {
+            ForEach(CookbookTab.allCases, id: \.label) { tab in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { selectedTab = tab }
+                } label: {
+                    Text(tab.label)
+                        .foregroundStyle(selectedTab == tab ? Sourdough.Colors.ink : Sourdough.Colors.mutedInk)
+                        .sourdoughTextStyle(.caption)
+                        .frame(maxWidth: .infinity)
                         .frame(height: 36)
-                        .background(selectedCategory == category ? DS.ColorToken.accent : DS.ColorToken.bgSecondary)
-                        .overlay(
-                            Capsule().stroke(
-                                selectedCategory == category ? Color.clear : DS.ColorToken.borderDefault,
-                                lineWidth: 1
-                            )
-                        )
-                        .clipShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
+                        .background(selectedTab == tab ? Sourdough.Colors.card : Color.clear)
+                        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.input, style: .continuous))
+                        .shadow(color: selectedTab == tab ? .black.opacity(0.08) : .clear, radius: 4, y: 2)
                 }
+                .buttonStyle(.plain)
             }
-            .padding(.horizontal, DS.Spacing.space5)
         }
-        .mask(
-            LinearGradient(
-                stops: [
-                    .init(color: .black, location: 0),
-                    .init(color: .black, location: 0.8),
-                    .init(color: .clear, location: 1.0)
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-        )
-        .padding(.vertical, DS.Spacing.space2)
+        .padding(3)
+        .background(Sourdough.Colors.sunken)
+        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.tile, style: .continuous))
+        .padding(.horizontal, Sourdough.Spacing.screenMargin)
+        .padding(.vertical, Sourdough.Spacing.rowInternals)
     }
 
     // MARK: - Premium Content
 
     private var premiumContent: some View {
         VStack(spacing: 0) {
-            categoryTabs
+            tabBar
 
-            HStack(spacing: DS.Spacing.space2) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(DS.ColorToken.textTertiary)
+            HStack(spacing: Sourdough.Spacing.insideChip) {
+                Ph.magnifyingGlass.regular
+                    .frame(width: 18, height: 18)
+                    .foregroundStyle(Sourdough.Colors.faintInk)
                 TextField("Search recipes", text: $searchText)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                    .appTextStyle(.body)
-                    .foregroundStyle(DS.ColorToken.textPrimary)
+                    .foregroundStyle(Sourdough.Colors.ink)
+                    .sourdoughTextStyle(.body)
                 if !searchText.isEmpty {
                     Button { searchText = "" } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(DS.ColorToken.textTertiary)
+                        Ph.xCircle.fill
+                            .frame(width: 18, height: 18)
+                            .foregroundStyle(Sourdough.Colors.faintInk)
                     }
                     .buttonStyle(.plain)
                 }
+                Menu {
+                    Button { selectedMealFilter = nil } label: {
+                        Label {
+                            Text("All")
+                        } icon: {
+                            if selectedMealFilter == nil {
+                                Ph.check.regular.frame(width: 16, height: 16)
+                            }
+                        }
+                    }
+                    Divider()
+                    ForEach(MealFilter.allCases, id: \.self) { meal in
+                        Button { selectedMealFilter = meal } label: {
+                            Label {
+                                Text(meal.label)
+                            } icon: {
+                                if selectedMealFilter == meal {
+                                    Ph.check.regular.frame(width: 16, height: 16)
+                                } else {
+                                    meal.icon.frame(width: 16, height: 16)
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Ph.fadersHorizontal.regular
+                        .frame(width: 16, height: 16)
+                        .foregroundStyle(selectedMealFilter != nil ? Sourdough.Ramp.sage500 : Sourdough.Colors.faintInk)
+                }
             }
-            .padding(.horizontal, DS.Spacing.space3)
+            .onChange(of: selectedTab) { selectedMealFilter = nil }
+            .padding(.horizontal, Sourdough.Spacing.rowInternals)
             .frame(height: 48)
-            .background(DS.ColorToken.bgSecondary)
+            .background(Sourdough.Colors.sunken)
             .overlay(
-                RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
-                    .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
+                RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous)
+                    .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
             )
-            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
-            .padding(.horizontal, DS.Spacing.space5)
-            .padding(.top, DS.Spacing.space1)
-            .padding(.bottom, DS.Spacing.space3)
+            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .padding(.top, Sourdough.Spacing.iconToLabel)
+            .padding(.bottom, Sourdough.Spacing.rowInternals)
 
             if savedRecipesStore.savedRecipes.isEmpty && searchQuery.isEmpty {
                 Spacer()
-                VStack(spacing: DS.Spacing.space3) {
-                    // Action cards even when empty
-                    actionCards
-                        .padding(.horizontal, DS.Spacing.space5)
-                        .padding(.bottom, DS.Spacing.space6)
-
-                    Image(systemName: "book.closed")
-                        .font(.system(size: 48))
-                        .foregroundStyle(DS.ColorToken.textTertiary)
+                VStack(spacing: Sourdough.Spacing.rowInternals) {
+                    Ph.book.regular
+                        .frame(width: 48, height: 48)
+                        .foregroundStyle(Sourdough.Colors.faintInk)
                     Text("Your cookbook is empty")
-                        .font(.custom("Satoshi Variable", size: 18).weight(.semibold))
-                        .foregroundStyle(DS.ColorToken.textPrimary)
+                        .foregroundStyle(Sourdough.Colors.ink)
+                        .sourdoughTextStyle(.title2)
                     Text("Save recipes from the community to build your collection.")
-                        .appTextStyle(.bodySM)
-                        .foregroundStyle(DS.ColorToken.textSecondary)
+                        .foregroundStyle(Sourdough.Colors.mutedInk)
+                        .sourdoughTextStyle(.subhead)
                         .multilineTextAlignment(.center)
                 }
-                .padding(.horizontal, DS.Spacing.space8)
+                .padding(.horizontal, Sourdough.Spacing.aboveSectionHead)
                 Spacer()
             } else {
                 recipeList
@@ -271,186 +270,84 @@ struct CookbookView: View {
         }
     }
 
-    // MARK: - Action Cards
+    // MARK: - Recipe List
 
-    private var actionCards: some View {
-        HStack(spacing: DS.Spacing.space3) {
-            Button(action: onGenerateTapped) {
-                VStack(alignment: .leading, spacing: DS.Spacing.space1) {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(.white)
-                    Spacer()
-                    Text("Generate from pantry")
-                        .font(.custom("Satoshi Variable", size: 16).weight(.bold))
-                        .foregroundStyle(.white)
-                        .lineLimit(2)
-                    Text("AI suggestions")
-                        .font(.custom("Satoshi Variable", size: 13))
-                        .foregroundStyle(.white.opacity(0.7))
-                }
-                .padding(DS.Spacing.space4)
-                .frame(maxWidth: .infinity, minHeight: 100, alignment: .topLeading)
-                .background(DS.ColorToken.accent.opacity(0.12))
-                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
-                        .stroke(DS.ColorToken.accent, lineWidth: 1.5)
-                )
-            }
-            .buttonStyle(.plain)
-
-            Button { showAddRecipeOptions = true } label: {
-                VStack(alignment: .leading, spacing: DS.Spacing.space1) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(DS.ColorToken.textSecondary)
-                    Spacer()
-                    Text("Add recipe")
-                        .font(.custom("Satoshi Variable", size: 16).weight(.bold))
-                        .foregroundStyle(DS.ColorToken.textPrimary)
-                    Text("Paste URL or photo")
-                        .font(.custom("Satoshi Variable", size: 13))
-                        .foregroundStyle(DS.ColorToken.textSecondary)
-                }
-                .padding(DS.Spacing.space4)
-                .frame(maxWidth: .infinity, minHeight: 100, alignment: .topLeading)
-                .background(DS.ColorToken.bgSecondary)
-                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
-                        .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
-                )
-            }
-            .buttonStyle(.plain)
+    private var emptyStateMessage: String {
+        if !searchQuery.isEmpty { return "No results for \"\(searchQuery)\"" }
+        switch selectedTab {
+        case .all:      return "Your cookbook is empty"
+        case .personal: return "No personal recipes yet"
+        case .saved:    return "No saved recipes yet"
+        case .shared:   return "No shared recipes yet"
         }
     }
 
-    // MARK: - Recipe List
+    private var emptyStateSubtitle: String {
+        if !searchQuery.isEmpty { return "Try a different search term." }
+        switch selectedTab {
+        case .all:      return "Save recipes from the community to build your collection."
+        case .personal: return "Add one with the button above."
+        case .saved:    return "Browse the community to find recipes."
+        case .shared:   return "Share a recipe with the community."
+        }
+    }
 
     private var recipeList: some View {
         ScrollView(showsIndicators: false) {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                actionCards
-                    .padding(.horizontal, DS.Spacing.space5)
-                    .padding(.bottom, DS.Spacing.space4)
-
-                if groupedSections.isEmpty {
-                    VStack(spacing: DS.Spacing.space3) {
-                        Image(systemName: searchQuery.isEmpty ? selectedCategory.icon : "magnifyingglass")
-                            .font(.system(size: 40))
-                            .foregroundStyle(DS.ColorToken.textTertiary)
-                        Text(!searchQuery.isEmpty ? "No results for \"\(searchQuery)\"" : "No \(selectedCategory.rawValue.lowercased()) recipes yet")
-                            .font(.custom("Satoshi Variable", size: 16).weight(.semibold))
-                            .foregroundStyle(DS.ColorToken.textPrimary)
-                        Text(!searchQuery.isEmpty ? "Try a different search term." : "Save recipes from the community to build your collection.")
-                            .appTextStyle(.bodySM)
-                            .foregroundStyle(DS.ColorToken.textSecondary)
+            LazyVStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
+                if filteredRecipes.isEmpty {
+                    VStack(spacing: Sourdough.Spacing.rowInternals) {
+                        Group {
+                            if searchQuery.isEmpty {
+                                Ph.book.regular
+                            } else {
+                                Ph.magnifyingGlass.regular
+                            }
+                        }
+                        .frame(width: 40, height: 40)
+                        .foregroundStyle(Sourdough.Colors.faintInk)
+                        Text(emptyStateMessage)
+                            .foregroundStyle(Sourdough.Colors.ink)
+                            .sourdoughTextStyle(.rowTitle)
+                        Text(emptyStateSubtitle)
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                            .sourdoughTextStyle(.subhead)
                             .multilineTextAlignment(.center)
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.horizontal, DS.Spacing.space8)
-                    .padding(.top, DS.Spacing.space8)
+                    .padding(.horizontal, Sourdough.Spacing.aboveSectionHead)
+                    .padding(.top, Sourdough.Spacing.aboveSectionHead)
                 } else {
-                    ForEach(groupedSections) { section in
-                        if selectedCategory == .all {
-                            sectionHeader(section)
-                        }
-                        let preview = selectedCategory == .all ? Array(section.recipes.prefix(3)) : section.recipes
-                        ForEach(Array(preview.enumerated()), id: \.element.id) { index, recipe in
-                            CookbookListRow(
-                                recipe: recipe,
-                                category: savedRecipesStore.savedRecipeCategories[recipe.id]
-                            )
-                            if index < preview.count - 1 {
-                                Divider()
-                                    .padding(.leading, DS.Spacing.space5 + 60 + DS.Spacing.space3)
-                            }
-                        }
-                        Divider()
-                            .padding(.horizontal, DS.Spacing.space5)
-                            .padding(.bottom, DS.Spacing.space2)
-                    }
-                }
-            }
-            .padding(.bottom, DS.Spacing.space24)
-        }
-    }
-
-    // MARK: - Section Header
-
-    private func sectionHeader(_ section: CookbookSection) -> some View {
-        HStack(spacing: DS.Spacing.space2) {
-            Image(systemName: section.icon)
-                .font(.system(size: 14))
-                .foregroundStyle(DS.ColorToken.textSecondary)
-            Text(section.title)
-                .font(.custom("Satoshi Variable", size: 18).weight(.bold))
-                .foregroundStyle(DS.ColorToken.textPrimary)
-            Text("\(section.recipes.count)")
-                .font(.custom("Satoshi Variable", size: 14))
-                .foregroundStyle(DS.ColorToken.textTertiary)
-            Spacer()
-            if section.recipes.count > 3, let cat = section.category {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) { selectedCategory = cat }
-                } label: {
-                    Text("See all")
-                        .font(.custom("Satoshi Variable", size: 13).weight(.medium))
-                        .foregroundStyle(DS.ColorToken.primary)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, DS.Spacing.space5)
-        .padding(.top, DS.Spacing.space4)
-        .padding(.bottom, DS.Spacing.space2)
-    }
-
-    // MARK: - Locked Content
-
-    private var lockedContent: some View {
-        VStack(spacing: 0) {
-            Spacer()
-            VStack(spacing: DS.Spacing.space4) {
-                Image(systemName: "lock.fill")
-                    .font(.system(size: 48))
-                    .foregroundStyle(DS.ColorToken.textTertiary)
-                Text("Unlock Your Cookbook")
-                    .font(.custom("CalSans-Regular", size: 24))
-                    .foregroundStyle(DS.ColorToken.textPrimary)
-                Text("Save and organize your favorite recipes.\nUpgrade to Pro to access your personal cookbook.")
-                    .appTextStyle(.bodySM)
-                    .foregroundStyle(DS.ColorToken.textSecondary)
-                    .multilineTextAlignment(.center)
-                Button {
-                    showPaywall = true
-                } label: {
-                    HStack(spacing: DS.Spacing.space2) {
-                        Image(systemName: "sparkles")
-                            .font(.system(size: 14, weight: .semibold))
-                        Text("Upgrade to Pro")
-                            .font(.custom("Satoshi Variable", size: 16))
-                    }
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 52)
-                    .background(
-                        LinearGradient(
-                            colors: [DS.ColorToken.berry, DS.ColorToken.lavender],
-                            startPoint: .topTrailing,
-                            endPoint: .bottomLeading
+                    ForEach(filteredRecipes) { recipe in
+                        CookbookListRow(
+                            recipe: recipe,
+                            category: savedRecipesStore.savedRecipeCategories[recipe.id],
+                            onTap: { r in
+                                allergenWarningDetected = []
+                                let detected = detectAllergens(
+                                    in: r,
+                                    userAllergies: session.currentUserAllergies,
+                                    customAllergy: session.currentUserCustomAllergy
+                                )
+                                if detected.isEmpty {
+                                    navigateToRecipe = r
+                                } else {
+                                    allergenWarningDetected = detected
+                                    allergenPendingRecipe = r
+                                }
+                            },
+                            onUnsave: selectedTab == .saved ? {
+                                savedRecipesStore.unsaveRecipe(recipe)
+                            } : nil
                         )
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                        .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                    }
                 }
-                .buttonStyle(.plain)
-                .padding(.horizontal, DS.Spacing.space5)
             }
-            .padding(.horizontal, DS.Spacing.space5)
-            Spacer()
+            .padding(.bottom, 96)
         }
     }
+
 }
 
 // MARK: - Cookbook List Row
@@ -458,6 +355,8 @@ struct CookbookView: View {
 private struct CookbookListRow: View {
     let recipe: Recipe
     let category: String?
+    let onTap: (Recipe) -> Void
+    var onUnsave: (() -> Void)? = nil
 
     var metaLine: String {
         var parts: [String] = ["\(recipe.timeMinutes) min"]
@@ -467,56 +366,70 @@ private struct CookbookListRow: View {
     }
 
     var body: some View {
-        NavigationLink(value: recipe) {
-            HStack(spacing: DS.Spacing.space3) {
+        Button { onTap(recipe) } label: {
+            HStack(spacing: Sourdough.Spacing.rowInternals) {
                 // Thumbnail
                 Group {
                     if recipe.isAIGenerated && recipe.imageData == nil && recipe.imagePath == nil {
                         ZStack {
                             LinearGradient(
-                                colors: [DS.ColorToken.primary, DS.ColorToken.accent],
+                                colors: [Sourdough.Colors.action, Sourdough.Ramp.sage500],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
                             )
-                            Image(systemName: "fork.knife")
-                                .font(.system(size: 20, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.85))
+                            Ph.forkKnife.regular
+                                .frame(width: 20, height: 20)
+                                .foregroundStyle(Sourdough.Colors.onAction.opacity(0.85))
                         }
                     } else {
                         CachedRecipeImage(recipeID: recipe.id, imageData: recipe.imageData, imagePath: recipe.imagePath, thumbnail: true)
                     }
                 }
                 .frame(width: 60, height: 60)
-                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.input, style: .continuous))
 
                 // Text
                 VStack(alignment: .leading, spacing: 4) {
                     Text(recipe.title)
-                        .font(.custom("Satoshi Variable", size: 15).weight(.semibold))
-                        .foregroundStyle(DS.ColorToken.textPrimary)
+                        .foregroundStyle(Sourdough.Colors.ink)
+                        .sourdoughTextStyle(.rowTitle)
                         .lineLimit(1)
 
-                    HStack(spacing: 4) {
-                        Image(systemName: "clock")
-                            .font(.system(size: 11))
-                            .foregroundStyle(DS.ColorToken.textTertiary)
+                    HStack(spacing: Sourdough.Spacing.iconToLabel) {
+                        Ph.clock.regular
+                            .frame(width: 11, height: 11)
+                            .foregroundStyle(Sourdough.Colors.faintInk)
                         Text(metaLine)
-                            .font(.custom("Satoshi Variable", size: 12))
-                            .foregroundStyle(DS.ColorToken.textSecondary)
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                            .sourdoughTextStyle(.caption)
                             .lineLimit(1)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(DS.ColorToken.textTertiary)
+                Ph.caretRight.regular
+                    .frame(width: 13, height: 13)
+                    .foregroundStyle(Sourdough.Colors.faintInk)
             }
-            .padding(.horizontal, DS.Spacing.space5)
-            .padding(.vertical, DS.Spacing.space3)
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .padding(.vertical, Sourdough.Spacing.rowInternals)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .background(Sourdough.Colors.card)
+        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
+        .sourdoughElevation(.hairline, cornerRadius: Sourdough.Radius.card)
+        .contextMenu {
+            if let onUnsave {
+                Button(role: .destructive) { onUnsave() } label: {
+                    Label {
+                        Text("Remove from Saved")
+                    } icon: {
+                        Ph.bookmark.regular.frame(width: 16, height: 16)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -528,65 +441,67 @@ private struct AddRecipeOptionsSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(spacing: DS.Spacing.space3) {
+        VStack(spacing: Sourdough.Spacing.rowInternals) {
             Spacer()
 
             Button {
                 onAddManually()
             } label: {
-                HStack(spacing: DS.Spacing.space3) {
-                    Image(systemName: "pencil")
-                        .font(.system(size: 18, weight: .medium))
+                HStack(spacing: Sourdough.Spacing.rowInternals) {
+                    Ph.pencil.regular
+                        .frame(width: 18, height: 18)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Add Manually")
-                            .font(.custom("Satoshi Variable", size: 16).weight(.semibold))
+                            .foregroundStyle(Sourdough.Colors.ink)
+                            .sourdoughTextStyle(.rowTitle)
                         Text("Fill in title, ingredients and steps")
-                            .font(.custom("Satoshi Variable", size: 12))
-                            .foregroundStyle(DS.ColorToken.textSecondary)
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                            .sourdoughTextStyle(.caption)
                     }
                     Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(DS.ColorToken.textTertiary)
+                    Ph.caretRight.regular
+                        .frame(width: 13, height: 13)
+                        .foregroundStyle(Sourdough.Colors.faintInk)
                 }
-                .foregroundStyle(DS.ColorToken.textPrimary)
-                .padding(DS.Spacing.space4)
+                .foregroundStyle(Sourdough.Colors.ink)
+                .padding(Sourdough.Spacing.screenMargin)
                 .frame(maxWidth: .infinity)
-                .background(DS.ColorToken.bgSecondary)
-                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
+                .background(Sourdough.Colors.sunken)
+                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
             }
             .buttonStyle(.plain)
 
             Button {
                 onPasteURL()
             } label: {
-                HStack(spacing: DS.Spacing.space3) {
-                    Image(systemName: "link")
-                        .font(.system(size: 18, weight: .medium))
+                HStack(spacing: Sourdough.Spacing.rowInternals) {
+                    Ph.link.regular
+                        .frame(width: 18, height: 18)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Paste a URL")
-                            .font(.custom("Satoshi Variable", size: 16).weight(.semibold))
+                            .foregroundStyle(Sourdough.Colors.ink)
+                            .sourdoughTextStyle(.rowTitle)
                         Text("Import from any recipe website")
-                            .font(.custom("Satoshi Variable", size: 12))
-                            .foregroundStyle(DS.ColorToken.textSecondary)
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                            .sourdoughTextStyle(.caption)
                     }
                     Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(DS.ColorToken.textTertiary)
+                    Ph.caretRight.regular
+                        .frame(width: 13, height: 13)
+                        .foregroundStyle(Sourdough.Colors.faintInk)
                 }
-                .foregroundStyle(DS.ColorToken.textPrimary)
-                .padding(DS.Spacing.space4)
+                .foregroundStyle(Sourdough.Colors.ink)
+                .padding(Sourdough.Spacing.screenMargin)
                 .frame(maxWidth: .infinity)
-                .background(DS.ColorToken.bgSecondary)
-                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
+                .background(Sourdough.Colors.sunken)
+                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
             }
             .buttonStyle(.plain)
 
         }
-        .padding(.horizontal, DS.Spacing.space5)
-        .padding(.vertical, DS.Spacing.space4)
+        .padding(.horizontal, Sourdough.Spacing.screenMargin)
+        .padding(.vertical, Sourdough.Spacing.screenMargin)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(DS.ColorToken.bgPrimary)
+        .background(Sourdough.Colors.canvas)
     }
 }

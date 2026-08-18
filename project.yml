@@ -19,6 +19,12 @@ packages:
   SwiftSoup:
     url: https://github.com/scinfu/SwiftSoup.git
     from: 2.7.0
+  Lottie:
+    url: https://github.com/airbnb/lottie-spm.git
+    from: 4.4.0
+  PhosphorSwift:
+    url: https://github.com/phosphor-icons/swift
+    from: 2.1.0
 targets:
   UseUp:
     type: application
@@ -38,6 +44,12 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: App/Info.plist
         SWIFT_VERSION: "5.0"
+        DEVELOPMENT_TEAM: 89XZMUB5H9
+        CODE_SIGN_STYLE: Automatic
+      configs:
+        Debug:
+          ONLY_ACTIVE_ARCH: YES
+          ENABLE_DEBUG_DYLIB: NO
     dependencies:
       - package: Supabase
       - package: RevenueCat
@@ -45,5 +57,7 @@ targets:
           - RevenueCat
           - RevenueCatUI
       - package: SwiftSoup
+      - package: Lottie
+      - package: PhosphorSwift
     scheme:
       testTargets: []

@@ -7,27 +7,33 @@ struct AppUser: Hashable {
 }
 
 protocol AuthServicing {
-    func sendOTP(phone: String) async throws
-    func verifyOTP(phone: String, token: String) async throws -> AppUser
+    func signUp(email: String, password: String) async throws -> AppUser
+    func signIn(email: String, password: String) async throws -> AppUser
+    func verifyEmailOTP(email: String, token: String) async throws -> AppUser
     func signOut()
+    func deleteAccount() async throws
 }
 
 enum AuthServiceError: LocalizedError {
-    case invalidPhone
+    case invalidEmail
+    case weakPassword
+    case emailAlreadyInUse
+    case invalidCredentials
+    case emailNotConfirmed
     case invalidOTP
     case networkError
     case unknown(String)
 
     var errorDescription: String? {
         switch self {
-        case .invalidPhone:
-            return "Please enter a valid phone number."
-        case .invalidOTP:
-            return "Invalid verification code. Please try again."
-        case .networkError:
-            return "Network error. Please check your connection."
-        case .unknown(let message):
-            return message
+        case .invalidEmail:       return "Please enter a valid email address."
+        case .weakPassword:       return "Password must be at least 6 characters."
+        case .emailAlreadyInUse:  return "An account with this email already exists."
+        case .invalidCredentials: return "Incorrect email or password."
+        case .emailNotConfirmed:  return "Please verify your email before signing in."
+        case .invalidOTP:         return "Invalid verification code. Please try again."
+        case .networkError:       return "Network error. Please check your connection."
+        case .unknown(let msg):   return msg
         }
     }
 }

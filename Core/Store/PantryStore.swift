@@ -1,6 +1,13 @@
 import Foundation
 import Supabase
 
+/// Shared `yyyy-MM-dd` formatter — DateFormatter init is expensive, so reuse one instance.
+private let pantryDateFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "yyyy-MM-dd"
+    return f
+}()
+
 /// Codable row matching the Supabase `ingredients` table.
 private struct IngredientRow: Codable {
     let id: UUID
@@ -12,6 +19,7 @@ private struct IngredientRow: Codable {
     let expirationDate: String?
     let loggedAt: Date?
     let notes: String?
+    let icon: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -19,7 +27,7 @@ private struct IngredientRow: Codable {
         case name, amount, category, location
         case expirationDate = "expiration_date"
         case loggedAt = "logged_at"
-        case notes
+        case notes, icon
     }
 
     func toIngredient() -> Ingredient {
@@ -28,9 +36,7 @@ private struct IngredientRow: Codable {
 
         var expDate: Date?
         if let expirationDate {
-            let formatter = DateFormatter()
-            formatter.dateFormat = "yyyy-MM-dd"
-            expDate = formatter.date(from: expirationDate)
+            expDate = pantryDateFormatter.date(from: expirationDate)
         }
 
         return Ingredient(
@@ -41,7 +47,8 @@ private struct IngredientRow: Codable {
             location: loc,
             expirationDate: expDate,
             loggedAt: loggedAt ?? Date(),
-            notes: notes
+            notes: notes,
+            icon: icon
         )
     }
 }
@@ -55,12 +62,13 @@ private struct IngredientInsert: Encodable {
     let location: String
     let expirationDate: String?
     let notes: String?
+    let icon: String?
 
     enum CodingKeys: String, CodingKey {
         case userId = "user_id"
         case name, amount, category, location
         case expirationDate = "expiration_date"
-        case notes
+        case notes, icon
     }
 }
 
@@ -71,22 +79,26 @@ private struct IngredientUpdate: Encodable {
     let location: String
     let expirationDate: String?
     let notes: String?
+    let icon: String?
 
     enum CodingKeys: String, CodingKey {
         case name, amount, category, location
         case expirationDate = "expiration_date"
-        case notes
+        case notes, icon
     }
 }
 
 @MainActor
 final class PantryStore: ObservableObject {
+    static weak var shared: PantryStore?
+
     @Published private(set) var ingredients: [Ingredient] = []
     @Published private(set) var isLoading = false
     @Published var error: String?
     @Published var dismissedIngredientIds: Set<UUID> = [] {
         didSet { saveDismissedIds() }
     }
+    @Published var notifReadTimestamps: [String: Date] = [:]
 
     var userId: UUID?
     private var lastFetchedAt: Date?
@@ -94,9 +106,13 @@ final class PantryStore: ObservableObject {
     private var notificationDebounceTask: Task<Void, Never>?
 
     private static let dismissedIdsKey = "dismissedIngredientIds"
+    private static let readTimestampsKey = "notif_readTimestamps"
+    private let autoHideInterval: TimeInterval = 3 * 24 * 3600
 
     init() {
         loadDismissedIds()
+        loadReadTimestamps()
+        PantryStore.shared = self
     }
 
     private func saveDismissedIds() {
@@ -108,7 +124,75 @@ final class PantryStore: ObservableObject {
         dismissedIngredientIds = Set(stored.compactMap(UUID.init))
     }
 
+    func markNotificationRead(_ id: String) {
+        notifReadTimestamps[id] = Date()
+        saveReadTimestamps()
+    }
+
+    func markAllNotificationsRead(ids: [String]) {
+        let now = Date()
+        for id in ids { notifReadTimestamps[id] = now }
+        saveReadTimestamps()
+    }
+
+    func dismissNotification(for ingredientId: UUID) {
+        dismissedIngredientIds.insert(ingredientId)
+        rescheduleNotifications()
+    }
+
+    /// Dated, non-dismissed ingredients that are expired or expiring within `days` — the single
+    /// source of truth for "expiring soon" eligibility, shared by the notification bell badge and
+    /// the full notification list so they never disagree on which items qualify.
+    func expiringAlertCandidates(withinDays days: Int = 7) -> [Ingredient] {
+        ingredients.filter { ingredient in
+            guard ingredient.expirationDate != nil else { return false }
+            guard !dismissedIngredientIds.contains(ingredient.id) else { return false }
+            if ingredient.isExpired { return true }
+            guard let daysUntil = ingredient.daysUntilExpiration else { return false }
+            return daysUntil <= days
+        }
+    }
+
+    private func saveReadTimestamps() {
+        let raw = notifReadTimestamps.mapValues { $0.timeIntervalSince1970 }
+        UserDefaults.standard.set(raw, forKey: Self.readTimestampsKey)
+    }
+
+    private func loadReadTimestamps() {
+        let now = Date()
+        let purgeCutoff = now.addingTimeInterval(-7 * 24 * 3600)
+        let hideCutoff = now.addingTimeInterval(-autoHideInterval)
+        var result: [String: Date] = [:]
+        if let raw = UserDefaults.standard.dictionary(forKey: Self.readTimestampsKey) as? [String: Double] {
+            result = raw.mapValues { Date(timeIntervalSince1970: $0) }.filter { $0.value > purgeCutoff }
+        }
+        if let oldIds = UserDefaults.standard.stringArray(forKey: "notif_readIds") {
+            for id in oldIds where result[id] == nil { result[id] = hideCutoff }
+            UserDefaults.standard.removeObject(forKey: "notif_readIds")
+        }
+        notifReadTimestamps = result
+    }
+
     private func getUserId() -> UUID? { userId }
+
+    /// Applies a local mutation immediately (optimistic update), then runs `persist` (the network
+    /// call plus any post-success work, e.g. rescheduling notifications). If `persist` throws, the
+    /// local mutation is rolled back and the error surfaced via `self.error`.
+    private func performOptimistic(
+        apply: () -> Void,
+        rollback: @escaping () -> Void,
+        persist: @escaping () async throws -> Void
+    ) {
+        apply()
+        Task {
+            do {
+                try await persist()
+            } catch {
+                rollback()
+                self.error = error.localizedDescription
+            }
+        }
+    }
 
     func clearForSignOut() {
         userId = nil
@@ -117,6 +201,8 @@ final class PantryStore: ObservableObject {
         error = nil
         UserDefaults.standard.removeObject(forKey: Self.dismissedIdsKey)
         dismissedIngredientIds = []
+        UserDefaults.standard.removeObject(forKey: Self.readTimestampsKey)
+        notifReadTimestamps = [:]
     }
 
     // MARK: - Fetch
@@ -136,7 +222,11 @@ final class PantryStore: ObservableObject {
                 .execute()
                 .value
 
-            ingredients = rows.map { $0.toIngredient() }
+            // Preserve any optimistic inserts that are still in-flight (not yet in DB).
+            // Their locally-generated UUIDs won't appear in server results.
+            let serverIds = Set(rows.map(\.id))
+            let pending = ingredients.filter { !serverIds.contains($0.id) }
+            ingredients = pending + rows.map { $0.toIngredient() }
             lastFetchedAt = Date()
             rescheduleNotifications()
         } catch {
@@ -153,28 +243,32 @@ final class PantryStore: ObservableObject {
         amount: String?,
         category: Ingredient.Category,
         location: Ingredient.StorageLocation,
-        expirationDate: Date?
+        expirationDate: Date?,
+        icon: String? = nil,
+        force: Bool = false
     ) {
         let cleaned = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { return }
         let cleanedAmount = amount?.trimmingCharacters(in: .whitespacesAndNewlines)
 
         let exists = ingredients.contains { $0.name.lowercased() == cleaned.lowercased() }
-        guard !exists else { return }
+        guard !exists || force else { return }
 
-        // Optimistic local insert
         let tempIngredient = Ingredient(
             name: cleaned.lowercased(),
             amount: cleanedAmount?.isEmpty == true ? nil : cleanedAmount,
             category: category,
             location: location,
-            expirationDate: expirationDate
+            expirationDate: expirationDate,
+            icon: icon
         )
-        ingredients.insert(tempIngredient, at: 0)
 
-        Task {
-            guard let userId = getUserId() else {
-                ingredients.removeAll { $0.id == tempIngredient.id }
+        performOptimistic(
+            apply: { ingredients.insert(tempIngredient, at: 0) },
+            rollback: { self.ingredients.removeAll { $0.id == tempIngredient.id } }
+        ) {
+            guard let userId = self.getUserId() else {
+                self.ingredients.removeAll { $0.id == tempIngredient.id }
                 return
             }
 
@@ -184,28 +278,23 @@ final class PantryStore: ObservableObject {
                 amount: cleanedAmount?.isEmpty == true ? nil : cleanedAmount,
                 category: category.rawValue,
                 location: location.rawValue,
-                expirationDate: expirationDate.map { formatDate($0) },
-                notes: nil
+                expirationDate: expirationDate.map { self.formatDate($0) },
+                notes: nil,
+                icon: icon
             )
 
-            do {
-                let rows: [IngredientRow] = try await client
-                    .from("ingredients")
-                    .insert(insert)
-                    .select()
-                    .execute()
-                    .value
+            let rows: [IngredientRow] = try await self.client
+                .from("ingredients")
+                .insert(insert)
+                .select()
+                .execute()
+                .value
 
-                if let row = rows.first,
-                   let index = ingredients.firstIndex(where: { $0.id == tempIngredient.id }) {
-                    ingredients[index] = row.toIngredient()
-                }
-                rescheduleNotifications()
-            } catch {
-                // Rollback optimistic insert
-                ingredients.removeAll { $0.id == tempIngredient.id }
-                self.error = error.localizedDescription
+            if let row = rows.first,
+               let index = self.ingredients.firstIndex(where: { $0.id == tempIngredient.id }) {
+                self.ingredients[index] = row.toIngredient()
             }
+            self.rescheduleNotifications()
         }
     }
 
@@ -217,7 +306,8 @@ final class PantryStore: ObservableObject {
         amount: String?,
         category: Ingredient.Category,
         location: Ingredient.StorageLocation,
-        expirationDate: Date?
+        expirationDate: Date?,
+        icon: String? = nil
     ) {
         let cleaned = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { return }
@@ -231,65 +321,63 @@ final class PantryStore: ObservableObject {
         guard let index = ingredients.firstIndex(where: { $0.id == id }) else { return }
         let previous = ingredients[index]
 
-        // Optimistic update
-        ingredients[index].name = cleaned.lowercased()
-        ingredients[index].amount = cleanedAmount?.isEmpty == true ? nil : cleanedAmount
-        ingredients[index].category = category
-        ingredients[index].location = location
-        ingredients[index].expirationDate = expirationDate
-
-        let update = IngredientUpdate(
-            name: cleaned.lowercased(),
-            amount: cleanedAmount?.isEmpty == true ? nil : cleanedAmount,
-            category: category.rawValue,
-            location: location.rawValue,
-            expirationDate: expirationDate.map { formatDate($0) },
-            notes: ingredients[index].notes
-        )
-
-        Task {
-            do {
-                try await client
-                    .from("ingredients")
-                    .update(update)
-                    .eq("id", value: id.uuidString)
-                    .execute()
-                rescheduleNotifications()
-            } catch {
-                // Rollback
-                if let idx = ingredients.firstIndex(where: { $0.id == id }) {
-                    ingredients[idx] = previous
+        performOptimistic(
+            apply: {
+                ingredients[index].name = cleaned.lowercased()
+                ingredients[index].amount = cleanedAmount?.isEmpty == true ? nil : cleanedAmount
+                ingredients[index].category = category
+                ingredients[index].location = location
+                ingredients[index].expirationDate = expirationDate
+                ingredients[index].icon = icon
+            },
+            rollback: {
+                if let idx = self.ingredients.firstIndex(where: { $0.id == id }) {
+                    self.ingredients[idx] = previous
                 }
-                self.error = error.localizedDescription
             }
+        ) {
+            let update = IngredientUpdate(
+                name: cleaned.lowercased(),
+                amount: cleanedAmount?.isEmpty == true ? nil : cleanedAmount,
+                category: category.rawValue,
+                location: location.rawValue,
+                expirationDate: expirationDate.map { self.formatDate($0) },
+                notes: self.ingredients[index].notes,
+                icon: icon
+            )
+            try await self.client
+                .from("ingredients")
+                .update(update)
+                .eq("id", value: id.uuidString)
+                .execute()
+            self.rescheduleNotifications()
         }
     }
 
     // MARK: - Use (update amount or delete)
 
     func useIngredient(id: UUID, newAmount: String?) {
-        if let newAmount, !newAmount.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            guard let index = ingredients.firstIndex(where: { $0.id == id }) else { return }
-            let previous = ingredients[index]
-            ingredients[index].amount = newAmount
+        guard let newAmount, !newAmount.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            deleteIngredient(id: id)
+            return
+        }
+        guard let index = ingredients.firstIndex(where: { $0.id == id }) else { return }
+        let previous = ingredients[index]
 
-            Task {
-                do {
-                    try await client
-                        .from("ingredients")
-                        .update(["amount": newAmount])
-                        .eq("id", value: id.uuidString)
-                        .execute()
-                    rescheduleNotifications()
-                } catch {
-                    if let idx = ingredients.firstIndex(where: { $0.id == id }) {
-                        ingredients[idx] = previous
-                    }
-                    self.error = error.localizedDescription
+        performOptimistic(
+            apply: { ingredients[index].amount = newAmount },
+            rollback: {
+                if let idx = self.ingredients.firstIndex(where: { $0.id == id }) {
+                    self.ingredients[idx] = previous
                 }
             }
-        } else {
-            deleteIngredient(id: id)
+        ) {
+            try await self.client
+                .from("ingredients")
+                .update(["amount": newAmount])
+                .eq("id", value: id.uuidString)
+                .execute()
+            self.rescheduleNotifications()
         }
     }
 
@@ -297,21 +385,18 @@ final class PantryStore: ObservableObject {
 
     func deleteIngredient(id: UUID) {
         guard let index = ingredients.firstIndex(where: { $0.id == id }) else { return }
-        let removed = ingredients.remove(at: index)
+        let removed = ingredients[index]
 
-        Task {
-            do {
-                try await client
-                    .from("ingredients")
-                    .delete()
-                    .eq("id", value: id.uuidString)
-                    .execute()
-                rescheduleNotifications()
-            } catch {
-                // Rollback
-                ingredients.insert(removed, at: min(index, ingredients.count))
-                self.error = error.localizedDescription
-            }
+        performOptimistic(
+            apply: { ingredients.remove(at: index) },
+            rollback: { self.ingredients.insert(removed, at: min(index, self.ingredients.count)) }
+        ) {
+            try await self.client
+                .from("ingredients")
+                .delete()
+                .eq("id", value: id.uuidString)
+                .execute()
+            self.rescheduleNotifications()
         }
     }
 
@@ -329,15 +414,13 @@ final class PantryStore: ObservableObject {
         notificationDebounceTask = Task {
             try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
-            await ExpirationNotificationScheduler.rescheduleAll(for: ingredients)
+            await ExpirationNotificationScheduler.rescheduleAll(for: ingredients.filter { !dismissedIngredientIds.contains($0.id) })
         }
     }
 
     // MARK: - Helpers
 
     private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
+        pantryDateFormatter.string(from: date)
     }
 }

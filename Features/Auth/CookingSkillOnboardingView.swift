@@ -1,36 +1,35 @@
 import SwiftUI
+import PhosphorSwift
 
 struct CookingSkillOnboardingView: View {
-    @EnvironmentObject private var session: AppSession
-    let nickname: String
-    let displayName: String
+    @EnvironmentObject private var onboardingAnswers: OnboardingAnswers
+    var onBack: () -> Void
+    var onContinue: () -> Void
 
     @State private var selectedLevel: Int? = nil
-    @State private var isLoading = false
 
-    private let options: [(level: Int, label: String, icon: String)] = [
-        (1, "I cook like I'm in college", "flame"),
-        (2, "I can cook a decent meal", "frying.pan"),
-        (3, "Just call me Gordon Ramsay", "star.fill"),
+    private let options: [(level: Int, label: String, icon: Image)] = [
+        (1, "I'd rather order in", Ph.smileyBlank.regular),
+        (2, "I can cook a decent meal", Ph.cookingPot.regular),
+        (3, "Just call me Gordon Ramsay", Ph.star.fill),
     ]
 
     var body: some View {
         VStack(spacing: 0) {
             ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: DS.Spacing.space4) {
+                VStack(alignment: .leading, spacing: Sourdough.Spacing.screenMargin) {
                     Text("How Well Do You Cook?")
-                        .font(.custom("CalSans-Regular", size: 32))
-                        .kerning(0)
-                        .foregroundStyle(DS.ColorToken.textPrimary)
+                        .foregroundStyle(Sourdough.Colors.ink)
+                        .sourdoughTextStyle(.display)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.top, DS.Spacing.space6)
+                        .padding(.top, Sourdough.Spacing.betweenBlocks)
 
                     Text("We'll tailor recipe complexity to match your skills.")
-                        .font(.custom("Satoshi Variable", size: 15))
-                        .foregroundStyle(DS.ColorToken.textSecondary)
+                        .sourdoughTextStyle(.body)
+                        .foregroundStyle(Sourdough.Colors.mutedInk)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
-                    VStack(spacing: DS.Spacing.space3) {
+                    VStack(spacing: Sourdough.Spacing.rowInternals) {
                         ForEach(options, id: \.level) { option in
                             let isSelected = selectedLevel == option.level
                             Button {
@@ -38,78 +37,73 @@ struct CookingSkillOnboardingView: View {
                                     selectedLevel = option.level
                                 }
                             } label: {
-                                HStack(spacing: DS.Spacing.space3) {
-                                    Image(systemName: option.icon)
-                                        .font(.system(size: 20))
-                                        .foregroundStyle(isSelected ? .white : DS.ColorToken.textSecondary)
+                                HStack(spacing: Sourdough.Spacing.rowInternals) {
+                                    option.icon
+                                        .frame(width: 20, height: 20)
+                                        .foregroundStyle(isSelected ? Sourdough.Colors.onAction : Sourdough.Colors.mutedInk)
                                         .frame(width: 32)
 
                                     Text(option.label)
-                                        .font(.custom("Satoshi Variable", size: 16).weight(.medium))
-                                        .foregroundStyle(isSelected ? .white : DS.ColorToken.textPrimary)
+                                        .foregroundStyle(isSelected ? Sourdough.Colors.onAction : Sourdough.Colors.ink)
+                                        .sourdoughTextStyle(.rowTitle)
 
                                     Spacer()
 
                                     if isSelected {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .font(.system(size: 20))
-                                            .foregroundStyle(.white)
+                                        Ph.checkCircle.fill
+                                            .frame(width: 20, height: 20)
+                                            .foregroundStyle(Sourdough.Colors.onAction)
                                     }
                                 }
-                                .padding(.horizontal, DS.Spacing.space4)
-                                .padding(.vertical, DS.Spacing.space4)
+                                .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                                .padding(.vertical, Sourdough.Spacing.screenMargin)
                                 .background(
                                     isSelected
-                                        ? DS.ColorToken.primary
-                                        : DS.ColorToken.bgSecondary
+                                        ? Sourdough.Ramp.sage500
+                                        : Sourdough.Colors.sunken
                                 )
                                 .overlay(
-                                    RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous)
+                                    RoundedRectangle(cornerRadius: Sourdough.Radius.hero, style: .continuous)
                                         .stroke(
                                             isSelected
                                                 ? Color.clear
-                                                : DS.ColorToken.borderDefault,
+                                                : Sourdough.Colors.interactiveBorder,
                                             lineWidth: 1
                                         )
                                 )
-                                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous))
+                                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.hero, style: .continuous))
                             }
                             .buttonStyle(.plain)
                         }
                     }
-                    .padding(.top, DS.Spacing.space2)
+                    .padding(.top, Sourdough.Spacing.insideChip)
                 }
-                .padding(.horizontal, DS.Spacing.space4)
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
             }
 
-            VStack(spacing: DS.Spacing.space2) {
+            VStack(spacing: Sourdough.Spacing.insideChip) {
                 Button {
-                    completeOnboarding(level: selectedLevel ?? 1)
+                    onBack()
                 } label: {
-                    HStack(spacing: DS.Spacing.space2) {
-                        if isLoading {
-                            ProgressView()
-                                .tint(.white)
-                        }
-                        Text("Continue")
-                    }
-                    .frame(maxWidth: .infinity)
+                    Text("Back")
+                        .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(PrimaryButtonStyle(size: .lg, fullWidth: true))
-                .disabled(selectedLevel == nil || isLoading)
-            }
-            .padding(.horizontal, DS.Spacing.space4)
-            .padding(.bottom, DS.Spacing.space4)
-        }
-        .background(DS.ColorToken.bgPrimary)
-    }
+                .buttonStyle(Sourdough.SecondaryButtonStyle(fullWidth: true))
 
-    private func completeOnboarding(level: Int) {
-        Task {
-            isLoading = true
-            await session.updateCookingSkillLevel(level: level)
-            await session.completeNicknameOnboarding(nickname: nickname, displayName: displayName)
-            isLoading = false
+                Button {
+                    onboardingAnswers.cookingSkillLevel = selectedLevel ?? 1
+                    onContinue()
+                } label: {
+                    Text("Continue")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(Sourdough.PrimaryButtonStyle(fullWidth: true, isDisabled: selectedLevel == nil))
+                .disabled(selectedLevel == nil)
+            }
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .padding(.bottom, Sourdough.Spacing.screenMargin)
         }
+        .background(Sourdough.Colors.canvas)
+        .onAppear { selectedLevel = onboardingAnswers.cookingSkillLevel }
     }
 }

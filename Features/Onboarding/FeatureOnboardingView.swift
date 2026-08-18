@@ -1,5 +1,4 @@
 import SwiftUI
-import UserNotifications
 
 #Preview("Feature Onboarding") {
     PreviewContainer(authenticated: false) {
@@ -13,154 +12,154 @@ struct FeatureOnboardingView: View {
 
     private let pages: [OnboardingPage] = [
         OnboardingPage(
-            icon: "refrigerator.fill",
-            imageName: "STOCK",
-            title: "Your Pantry",
-            description: "Track everything in your kitchen in one place.",
-            color: DS.ColorToken.primary
+            imageName: "PANTRY_MOCKUP",
+            title: "Keep Track of Your Pantry",
+            description: "Log what you have and know when it expires."
         ),
         OnboardingPage(
-            icon: "wand.and.stars",
-            imageName: "PLATES",
+            imageName: "RECIPES_MOCKUP",
             title: "Generate Recipes",
-            description: "Turn leftovers into delicious meals with AI.",
-            color: DS.ColorToken.accent
+            description: "Get recipes using stuff you already have"
         ),
         OnboardingPage(
-            icon: "exclamationmark.triangle.fill",
-            imageName: "EXPIRE",
-            title: "Know Before It Expires",
-            description: "Get notified before ingredients go bad.",
-            color: DS.ColorToken.warning
+            imageName: "COMMUNITY_MOCKUP",
+            title: "Discover & Share",
+            description: "Browse for recipes shared by the community or share your own recipes"
         ),
     ]
 
+    private var isLastPage: Bool { currentPage == pages.count - 1 }
+
     var body: some View {
         VStack(spacing: 0) {
-            Spacer()
-
-            // Page content
-            TabView(selection: $currentPage) {
-                ForEach(Array(pages.enumerated()), id: \.offset) { index, page in
-                    pageView(page, index: index)
-                        .tag(index)
-                }
-            }
-            .tabViewStyle(.page(indexDisplayMode: .never))
-            .frame(height: 340)
-
-            // Page indicators
-            HStack(spacing: DS.Spacing.space2) {
+            // Step progress bar
+            HStack(spacing: Sourdough.Spacing.insideChip) {
                 ForEach(0..<pages.count, id: \.self) { index in
-                    Capsule()
-                        .fill(index == currentPage ? DS.ColorToken.primary : DS.ColorToken.textTertiary)
-                        .frame(width: index == currentPage ? 24 : 8, height: 8)
-                        .animation(DS.Motion.easeOut, value: currentPage)
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(Sourdough.Colors.interactiveBorder)
+                        Capsule()
+                            .fill(Sourdough.Colors.action)
+                            .scaleEffect(x: index <= currentPage ? 1 : 0, anchor: .leading)
+                            .animation(DS.Motion.easeDefault, value: currentPage)
+                    }
+                    .frame(height: 4)
                 }
             }
-            .padding(.top, DS.Spacing.space6)
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .padding(.top, Sourdough.Spacing.screenMargin)
+            .padding(.bottom, Sourdough.Spacing.insideChip)
 
-            Spacer()
-
-            // Footer
-            Group {
-                if currentPage < pages.count - 1 {
-                    HStack {
-                        Button {
-                            session.completeFeatureOnboarding()
-                        } label: {
-                            Text("Skip")
-                        }
-                        .buttonStyle(SecondaryButtonStyle(size: .lg))
-
-                        Spacer()
-
-                        Button {
-                            withAnimation(DS.Motion.easeOut) {
-                                currentPage += 1
-                            }
-                        } label: {
-                            Image(systemName: "arrow.right")
-                        }
-                        .buttonStyle(PrimaryButtonStyle(size: .lg))
-                    }
-                } else {
-                    VStack(spacing: DS.Spacing.space3) {
-                        Button {
-                            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { _, _ in
-                                DispatchQueue.main.async {
-                                    session.completeFeatureOnboarding()
-                                }
-                            }
-                        } label: {
-                            Text("Enable Notifications")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(PrimaryButtonStyle(size: .lg, fullWidth: true))
-
-                        Button {
-                            session.completeFeatureOnboarding()
-                        } label: {
-                            Text("Maybe Later")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(SecondaryButtonStyle(size: .lg))
+            ZStack {
+                ForEach(Array(pages.enumerated()), id: \.offset) { index, page in
+                    if currentPage == index {
+                        OnboardingPageView(page: page)
                     }
                 }
             }
-            .padding(.horizontal, DS.Spacing.space5)
-            .padding(.bottom, DS.Spacing.space8)
+            .animation(DS.Motion.easeDefault, value: currentPage)
         }
-        .background(DS.ColorToken.bgPrimary)
-    }
+        .background(Sourdough.Colors.canvas)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                LinearGradient(
+                    colors: [Sourdough.Colors.canvas.opacity(0), Sourdough.Colors.canvas],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 32)
+                .allowsHitTesting(false)
 
-    private func pageView(_ page: OnboardingPage, index: Int) -> some View {
-        VStack(spacing: DS.Spacing.space5) {
-            if let imageName = page.imageName,
-               let uiImage = UIImage(named: imageName) {
+                Button {
+                    if isLastPage {
+                        session.completeFeatureOnboarding()
+                    } else {
+                        withAnimation(DS.Motion.easeDefault) {
+                            currentPage += 1
+                        }
+                    }
+                } label: {
+                    Text(isLastPage ? "Start Cooking" : "Continue")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(Sourdough.PrimaryButtonStyle(fullWidth: true))
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                .padding(.top, Sourdough.Spacing.insideChip)
+                .padding(.bottom, Sourdough.Spacing.aboveSectionHead)
+                .background(Sourdough.Colors.canvas)
+            }
+        }
+    }
+}
+
+private struct OnboardingPageView: View {
+    let page: OnboardingPage
+    @State private var appeared = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if let uiImage = UIImage(named: page.imageName) {
                 Image(uiImage: uiImage)
                     .resizable()
                     .scaledToFit()
-                    .frame(height: 200)
-                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg))
-            } else {
-                ZStack {
-                    Circle()
-                        .fill(page.color.opacity(0.12))
-                        .frame(width: 100, height: 100)
-
-                    Image(systemName: page.icon)
-                        .font(.system(size: 40, weight: .medium))
-                        .foregroundStyle(page.color)
-                }
+                    .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                    .padding(.top, Sourdough.Spacing.aboveSectionHead)
+                    .frame(maxWidth: .infinity, maxHeight: 480)
+                    .background {
+                        Ellipse()
+                            .fill(
+                                RadialGradient(
+                                    colors: [
+                                        Sourdough.Colors.action.opacity(0.5),
+                                        Sourdough.Ramp.sage500.opacity(0.3),
+                                        Color.clear
+                                    ],
+                                    center: .center,
+                                    startRadius: 10,
+                                    endRadius: 180
+                                )
+                            )
+                            .blur(radius: 55)
+                            .scaleEffect(x: 1.0, y: 0.75)
+                    }
+                    .opacity(appeared ? 1 : 0)
+                    .offset(y: appeared ? 0 : 28)
+                    .animation(.timingCurve(0, 0, 0.2, 1, duration: 0.5).delay(0.08), value: appeared)
             }
 
-            VStack(spacing: DS.Spacing.space3) {
+            Spacer()
+
+            VStack(spacing: Sourdough.Spacing.rowInternals) {
                 Text(page.title)
-                    .font(.custom("CalSans-Regular", size: 28))
-                    .kerning(0)
-                    .foregroundStyle(DS.ColorToken.textPrimary)
+                    .foregroundStyle(Sourdough.Colors.ink)
+                    .sourdoughTextStyle(.display)
                     .multilineTextAlignment(.center)
+                    .opacity(appeared ? 1 : 0)
+                    .offset(y: appeared ? 0 : 28)
+                    .animation(.timingCurve(0, 0, 0.2, 1, duration: 0.5).delay(0.2), value: appeared)
 
                 Text(page.description)
-                    .appTextStyle(.body)
-                    .foregroundStyle(DS.ColorToken.textSecondary)
+                    .sourdoughTextStyle(.body)
+                    .foregroundStyle(Sourdough.Colors.mutedInk)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 300)
+                    .opacity(appeared ? 1 : 0)
+                    .offset(y: appeared ? 0 : 28)
+                    .animation(.timingCurve(0, 0, 0.2, 1, duration: 0.5).delay(0.3), value: appeared)
             }
+            .padding(.top, Sourdough.Spacing.aboveSectionHead)
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .padding(.bottom, Sourdough.Spacing.aboveSectionHead)
         }
-        .opacity(currentPage == index ? 1 : 0)
-        .offset(y: currentPage == index ? 0 : 12)
-        .animation(.easeOut(duration: 0.4), value: currentPage)
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, DS.Spacing.space5)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Sourdough.Colors.canvas)
+        .onAppear { appeared = true }
+        .onDisappear { appeared = false }
     }
 }
 
 private struct OnboardingPage {
-    let icon: String
-    var imageName: String? = nil
+    let imageName: String
     let title: String
     let description: String
-    let color: Color
 }

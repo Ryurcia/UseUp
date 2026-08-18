@@ -1,10 +1,5 @@
 import Foundation
 
-enum AIProvider: String {
-    case gemini
-    case sonnet
-}
-
 enum AIConfig {
     static var geminiAPIKey: String {
         guard let key = Bundle.main.infoDictionary?["GeminiAPIKey"] as? String, !key.isEmpty else {
@@ -12,8 +7,4 @@ enum AIConfig {
         }
         return key
     }
-
-    static let anthropicAPIKey = "YOUR_ANTHROPIC_API_KEY"
-
-    static var activeProvider: AIProvider { .gemini }
 }

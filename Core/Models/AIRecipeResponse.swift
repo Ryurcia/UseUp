@@ -14,9 +14,10 @@ struct AIRecipe: Codable {
     let missingIngredients: [AIIngredient]
     let steps: [String]
     let macros: AIMacros
+    let substitutions: [AISubstitution]?
 
     enum CodingKeys: String, CodingKey {
-        case title, summary, servings, cuisine, steps, macros
+        case title, summary, servings, cuisine, steps, macros, substitutions
         case timeMinutes = "time_minutes"
         case ingredientsUsed = "ingredients_used"
         case missingIngredients = "missing_ingredients"
@@ -40,6 +41,10 @@ struct AIRecipe: Codable {
             fatG: macros.fatG
         )
 
+        let subs = (substitutions ?? []).map {
+            RecipeSubstitution(ingredient: $0.ingredient, substitute: $0.substitute, note: $0.note)
+        }
+
         return Recipe(
             title: title,
             summary: summary,
@@ -53,9 +58,16 @@ struct AIRecipe: Codable {
             isUserShared: false,
             cuisine: recipeCuisine,
             rating: 0,
-            isAIGenerated: true
+            isAIGenerated: true,
+            substitutions: subs
         )
     }
+}
+
+struct AISubstitution: Codable {
+    let ingredient: String
+    let substitute: String
+    let note: String
 }
 
 struct AIIngredient: Codable {

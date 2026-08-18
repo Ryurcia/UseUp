@@ -17,7 +17,6 @@ struct PreviewContainer<Content: View>: View {
         session.hasSeenGetStarted = authenticated
         session.isAuthenticated = authenticated
         if authenticated {
-            session.currentUserPhone = "+15550001234"
             session.currentUserNickname = "Chef"
             session.currentUserDisplayName = "Chef"
         }

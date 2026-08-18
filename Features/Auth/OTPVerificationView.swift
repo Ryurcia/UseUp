@@ -1,12 +1,15 @@
 import SwiftUI
+import PhosphorSwift
 
 struct OTPVerificationView: View {
     @EnvironmentObject private var session: AppSession
     @Environment(\.dismiss) private var dismiss
-    let phoneNumber: String
+    let email: String
+    var onboardingAnswers: OnboardingAnswers? = nil
     @State private var otpDigits: [String] = Array(repeating: "", count: 6)
     @State private var isLoading = false
     @State private var showNicknameOnboarding = false
+    @State private var showRetrySave = false
     @FocusState private var focusedIndex: Int?
 
     private var otpCode: String {
@@ -18,86 +21,105 @@ struct OTPVerificationView: View {
     }
 
     var body: some View {
-        VStack(spacing: DS.Spacing.space6) {
+        VStack(spacing: Sourdough.Spacing.betweenBlocks) {
             Spacer(minLength: 0)
 
-            // Icon
-            Image(systemName: "checkmark.circle")
-                .font(.system(size: 48))
-                .foregroundStyle(DS.ColorToken.primary)
-                .padding(.bottom, DS.Spacing.space2)
+            Ph.envelope.regular
+                .frame(width: 48, height: 48)
+                .foregroundStyle(Sourdough.Colors.actionInk)
+                .padding(.bottom, Sourdough.Spacing.insideChip)
 
-            // Header
-            VStack(spacing: DS.Spacing.space2) {
-                Text("Verify Your Number")
-                    .font(.custom("CalSans-Regular", size: 32))
-                    .kerning(0)
-                    .foregroundStyle(DS.ColorToken.textPrimary)
+            VStack(spacing: Sourdough.Spacing.insideChip) {
+                Text("Verify Your Email")
+                    .foregroundStyle(Sourdough.Colors.ink)
+                    .sourdoughTextStyle(.display)
 
-                Text("We sent a 6-digit code to\n\(phoneNumber)")
-                    .font(.system(size: 14, weight: .regular))
-                    .foregroundStyle(DS.ColorToken.textSecondary)
+                Text("We sent a 6-digit code to\n\(email)")
+                    .sourdoughTextStyle(.subhead)
                     .multilineTextAlignment(.center)
             }
 
-            // OTP Fields
-            HStack(spacing: DS.Spacing.space2) {
+            HStack(spacing: Sourdough.Spacing.insideChip) {
                 ForEach(0..<6, id: \.self) { index in
                     otpField(index: index)
                 }
             }
-            .padding(.vertical, DS.Spacing.space2)
+            .padding(.vertical, Sourdough.Spacing.insideChip)
 
-            // Error
             if let error = session.authError {
-                Text(error)
-                    .appTextStyle(.bodySM)
-                    .foregroundStyle(DS.ColorToken.error)
-                    .padding(.horizontal, DS.Spacing.space3)
-                    .padding(.vertical, DS.Spacing.space2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(DS.ColorToken.errorLight)
-                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                AuthErrorBanner(message: error)
             }
 
-            // Verify button
-            Button {
-                Task {
-                    isLoading = true
-                    await session.verifyOTP(phone: phoneNumber, token: otpCode)
-                    isLoading = false
-                    if session.requiresNicknameOnboarding {
-                        showNicknameOnboarding = true
-                    } else if session.isAuthenticated {
-                        dismiss()
-                    }
+            if showRetrySave {
+                if let error = session.onboardingSaveError {
+                    AuthErrorBanner(message: error)
                 }
-            } label: {
-                HStack(spacing: DS.Spacing.space2) {
-                    if isLoading {
-                        ProgressView()
-                            .tint(.white)
+
+                Button {
+                    Task {
+                        isLoading = true
+                        if let onboardingAnswers {
+                            let saved = await session.saveOnboardingAnswers(onboardingAnswers)
+                            showRetrySave = !saved
+                        }
+                        isLoading = false
+                        if !showRetrySave {
+                            if session.requiresNicknameOnboarding {
+                                showNicknameOnboarding = true
+                            } else if session.isAuthenticated {
+                                dismiss()
+                            }
+                        }
                     }
-                    Text("Verify")
+                } label: {
+                    HStack(spacing: Sourdough.Spacing.insideChip) {
+                        if isLoading { ProgressView().tint(.white) }
+                        Text("Retry")
+                    }
+                    .frame(maxWidth: .infinity)
                 }
-                .frame(maxWidth: .infinity)
+                .buttonStyle(Sourdough.PrimaryButtonStyle(fullWidth: true, isDisabled: isLoading))
+                .disabled(isLoading)
+            } else {
+                Button {
+                    Task {
+                        isLoading = true
+                        await session.verifyEmailOTP(email: email, token: otpCode)
+                        if session.authError == nil, let onboardingAnswers {
+                            let saved = await session.saveOnboardingAnswers(onboardingAnswers)
+                            showRetrySave = !saved
+                        }
+                        isLoading = false
+                        if !showRetrySave {
+                            if session.requiresNicknameOnboarding {
+                                showNicknameOnboarding = true
+                            } else if session.isAuthenticated {
+                                dismiss()
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: Sourdough.Spacing.insideChip) {
+                        if isLoading { ProgressView().tint(.white) }
+                        Text("Verify")
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(Sourdough.PrimaryButtonStyle(fullWidth: true, isDisabled: !canVerify))
+                .disabled(!canVerify)
             }
-            .buttonStyle(PrimaryButtonStyle(size: .lg, fullWidth: true))
-            .disabled(!canVerify)
 
             Spacer(minLength: 0)
         }
         .frame(maxWidth: 420)
         .frame(maxWidth: .infinity)
-        .padding(.horizontal, DS.Spacing.space5)
-        .background(DS.ColorToken.bgPrimary)
+        .padding(.horizontal, Sourdough.Spacing.screenMargin)
+        .background(Sourdough.Colors.canvas)
         .toolbar(.hidden, for: .navigationBar)
-        .onAppear {
-            focusedIndex = 0
-        }
+        .onAppear { focusedIndex = 0 }
         .fullScreenCover(isPresented: $showNicknameOnboarding) {
             NavigationStack {
-                ProfileOnboardingContainerView()
+                NicknameSetupView()
                     .environmentObject(session)
             }
         }
@@ -108,39 +130,33 @@ struct OTPVerificationView: View {
             .keyboardType(.numberPad)
             .textContentType(.oneTimeCode)
             .multilineTextAlignment(.center)
-            .font(.custom("CalSans-Regular", size: 24))
-            .foregroundStyle(DS.ColorToken.textPrimary)
+            .font(Font(Sourdough.SDFont.uiFont(family: .figtree, size: 24, weight: 700) as CTFont))
+            .monospacedDigit()
+            .foregroundStyle(Sourdough.Colors.ink)
             .frame(width: 48, height: 56)
-            .background(DS.ColorToken.bgSecondary)
+            .background(Sourdough.Colors.sunken)
             .overlay(
-                RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
+                RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous)
                     .stroke(
-                        focusedIndex == index ? DS.ColorToken.primary : DS.ColorToken.borderDefault,
+                        focusedIndex == index ? Sourdough.Colors.action : Sourdough.Colors.interactiveBorder,
                         lineWidth: focusedIndex == index ? 2 : 1
                     )
             )
-            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
             .focused($focusedIndex, equals: index)
             .onChange(of: otpDigits[index]) { _, newValue in
-                // Filter non-numeric characters
                 let filtered = newValue.filter(\.isNumber)
                 if filtered != newValue {
                     otpDigits[index] = filtered
                     return
                 }
-
-                // Handle paste: distribute digits across fields
                 if filtered.count > 1 {
                     distributePastedCode(filtered, startingAt: index)
                     return
                 }
-
-                // Auto-advance to next field
                 if !filtered.isEmpty && index < 5 {
                     focusedIndex = index + 1
                 }
-
-                // Continuous backspace: move focus to previous cell
                 if filtered.isEmpty && index > 0 {
                     focusedIndex = index - 1
                 }
@@ -151,11 +167,8 @@ struct OTPVerificationView: View {
         let digits = Array(code.prefix(6 - startingAt))
         for (offset, digit) in digits.enumerated() {
             let targetIndex = startingAt + offset
-            if targetIndex < 6 {
-                otpDigits[targetIndex] = String(digit)
-            }
+            if targetIndex < 6 { otpDigits[targetIndex] = String(digit) }
         }
-        let nextIndex = min(startingAt + digits.count, 5)
-        focusedIndex = nextIndex
+        focusedIndex = min(startingAt + digits.count, 5)
     }
 }

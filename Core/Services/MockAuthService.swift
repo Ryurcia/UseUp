@@ -1,14 +1,22 @@
 import Foundation
 
 final class MockAuthService: AuthServicing {
-    func sendOTP(phone: String) async throws {
+    func signUp(email: String, password: String) async throws -> AppUser {
         try await Task.sleep(for: .milliseconds(500))
+        return AppUser(id: UUID(), email: email, phone: nil)
     }
 
-    func verifyOTP(phone: String, token: String) async throws -> AppUser {
+    func signIn(email: String, password: String) async throws -> AppUser {
         try await Task.sleep(for: .milliseconds(500))
-        return AppUser(id: UUID(), email: nil, phone: phone)
+        return AppUser(id: UUID(), email: email, phone: nil)
+    }
+
+    func verifyEmailOTP(email: String, token: String) async throws -> AppUser {
+        try await Task.sleep(for: .milliseconds(500))
+        return AppUser(id: UUID(), email: email, phone: nil)
     }
 
     func signOut() {}
+
+    func deleteAccount() async throws {}
 }

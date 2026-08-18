@@ -1,4 +1,5 @@
 import SwiftUI
+import PhosphorSwift
 
 struct PasteURLSheet: View {
     var onImported: (RecipeImportData) -> Void
@@ -12,15 +13,14 @@ struct PasteURLSheet: View {
 
     var body: some View {
         VStack(spacing: DS.Spacing.space4) {
-            Spacer()
-
             VStack(alignment: .leading, spacing: DS.Spacing.space2) {
                 Text("Recipe URL")
                     .font(.custom("Satoshi Variable", size: 13).weight(.medium))
                     .foregroundStyle(DS.ColorToken.textSecondary)
 
                 HStack(spacing: DS.Spacing.space2) {
-                    Image(systemName: "link")
+                    Ph.link.regular
+                        .frame(width: 18, height: 18)
                         .foregroundStyle(DS.ColorToken.textTertiary)
                     TextField("https://", text: $urlText)
                         .keyboardType(.URL)
@@ -31,7 +31,8 @@ struct PasteURLSheet: View {
                         .onSubmit { importURL() }
                     if !urlText.isEmpty {
                         Button { urlText = "" } label: {
-                            Image(systemName: "xmark.circle.fill")
+                            Ph.xCircle.fill
+                                .frame(width: 18, height: 18)
                                 .foregroundStyle(DS.ColorToken.textTertiary)
                         }
                         .buttonStyle(.plain)
@@ -74,8 +75,6 @@ struct PasteURLSheet: View {
             }
             .buttonStyle(.plain)
             .disabled(urlText.trimmingCharacters(in: .whitespaces).isEmpty || isLoading)
-
-            Spacer()
         }
         .padding(.horizontal, DS.Spacing.space5)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

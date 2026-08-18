@@ -1,5 +1,6 @@
 import SwiftUI
-import RevenueCatUI
+import Lottie
+import PhosphorSwift
 
 struct GenerateView: View {
     @EnvironmentObject private var pantryStore: PantryStore
@@ -13,34 +14,63 @@ struct GenerateView: View {
     @State private var debouncedSearch = ""
     @State private var searchDebounceTask: Task<Void, Never>?
     @State private var generationTask: Task<Void, Never>?
-    @State private var selectedStorageFilters: Set<GenStorageFilter> = []
+    @State private var selectedStorageFilters: Set<IngredientStorageFilter> = []
     @State private var selectedCategories: Set<GenCategory> = []
+    @State private var cachedFilteredIngredients: [Ingredient] = []
     @State private var showingFilterSheet = false
     @State private var options = GenerationOptions()
     @State private var recipes: [Recipe] = []
     @State private var isLoading = false
-    @State private var errorText: String?
+    @State private var generationError: Error?
     @State private var step: GenerateStep = .selectIngredients
-    @State private var noneRestrictions = true
+    @State private var hasNoRestrictions = true
+    @State private var selectedAllergies: Set<AllergyType> = []
+    @State private var customAllergy: String = ""
+    @State private var showAllergyOtherField = false
     @State private var showingSettings = false
     @State private var showPaywall = false
+    @State private var goForward = true
+    @State private var caloriesEnabled: Bool = false
+    @State private var loadingPhraseIndex: Int = 0
+
+    private static let loadingPhrases: [String] = [
+        "Let me cook...",
+        "Checking your pantry...",
+        "Crafting the perfect dishes...",
+        "Balancing the flavors...",
+        "Almost ready...",
+    ]
+
+    private var isInOptionsFlow: Bool {
+        switch step {
+        case .selectDiet, .selectRestrictions, .selectAllergies, .selectCookTime, .selectCuisine:
+            return true
+        default:
+            return false
+        }
+    }
 
     private var hasActiveFilters: Bool {
         !selectedStorageFilters.isEmpty || !selectedCategories.isEmpty
     }
 
     private var isLimitExhausted: Bool {
-        !session.isPremium && activityStore.generationsThisWeek >= 10
+        if session.isPremium {
+            return activityStore.generationsToday >= 5
+        }
+        return activityStore.generationsThisWeek >= 3
     }
 
-    private var filteredIngredients: [Ingredient] {
-        pantryStore.ingredients
+    // Cached filter result — recomputed via recomputeFilteredIngredients() on relevant changes,
+    // not on every body render (filter + O(n log n) sort).
+    private func recomputeFilteredIngredients() {
+        cachedFilteredIngredients = pantryStore.ingredients
             .filter { ingredient in
                 let trimmed = debouncedSearch.trimmingCharacters(in: .whitespacesAndNewlines)
                 let matchesSearch = trimmed.isEmpty || ingredient.name.localizedCaseInsensitiveContains(trimmed)
                 let matchesCategory = selectedCategories.isEmpty || selectedCategories.contains { $0.matches(ingredient: ingredient) }
                 let matchesStorage = selectedStorageFilters.isEmpty || selectedStorageFilters.contains { $0.matches(ingredient: ingredient) }
-                return matchesSearch && matchesCategory && matchesStorage
+                return !ingredient.isExpired && matchesSearch && matchesCategory && matchesStorage
             }
             .sorted { lhs, rhs in
                 switch (lhs.expirationDate, rhs.expirationDate) {
@@ -52,67 +82,78 @@ struct GenerateView: View {
             }
     }
 
+    private var freeCuisines: Set<Cuisine> {
+        [.american, .asian, .caribbean, .french, .greek, .indian, .italian, .mediterranean, .middleEastern, .spanish]
+    }
+
+    private var sortedCuisines: [Cuisine] {
+        Cuisine.allCases.filter { $0 != .other }.sorted { lhs, rhs in
+            if !session.isPremium {
+                let lhsFree = freeCuisines.contains(lhs)
+                let rhsFree = freeCuisines.contains(rhs)
+                if lhsFree != rhsFree { return lhsFree }
+            }
+            return false
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: DS.Spacing.space4) {
-                Text("Generate")
-                    .font(.custom("CalSans-Regular", size: 28))
-                    .foregroundStyle(DS.ColorToken.textPrimary)
+            if !isInOptionsFlow {
+                HStack(spacing: Sourdough.Spacing.screenMargin) {
+                    Text("Generate")
+                        .foregroundStyle(Sourdough.Colors.ink)
+                        .sourdoughTextStyle(.title1)
 
-                Spacer()
+                    Spacer()
 
-                Button { showingSettings = true } label: {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 22, weight: .regular))
-                        .foregroundStyle(DS.ColorToken.textSecondary)
+                    Button { showingSettings = true } label: {
+                        Ph.gear.regular
+                            .frame(width: 22, height: 22)
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                    }
+                    .buttonStyle(.plain)
+                    NotificationBellButton()
+                    ProfileNavButton()
                 }
-                .buttonStyle(.plain)
-                NotificationBellButton()
-                ProfileNavButton()
-            }
-            .padding(.horizontal, DS.Spacing.space5)
-            .padding(.top, DS.Spacing.space3)
-            .padding(.bottom, DS.Spacing.space2)
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                .padding(.top, Sourdough.Spacing.rowInternals)
+                .padding(.bottom, Sourdough.Spacing.iconToLabel)
 
-            if !session.isPremium {
-                generationLimitBanner
+                generationCountRow
+                    .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                    .padding(.bottom, Sourdough.Spacing.insideChip)
             }
 
-            switch step {
-            case .selectIngredients:
-                ingredientSelectionView
-            case .dietType:
-                dietTypeView
-            case .dietaryRestrictions:
-                dietaryRestrictionsView
-            case .cookingTime:
-                cookingTimeView
-            case .calorieTarget:
-                calorieTargetView
-            case .cuisineType:
-                cuisineTypeView
-            case .loading:
-                generatingView
-            case .results:
-                resultsView
+            Group {
+                switch step {
+                case .selectIngredients:  ingredientSelectionView
+                case .options:            optionsStepView
+                case .selectDiet:         dietSelectView
+                case .selectRestrictions: restrictionsSelectView
+                case .selectAllergies:    allergiesSelectView
+                case .selectCookTime:     cookTimeSelectView
+                case .selectCuisine:      cuisineSelectView
+                case .loading:            generatingView
+                case .results:            resultsView
+                }
             }
+            .id(step)
+            .transition(pageTransition)
         }
-        .background(DS.ColorToken.bgPrimary)
+        .clipped()
+        .background(Sourdough.Colors.canvas)
+        .preference(key: HideTabBarKey.self, value: isInOptionsFlow)
         .safeAreaInset(edge: .bottom) {
-            Color.clear.frame(height: 80)
+            Color.clear.frame(height: isInOptionsFlow ? 0 : 80)
         }
         .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showingSettings) {
             NavigationStack { SettingsView() }
+                .preferredColorScheme(session.preferredColorScheme)
         }
         .sheet(isPresented: $showPaywall) {
-            PaywallView()
-                .onPurchaseCompleted { _ in
-                    showPaywall = false
-                }
-                .onRestoreCompleted { _ in
-                    showPaywall = false
-                }
+            UseUpPaywallView { showPaywall = false }
         }
         .sheet(isPresented: $showingFilterSheet) {
             GenFilterSheet(
@@ -123,16 +164,35 @@ struct GenerateView: View {
         }
         .task {
             await activityStore.fetchGenerationsThisWeek()
-            if isLimitExhausted { showPaywall = true }
-        }
-        .onChange(of: activityStore.generationsThisWeek) { _, _ in
-            if isLimitExhausted { showPaywall = true }
+            await activityStore.fetchGenerationsToday()
         }
         .onAppear {
             options.dietType = session.currentUserDietaryPreference
             options.dietaryRestrictions = session.currentUserDietaryRestrictions
             options.skillLevel = session.currentUserCookingSkillLevel
-            noneRestrictions = options.dietaryRestrictions.isEmpty
+            hasNoRestrictions = options.dietaryRestrictions.isEmpty
+            selectedAllergies = session.currentUserAllergies
+            customAllergy = session.currentUserCustomAllergy
+            showAllergyOtherField = !session.currentUserCustomAllergy.isEmpty
+            recomputeFilteredIngredients()
+        }
+        .onChange(of: pantryStore.ingredients) { _, _ in
+            recomputeFilteredIngredients()
+        }
+        .onChange(of: debouncedSearch) { _, _ in
+            recomputeFilteredIngredients()
+        }
+        .onChange(of: selectedCategories) { _, _ in
+            recomputeFilteredIngredients()
+        }
+        .onChange(of: selectedStorageFilters) { _, _ in
+            recomputeFilteredIngredients()
+        }
+        .onChange(of: session.requestedIngredientID) { _, id in
+            guard let id else { return }
+            session.requestedIngredientID = nil
+            guard let ingredient = pantryStore.ingredients.first(where: { $0.id == id }), !ingredient.isExpired else { return }
+            selectedIngredientIDs = [id]
         }
         .onChange(of: searchText) { _, newValue in
             searchDebounceTask?.cancel()
@@ -144,140 +204,218 @@ struct GenerateView: View {
         }
     }
 
-    private func goToStep(_ newStep: GenerateStep) {
-        withAnimation(.easeInOut(duration: 0.25)) {
+    private var pageTransition: AnyTransition {
+        .asymmetric(
+            insertion: .move(edge: goForward ? .trailing : .leading),
+            removal: .move(edge: goForward ? .leading : .trailing)
+        )
+    }
+
+    private func goToStep(_ newStep: GenerateStep, forward: Bool = true) {
+        goForward = forward
+        withAnimation(.easeInOut(duration: 0.3)) {
             step = newStep
         }
     }
 
     // MARK: - Step 1: Ingredient Selection
 
+    private var categoryChipsRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Sourdough.Spacing.insideChip) {
+                categoryChip(label: "All", isSelected: selectedCategories.isEmpty) {
+                    selectedCategories.removeAll()
+                }
+                ForEach(GenCategory.allCases) { category in
+                    categoryChip(label: category.label, isSelected: selectedCategories.contains(category)) {
+                        if selectedCategories.count == 1 && selectedCategories.contains(category) {
+                            selectedCategories.removeAll()
+                        } else {
+                            selectedCategories = [category]
+                        }
+                    }
+                }
+            }
+        }
+        .mask(
+            LinearGradient(
+                stops: [
+                    .init(color: .black, location: 0),
+                    .init(color: .black, location: 0.8),
+                    .init(color: .clear, location: 1.0)
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        )
+    }
+
+    private func categoryChip(label: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .foregroundStyle(isSelected ? Sourdough.Colors.onAction : Sourdough.Colors.mutedInk)
+                .sourdoughTextStyle(.caption)
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                .padding(.vertical, Sourdough.Spacing.insideChip)
+                .background(isSelected ? Sourdough.Ramp.sage500 : Sourdough.Colors.sunken)
+                .overlay(
+                    Capsule()
+                        .stroke(isSelected ? Color.clear : Sourdough.Colors.interactiveBorder, lineWidth: 1)
+                )
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
     private var ingredientSelectionView: some View {
         VStack(spacing: 0) {
-            VStack(spacing: DS.Spacing.space3) {
+            VStack(spacing: Sourdough.Spacing.rowInternals) {
                 Text("Select the ingredients you'd like to use")
-                    .font(.custom("Satoshi Variable", size: 15))
-                    .foregroundStyle(DS.ColorToken.textSecondary)
+                    .foregroundStyle(Sourdough.Colors.mutedInk)
+                    .sourdoughTextStyle(.body)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                HStack(spacing: DS.Spacing.space2) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(DS.ColorToken.textTertiary)
+                HStack(spacing: Sourdough.Spacing.insideChip) {
+                    Ph.magnifyingGlass.regular
+                        .frame(width: 18, height: 18)
+                        .foregroundStyle(Sourdough.Colors.faintInk)
 
                     TextField("Search ingredients", text: $searchText)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .appTextStyle(.body)
-                        .foregroundStyle(DS.ColorToken.textPrimary)
+                        .foregroundStyle(Sourdough.Colors.ink)
+                        .sourdoughTextStyle(.body)
                 }
-                .padding(.horizontal, DS.Spacing.space3)
+                .padding(.horizontal, Sourdough.Spacing.rowInternals)
                 .frame(height: 44)
-                .background(DS.ColorToken.bgSecondary)
-                .overlay(
-                    RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
-                        .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                .background(Sourdough.Colors.sunken)
+                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+
+                categoryChipsRow
 
                 HStack {
-                    Text("\(selectedIngredientIDs.count) selected")
-                        .font(.custom("Satoshi Variable", size: 14))
-                        .foregroundStyle(DS.ColorToken.textSecondary)
+                    Text("\(cachedFilteredIngredients.count) item\(cachedFilteredIngredients.count == 1 ? "" : "s")")
+                        .foregroundStyle(Sourdough.Colors.mutedInk)
+                        .sourdoughTextStyle(.numeric)
 
                     if !selectedIngredientIDs.isEmpty {
                         Button("Clear") {
                             selectedIngredientIDs.removeAll()
                         }
-                        .font(.custom("Satoshi Variable", size: 13))
-                        .foregroundStyle(DS.ColorToken.primary)
+                        .foregroundStyle(Sourdough.Colors.actionInk)
+                        .sourdoughTextStyle(.caption)
                         .buttonStyle(.plain)
                     }
 
                     Spacer()
 
+                    if !selectedIngredientIDs.isEmpty {
+                        Text("\(selectedIngredientIDs.count)/15")
+                            .foregroundStyle(selectedIngredientIDs.count >= 15 ? Sourdough.Colors.destructive : Sourdough.Colors.mutedInk)
+                            .sourdoughTextStyle(.numeric)
+                    }
+
                     Button { showingFilterSheet = true } label: {
-                        Image(systemName: hasActiveFilters
-                              ? "line.3.horizontal.decrease.circle.fill"
-                              : "line.3.horizontal.decrease")
-                            .font(.system(size: 18, weight: .medium))
-                            .foregroundStyle(
-                                hasActiveFilters
-                                    ? DS.ColorToken.primary
-                                    : DS.ColorToken.textSecondary
-                            )
+                        Group {
+                            if hasActiveFilters {
+                                Ph.fadersHorizontal.fill
+                            } else {
+                                Ph.fadersHorizontal.regular
+                            }
+                        }
+                        .frame(width: 18, height: 18)
+                        .foregroundStyle(
+                            hasActiveFilters
+                                ? Sourdough.Ramp.sage600
+                                : Sourdough.Colors.mutedInk
+                        )
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, DS.Spacing.space5)
-            .padding(.top, DS.Spacing.space3)
-            .padding(.bottom, DS.Spacing.space3)
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .padding(.top, Sourdough.Spacing.rowInternals)
+            .padding(.bottom, Sourdough.Spacing.rowInternals)
 
             if pantryStore.ingredients.isEmpty {
                 Spacer()
                 Text("Your pantry is empty.\nAdd ingredients from the Pantry tab first.")
-                    .appTextStyle(.bodySM)
-                    .foregroundStyle(DS.ColorToken.textSecondary)
+                    .foregroundStyle(Sourdough.Colors.mutedInk)
+                    .sourdoughTextStyle(.subhead)
                     .multilineTextAlignment(.center)
                 Spacer()
-            } else if filteredIngredients.isEmpty {
+            } else if cachedFilteredIngredients.isEmpty {
                 Spacer()
                 Text("No ingredients match your filters.")
-                    .appTextStyle(.bodySM)
-                    .foregroundStyle(DS.ColorToken.textSecondary)
+                    .foregroundStyle(Sourdough.Colors.mutedInk)
+                    .sourdoughTextStyle(.subhead)
                 Spacer()
             } else {
                 ScrollView(showsIndicators: false) {
-                    LazyVStack(spacing: DS.Spacing.space2) {
-                        ForEach(filteredIngredients) { item in
+                    LazyVStack(spacing: Sourdough.Spacing.insideChip) {
+                        ForEach(cachedFilteredIngredients) { item in
                             ingredientSelectRow(item)
                         }
                     }
-                    .padding(.horizontal, DS.Spacing.space5)
-                    .padding(.bottom, DS.Spacing.space16)
+                    .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                    .padding(.bottom, Sourdough.Spacing.underTitle + Sourdough.Spacing.underTitle / 3)
                 }
                 .disabled(isLimitExhausted)
                 .opacity(isLimitExhausted ? 0.4 : 1)
                 .overlay(alignment: .bottom) {
                     LinearGradient(
-                        colors: [DS.ColorToken.bgPrimary, DS.ColorToken.bgPrimary.opacity(0)],
+                        colors: [Sourdough.Colors.canvas, Sourdough.Colors.canvas.opacity(0)],
                         startPoint: .bottom,
                         endPoint: .top
                     )
                     .frame(height: 48)
                     .allowsHitTesting(false)
                 }
+                .overlay {
+                    if isLimitExhausted && !session.isPremium {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture { showPaywall = true }
+                    }
+                }
             }
 
             if isLimitExhausted {
-                Button { showPaywall = true } label: {
-                    HStack(spacing: DS.Spacing.space2) {
-                        Image(systemName: "sparkles")
-                            .font(.system(size: 14, weight: .semibold))
-                        Text("Upgrade to Pro for unlimited recipes")
-                            .font(.custom("Satoshi Variable", size: 16))
-                    }
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 52)
-                    .background(
-                        LinearGradient(
-                            colors: [DS.ColorToken.berry, DS.ColorToken.lavender],
-                            startPoint: .topTrailing,
-                            endPoint: .bottomLeading
+                if session.isPremium {
+                    proResetTimerView
+                        .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                        .padding(.bottom, Sourdough.Spacing.rowInternals)
+                } else {
+                    Button { showPaywall = true } label: {
+                        HStack(spacing: Sourdough.Spacing.insideChip) {
+                            Ph.sparkle.regular
+                                .frame(width: 14, height: 14)
+                            Text("Upgrade to Pro for more generations")
+                                .foregroundStyle(Sourdough.Colors.onAction)
+                                .sourdoughTextStyle(.rowTitle)
+                        }
+                        .foregroundStyle(Sourdough.Colors.onAction)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 52)
+                        .background(
+                            LinearGradient(
+                                colors: [Sourdough.Colors.action, Sourdough.Ramp.terracotta400],
+                                startPoint: .topTrailing,
+                                endPoint: .bottomLeading
+                            )
                         )
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                    .padding(.bottom, Sourdough.Spacing.rowInternals)
                 }
-                .buttonStyle(.plain)
-                .padding(.horizontal, DS.Spacing.space5)
-                .padding(.bottom, DS.Spacing.space4)
             } else {
                 stepButton(label: "Continue with \(selectedIngredientIDs.count) ingredient\(selectedIngredientIDs.count == 1 ? "" : "s")", disabled: selectedIngredientIDs.isEmpty) {
-                    goToStep(.dietType)
+                    goToStep(.options)
                 }
-                .padding(.horizontal, DS.Spacing.space5)
-                .padding(.bottom, DS.Spacing.space4)
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                .padding(.bottom, Sourdough.Spacing.rowInternals)
             }
         }
     }
@@ -285,585 +423,152 @@ struct GenerateView: View {
     private func ingredientSelectRow(_ item: Ingredient) -> some View {
         let isSelected = selectedIngredientIDs.contains(item.id)
 
-        return Button {
-            if isSelected {
-                selectedIngredientIDs.remove(item.id)
-            } else {
-                selectedIngredientIDs.insert(item.id)
-            }
-        } label: {
-            HStack(spacing: DS.Spacing.space3) {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 22))
-                    .foregroundStyle(isSelected ? DS.ColorToken.accent : DS.ColorToken.textTertiary)
+        return VStack(spacing: 0) {
+            HStack(spacing: Sourdough.Spacing.rowInternals) {
+                Group {
+                    if isSelected {
+                        Ph.checkCircle.fill
+                    } else {
+                        Ph.circle.regular
+                    }
+                }
+                .frame(width: 22, height: 22)
+                .foregroundStyle(isSelected ? Sourdough.Ramp.sage500 : Sourdough.Colors.faintInk)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.name.capitalized)
-                        .appTextStyle(.body)
-                        .foregroundStyle(DS.ColorToken.textPrimary)
+                        .foregroundStyle(Sourdough.Colors.ink)
+                        .sourdoughTextStyle(.body)
 
-                    HStack(spacing: DS.Spacing.space2) {
+                    HStack(spacing: Sourdough.Spacing.insideChip) {
                         Text(item.location.title)
-                            .appTextStyle(.caption)
-                            .foregroundStyle(DS.ColorToken.textSecondary)
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                            .sourdoughTextStyle(.caption)
 
                         if let amount = item.amount, !amount.isEmpty {
                             Text("·")
-                                .foregroundStyle(DS.ColorToken.textTertiary)
+                                .foregroundStyle(Sourdough.Colors.faintInk)
                             Text(amount)
-                                .appTextStyle(.caption)
-                                .foregroundStyle(DS.ColorToken.textSecondary)
+                                .foregroundStyle(Sourdough.Colors.mutedInk)
+                                .sourdoughTextStyle(.caption)
                         }
 
                         if let days = item.daysUntilExpiration, days <= 3 {
                             Text("·")
-                                .foregroundStyle(DS.ColorToken.textTertiary)
-                            Text(days < 0 ? "Expired" : days == 0 ? "Expires today" : "Expires in \(days)d")
-                                .appTextStyle(.caption)
-                                .foregroundStyle(days <= 1 ? DS.ColorToken.error : DS.ColorToken.warning)
+                                .foregroundStyle(Sourdough.Colors.faintInk)
+                            Text(days == 0 ? "Expires today" : "Expires in \(days)d")
+                                .foregroundStyle(Sourdough.FreshnessState(daysUntilExpiration: days).style.label)
+                                .sourdoughTextStyle(.caption)
                         }
                     }
                 }
 
                 Spacer()
             }
-            .padding(.horizontal, DS.Spacing.space3)
-            .padding(.vertical, DS.Spacing.space3)
-            .background(isSelected ? DS.ColorToken.accentLight : DS.ColorToken.bgSecondary)
-            .overlay(
-                RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
-                    .stroke(isSelected ? DS.ColorToken.accent.opacity(0.3) : DS.ColorToken.borderDefault, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
-        }
-        .buttonStyle(.plain)
-    }
-
-    // MARK: - Step 2: Diet Type
-
-    private var dietTypeView: some View {
-        VStack(spacing: 0) {
-            Text("What's your diet?")
-                .font(.custom("Satoshi Variable", size: 18).weight(.medium))
-                .foregroundStyle(DS.ColorToken.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, DS.Spacing.space5)
-                .padding(.top, DS.Spacing.space3)
-
-            ScrollView(showsIndicators: false) {
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: DS.Spacing.space3), GridItem(.flexible(), spacing: DS.Spacing.space3)], spacing: DS.Spacing.space3) {
-                    ForEach(GenerationOptions.DietType.allCases) { diet in
-                        let isSelected = options.dietType == diet
-                        let isLocked = !session.isPremium && diet != .any && diet != session.currentUserDietaryPreference
-                        Button {
-                            if !isLocked { options.dietType = diet }
-                        } label: {
-                            VStack(spacing: DS.Spacing.space3) {
-                                Image(systemName: isLocked ? "lock.fill" : dietTypeIcon(diet))
-                                    .font(.system(size: 32))
-                                    .foregroundStyle(isSelected ? DS.ColorToken.accent : DS.ColorToken.textSecondary)
-
-                                Text(diet.rawValue)
-                                    .font(.custom("Satoshi Variable", size: 15).weight(.semibold))
-                                    .foregroundStyle(isSelected ? DS.ColorToken.accent : DS.ColorToken.textPrimary)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 120)
-                            .background(isSelected ? DS.ColorToken.accentLight : DS.ColorToken.bgSecondary)
-                            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous)
-                                    .stroke(isSelected ? DS.ColorToken.accent : DS.ColorToken.borderDefault, lineWidth: isSelected ? 2 : 1)
-                            )
-                            .overlay(alignment: .topTrailing) {
-                                if isLocked {
-                                    Text("PRO")
-                                        .font(.custom("Satoshi Variable", size: 9).weight(.bold))
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(
-                                            LinearGradient(
-                                                colors: [DS.ColorToken.berry, DS.ColorToken.lavender],
-                                                startPoint: .topTrailing,
-                                                endPoint: .bottomLeading
-                                            )
-                                        )
-                                        .clipShape(Capsule())
-                                        .padding(8)
-                                }
-                            }
-                            .opacity(isLocked ? 0.4 : 1)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(isLocked)
+            .padding(.horizontal, Sourdough.Spacing.rowInternals)
+            .padding(.top, Sourdough.Spacing.rowInternals)
+            .padding(.bottom, Sourdough.Spacing.rowInternals)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if isSelected {
+                    selectedIngredientIDs.remove(item.id)
+                } else {
+                    guard selectedIngredientIDs.count < 15 else {
+                        UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+                        return
                     }
+                    selectedIngredientIDs.insert(item.id)
                 }
-                .padding(.horizontal, DS.Spacing.space5)
-                .padding(.top, DS.Spacing.space4)
-                .padding(.bottom, DS.Spacing.space8)
             }
-
-            Spacer()
-
-            stepNavButtons(back: .selectIngredients, next: .dietaryRestrictions)
         }
+        .background(isSelected ? Sourdough.Ramp.sage100 : Sourdough.Colors.card)
+        .overlay(
+            RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous)
+                .stroke(isSelected ? Sourdough.Ramp.sage500.opacity(0.3) : Sourdough.Colors.interactiveBorder, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
     }
 
-    private func dietTypeIcon(_ diet: GenerationOptions.DietType) -> String {
-        switch diet {
-        case .any: return "fork.knife"
-        case .vegetarian: return "leaf.fill"
-        case .vegan: return "leaf.circle.fill"
-        case .pescatarian: return "fish.fill"
-        case .keto: return "flame.fill"
-        case .paleo: return "hare.fill"
-        }
-    }
+    // MARK: - Options Overview
 
-    // MARK: - Step 3: Dietary Restrictions
-
-    private var dietaryRestrictionsView: some View {
+    private var optionsStepView: some View {
         VStack(spacing: 0) {
-            Text("Any dietary restrictions?")
-                .font(.custom("Satoshi Variable", size: 18).weight(.medium))
-                .foregroundStyle(DS.ColorToken.textSecondary)
+            Text("Customize your recipe")
+                .foregroundStyle(Sourdough.Colors.mutedInk)
+                .sourdoughTextStyle(.body)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, DS.Spacing.space5)
-                .padding(.top, DS.Spacing.space3)
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                .padding(.top, Sourdough.Spacing.rowInternals)
+                .padding(.bottom, Sourdough.Spacing.rowInternals)
 
             ScrollView(showsIndicators: false) {
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: DS.Spacing.space3), GridItem(.flexible(), spacing: DS.Spacing.space3)], spacing: DS.Spacing.space3) {
-                    // None option
-                    Button {
-                        noneRestrictions = true
-                        options.dietaryRestrictions.removeAll()
-                    } label: {
-                        VStack(spacing: DS.Spacing.space3) {
-                            Image(systemName: "hand.thumbsup.fill")
-                                .font(.system(size: 32))
-                                .foregroundStyle(noneRestrictions ? DS.ColorToken.accent : DS.ColorToken.textSecondary)
+                VStack(spacing: Sourdough.Spacing.insideChip) {
+                    Button { goToStep(.selectDiet) } label: {
+                        OptionsRow(label: "Diet", value: options.dietType.rawValue)
+                    }
+                    .buttonStyle(.plain)
 
-                            Text("None")
-                                .font(.custom("Satoshi Variable", size: 15).weight(.semibold))
-                                .foregroundStyle(noneRestrictions ? DS.ColorToken.accent : DS.ColorToken.textPrimary)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 120)
-                        .background(noneRestrictions ? DS.ColorToken.accentLight : DS.ColorToken.bgSecondary)
-                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous)
-                                .stroke(noneRestrictions ? DS.ColorToken.accent : DS.ColorToken.borderDefault, lineWidth: noneRestrictions ? 2 : 1)
+                    Button { goToStep(.selectRestrictions) } label: {
+                        OptionsRow(
+                            label: "Restrictions",
+                            value: hasNoRestrictions ? "None" : options.dietaryRestrictions.map(\.rawValue).joined(separator: ", ")
                         )
                     }
                     .buttonStyle(.plain)
 
-                    ForEach(GenerationOptions.DietaryRestriction.allCases) { restriction in
-                        let isSelected = options.dietaryRestrictions.contains(restriction)
-                        let isLocked = !session.isPremium && !session.currentUserDietaryRestrictions.contains(restriction)
-                        Button {
-                            if isLocked { return }
-                            if isSelected {
-                                options.dietaryRestrictions.remove(restriction)
-                                if options.dietaryRestrictions.isEmpty {
-                                    noneRestrictions = true
-                                }
-                            } else {
-                                noneRestrictions = false
-                                options.dietaryRestrictions.insert(restriction)
-                            }
-                        } label: {
-                            VStack(spacing: DS.Spacing.space3) {
-                                Image(systemName: isLocked ? "lock.fill" : restrictionIcon(restriction))
-                                    .font(.system(size: 32))
-                                    .foregroundStyle(isSelected ? DS.ColorToken.accent : DS.ColorToken.textSecondary)
-
-                                Text(restriction.rawValue)
-                                    .font(.custom("Satoshi Variable", size: 14).weight(.semibold))
-                                    .foregroundStyle(isSelected ? DS.ColorToken.accent : DS.ColorToken.textPrimary)
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.8)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 120)
-                            .background(isSelected ? DS.ColorToken.accentLight : DS.ColorToken.bgSecondary)
-                            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous)
-                                    .stroke(isSelected ? DS.ColorToken.accent : DS.ColorToken.borderDefault, lineWidth: isSelected ? 2 : 1)
-                            )
-                            .overlay(alignment: .topTrailing) {
-                                if isLocked {
-                                    Text("PRO")
-                                        .font(.custom("Satoshi Variable", size: 9).weight(.bold))
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(
-                                            LinearGradient(
-                                                colors: [DS.ColorToken.berry, DS.ColorToken.lavender],
-                                                startPoint: .topTrailing,
-                                                endPoint: .bottomLeading
-                                            )
-                                        )
-                                        .clipShape(Capsule())
-                                        .padding(8)
-                                }
-                            }
-                            .opacity(isLocked ? 0.4 : 1)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(isLocked)
+                    Button { goToStep(.selectAllergies) } label: {
+                        let parts = selectedAllergies.map(\.rawValue) + (customAllergy.isEmpty ? [] : [customAllergy])
+                        OptionsRow(label: "Allergies", value: parts.isEmpty ? "None" : parts.joined(separator: ", "))
                     }
+                    .buttonStyle(.plain)
+
+                    Button { if session.isPremium { goToStep(.selectCookTime) } } label: {
+                        OptionsRow(
+                            label: "Cook Time",
+                            value: session.isPremium ? (options.maxTimeMinutes >= 60 ? "60+ min" : "\(options.maxTimeMinutes) min") : "",
+                            isPro: !session.isPremium
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    caloriesToggleRow
+
+                    Button { goToStep(.selectCuisine) } label: {
+                        OptionsRow(label: "Cuisine", value: options.cuisine?.rawValue ?? "Any")
+                    }
+                    .buttonStyle(.plain)
                 }
-                .padding(.horizontal, DS.Spacing.space5)
-                .padding(.top, DS.Spacing.space4)
-                .padding(.bottom, DS.Spacing.space8)
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                .padding(.bottom, Sourdough.Spacing.aboveSectionHead)
             }
 
-            Spacer()
-
-            stepNavButtons(back: .dietType, next: session.isPremium ? .cookingTime : .cuisineType)
-        }
-    }
-
-    private func restrictionIcon(_ restriction: GenerationOptions.DietaryRestriction) -> String {
-        switch restriction {
-        case .glutenFree: return "xmark.circle"
-        case .nutFree: return "leaf.arrow.triangle.circlepath"
-        case .dairyFree: return "cup.and.saucer"
-        case .soyFree: return "drop.circle"
-        case .eggFree: return "oval"
-        case .shellfishFree: return "fish"
-        case .lowSodium: return "bolt.heart"
-        }
-    }
-
-    // MARK: - Step 4: Cooking Time
-
-    private var cookingTimeView: some View {
-        VStack(spacing: 0) {
-            Text("Max cooking time")
-                .font(.custom("Satoshi Variable", size: 18).weight(.medium))
-                .foregroundStyle(DS.ColorToken.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, DS.Spacing.space5)
-                .padding(.top, DS.Spacing.space3)
-
-            Spacer()
-
-            if session.isPremium {
-                CircularTimeDial(minutes: $options.maxTimeMinutes)
-                    .frame(width: 260, height: 260)
-            } else {
-                VStack(spacing: DS.Spacing.space4) {
-                    ZStack {
-                        CircularTimeDial(minutes: .constant(30))
-                            .frame(width: 260, height: 260)
-                            .opacity(0.3)
-                            .allowsHitTesting(false)
-
-                        VStack(spacing: DS.Spacing.space2) {
-                            Image(systemName: "lock.fill")
-                                .font(.system(size: 32))
-                                .foregroundStyle(DS.ColorToken.textTertiary)
-
-                            Text("PRO")
-                                .font(.custom("Satoshi Variable", size: 13).weight(.bold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 4)
-                                .background(
-                                    LinearGradient(
-                                        colors: [DS.ColorToken.berry, DS.ColorToken.lavender],
-                                        startPoint: .topTrailing,
-                                        endPoint: .bottomLeading
-                                    )
+            VStack(spacing: Sourdough.Spacing.rowInternals) {
+                if isLimitExhausted {
+                    if session.isPremium {
+                        proResetTimerView
+                    } else {
+                        Button { showPaywall = true } label: {
+                            HStack(spacing: Sourdough.Spacing.insideChip) {
+                                Ph.sparkle.regular
+                                    .frame(width: 14, height: 14)
+                                Text("Upgrade to Pro")
+                                    .foregroundStyle(Sourdough.Colors.onAction)
+                                    .sourdoughTextStyle(.rowTitle)
+                            }
+                            .foregroundStyle(Sourdough.Colors.onAction)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 52)
+                            .background(
+                                LinearGradient(
+                                    colors: [Sourdough.Colors.action, Sourdough.Ramp.terracotta400],
+                                    startPoint: .topTrailing,
+                                    endPoint: .bottomLeading
                                 )
-                                .clipShape(Capsule())
-                        }
-                    }
-
-                    Text("Default cooking time will be used")
-                        .font(.custom("Satoshi Variable", size: 13))
-                        .foregroundStyle(DS.ColorToken.textTertiary)
-                }
-            }
-
-            Spacer()
-
-            stepNavButtons(back: .dietaryRestrictions, next: .calorieTarget)
-        }
-    }
-
-    // MARK: - Step 5: Calorie Target
-
-    private var calorieTargetView: some View {
-        VStack(spacing: 0) {
-            Text("Calorie target per serving")
-                .font(.custom("Satoshi Variable", size: 18).weight(.medium))
-                .foregroundStyle(DS.ColorToken.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, DS.Spacing.space5)
-                .padding(.top, DS.Spacing.space3)
-
-            Spacer()
-
-            if session.isPremium {
-                VStack(spacing: DS.Spacing.space4) {
-                    TextField("500", value: Binding(
-                        get: { options.targetCalories ?? 500 },
-                        set: { options.targetCalories = min($0, 9999) }
-                    ), format: .number)
-                    .onChange(of: options.targetCalories) { _, newValue in
-                        if let val = newValue, val > 9999 {
-                            options.targetCalories = 9999
-                        }
-                    }
-                    .keyboardType(.numberPad)
-                    .font(.custom("CalSans-Regular", size: 48))
-                    .foregroundStyle(DS.ColorToken.textPrimary)
-                    .multilineTextAlignment(.center)
-                    .frame(width: 200)
-
-                    Text("calories per serving")
-                        .font(.custom("Satoshi Variable", size: 16).weight(.medium))
-                        .foregroundStyle(DS.ColorToken.textSecondary)
-
-                    if let cal = options.targetCalories, cal > 800 {
-                        HStack(spacing: DS.Spacing.space1) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .font(.system(size: 12))
-                            Text("Exceeds the recommended 800 cal max per serving")
-                                .font(.custom("Satoshi Variable", size: 13))
-                        }
-                        .foregroundStyle(DS.ColorToken.error)
-                        .multilineTextAlignment(.center)
-                    }
-                }
-            } else {
-                VStack(spacing: DS.Spacing.space4) {
-                    ZStack {
-                        VStack(spacing: DS.Spacing.space2) {
-                            Text("500")
-                                .font(.custom("CalSans-Regular", size: 48))
-                                .foregroundStyle(DS.ColorToken.textPrimary)
-                            Text("calories")
-                                .font(.custom("Satoshi Variable", size: 16).weight(.medium))
-                                .foregroundStyle(DS.ColorToken.textSecondary)
-                        }
-                        .opacity(0.3)
-
-                        VStack(spacing: DS.Spacing.space2) {
-                            Image(systemName: "lock.fill")
-                                .font(.system(size: 32))
-                                .foregroundStyle(DS.ColorToken.textTertiary)
-
-                            Text("PRO")
-                                .font(.custom("Satoshi Variable", size: 13).weight(.bold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 4)
-                                .background(
-                                    LinearGradient(
-                                        colors: [DS.ColorToken.berry, DS.ColorToken.lavender],
-                                        startPoint: .topTrailing,
-                                        endPoint: .bottomLeading
-                                    )
-                                )
-                                .clipShape(Capsule())
-                        }
-                    }
-
-                    Text("Default calories will be used")
-                        .font(.custom("Satoshi Variable", size: 13))
-                        .foregroundStyle(DS.ColorToken.textTertiary)
-                }
-            }
-
-            Spacer()
-
-            VStack(spacing: DS.Spacing.space3) {
-                stepButton(label: "Next", disabled: (options.targetCalories ?? 0) > 800) {
-                    goToStep(.cuisineType)
-                }
-
-                Button {
-                    options.targetCalories = nil
-                    goToStep(.cuisineType)
-                } label: {
-                    Text("Skip")
-                        .font(.custom("Satoshi Variable", size: 15).weight(.semibold))
-                        .foregroundStyle(DS.ColorToken.textSecondary)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 48)
-                        .background(Color.clear)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
-                                .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-
-                Button { goToStep(.cookingTime) } label: {
-                    Text("Back")
-                        .font(.custom("Satoshi Variable", size: 14))
-                        .foregroundStyle(DS.ColorToken.textSecondary)
-                        .padding(.vertical, DS.Spacing.space3)
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, DS.Spacing.space5)
-            .padding(.bottom, DS.Spacing.space4)
-        }
-    }
-
-    // MARK: - Step 6: Cuisine Type
-
-    private var cuisineTypeView: some View {
-        VStack(spacing: 0) {
-            Text("Preferred cuisine")
-                .font(.custom("Satoshi Variable", size: 18).weight(.medium))
-                .foregroundStyle(DS.ColorToken.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, DS.Spacing.space5)
-                .padding(.top, DS.Spacing.space3)
-
-            ScrollView(showsIndicators: false) {
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: DS.Spacing.space3), GridItem(.flexible(), spacing: DS.Spacing.space3)], spacing: DS.Spacing.space3) {
-                    // Any option
-                    let anySelected = options.cuisine == nil
-                    Button {
-                        options.cuisine = nil
-                    } label: {
-                        VStack(spacing: DS.Spacing.space3) {
-                            Image(systemName: "globe")
-                                .font(.system(size: 32))
-                                .foregroundStyle(anySelected ? DS.ColorToken.accent : DS.ColorToken.textSecondary)
-
-                            Text("Any")
-                                .font(.custom("Satoshi Variable", size: 15).weight(.semibold))
-                                .foregroundStyle(anySelected ? DS.ColorToken.accent : DS.ColorToken.textPrimary)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 120)
-                        .background(anySelected ? DS.ColorToken.accentLight : DS.ColorToken.bgSecondary)
-                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous)
-                                .stroke(anySelected ? DS.ColorToken.accent : DS.ColorToken.borderDefault, lineWidth: anySelected ? 2 : 1)
-                        )
-                    }
-                    .buttonStyle(.plain)
-
-                    let freeCuisines: Set<Cuisine> = [
-                        .american, .asian, .caribbean,
-                        .french, .greek, .indian, .italian,
-                        .mediterranean, .middleEastern, .spanish
-                    ]
-                    let sortedCuisines = Cuisine.allCases.filter { $0 != .other }.sorted { lhs, rhs in
-                        if !session.isPremium {
-                            let lhsFree = freeCuisines.contains(lhs)
-                            let rhsFree = freeCuisines.contains(rhs)
-                            if lhsFree != rhsFree { return lhsFree }
-                        }
-                        return false
-                    }
-
-                    ForEach(sortedCuisines) { cuisine in
-                        let isSelected = options.cuisine == cuisine
-                        let isLocked = !session.isPremium && !freeCuisines.contains(cuisine)
-                        Button {
-                            if !isLocked { options.cuisine = cuisine }
-                        } label: {
-                            VStack(spacing: DS.Spacing.space3) {
-                                if isLocked {
-                                    Image(systemName: "lock.fill")
-                                        .font(.system(size: 32))
-                                        .foregroundStyle(DS.ColorToken.textSecondary)
-                                } else {
-                                    Text(cuisineEmoji(cuisine))
-                                        .font(.system(size: 32))
-                                }
-
-                                Text(cuisine.rawValue)
-                                    .font(.custom("Satoshi Variable", size: 14).weight(.semibold))
-                                    .foregroundStyle(isSelected ? DS.ColorToken.accent : DS.ColorToken.textPrimary)
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.8)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 120)
-                            .background(isSelected ? DS.ColorToken.accentLight : DS.ColorToken.bgSecondary)
-                            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous)
-                                    .stroke(isSelected ? DS.ColorToken.accent : DS.ColorToken.borderDefault, lineWidth: isSelected ? 2 : 1)
                             )
-                            .overlay(alignment: .topTrailing) {
-                                if isLocked {
-                                    Text("PRO")
-                                        .font(.custom("Satoshi Variable", size: 9).weight(.bold))
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(
-                                            LinearGradient(
-                                                colors: [DS.ColorToken.berry, DS.ColorToken.lavender],
-                                                startPoint: .topTrailing,
-                                                endPoint: .bottomLeading
-                                            )
-                                        )
-                                        .clipShape(Capsule())
-                                        .padding(8)
-                                }
-                            }
-                            .opacity(isLocked ? 0.4 : 1)
+                            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
                         }
                         .buttonStyle(.plain)
-                        .disabled(isLocked)
                     }
-                }
-                .padding(.horizontal, DS.Spacing.space5)
-                .padding(.top, DS.Spacing.space4)
-                .padding(.bottom, DS.Spacing.space8)
-            }
-
-            Spacer()
-
-            // Generate button instead of Next
-            VStack(spacing: DS.Spacing.space3) {
-                if !session.isPremium && activityStore.generationsThisWeek >= 10 {
-                    Text("You've used all 10 free generations this week")
-                        .font(.custom("Satoshi Variable", size: 13))
-                        .foregroundStyle(DS.ColorToken.textSecondary)
-                        .multilineTextAlignment(.center)
-
-                    Button {
-                        showPaywall = true
-                    } label: {
-                        HStack(spacing: DS.Spacing.space2) {
-                            Image(systemName: "sparkles")
-                                .font(.system(size: 14, weight: .semibold))
-                            Text("Upgrade to Pro")
-                                .font(.custom("Satoshi Variable", size: 16))
-                        }
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 52)
-                        .background(
-                            LinearGradient(
-                                colors: [DS.ColorToken.berry, DS.ColorToken.lavender],
-                                startPoint: .topTrailing,
-                                endPoint: .bottomLeading
-                            )
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
                 } else {
                     stepButton(label: "Generate Recipes", disabled: false) {
                         generationTask?.cancel()
@@ -871,99 +576,533 @@ struct GenerateView: View {
                     }
                 }
 
-                Button { goToStep(session.isPremium ? .calorieTarget : .dietaryRestrictions) } label: {
+                Button { goToStep(.selectIngredients, forward: false) } label: {
                     Text("Back")
-                        .font(.custom("Satoshi Variable", size: 14))
-                        .foregroundStyle(DS.ColorToken.textSecondary)
-                        .padding(.vertical, DS.Spacing.space3)
+                        .foregroundStyle(Sourdough.Colors.mutedInk)
+                        .sourdoughTextStyle(.caption)
+                        .padding(.vertical, Sourdough.Spacing.rowInternals)
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.horizontal, DS.Spacing.space5)
-            .padding(.bottom, DS.Spacing.space4)
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .padding(.bottom, Sourdough.Spacing.rowInternals)
+        }
+    }
+
+    // MARK: - Selection Page Helpers
+
+    private func selectionPageHeader(title: String) -> some View {
+        HStack {
+            Button { goToStep(.options, forward: false) } label: {
+                Ph.caretLeft.regular
+                    .frame(width: 17, height: 17)
+                    .foregroundStyle(Sourdough.Colors.ink)
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            Text(title)
+                .foregroundStyle(Sourdough.Colors.ink)
+                .sourdoughTextStyle(.title2)
+
+            Spacer()
+
+            Ph.caretLeft.regular
+                .frame(width: 17, height: 17)
+                .hidden()
+        }
+        .padding(.horizontal, Sourdough.Spacing.screenMargin)
+        .padding(.vertical, Sourdough.Spacing.rowInternals)
+    }
+
+    private func selectionRow(
+        label: String,
+        isSelected: Bool,
+        isLocked: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: Sourdough.Spacing.rowInternals) {
+                Group {
+                    if isSelected {
+                        Ph.checkCircle.fill
+                    } else {
+                        Ph.circle.regular
+                    }
+                }
+                .frame(width: 20, height: 20)
+                .foregroundStyle(isSelected ? Sourdough.Ramp.sage500 : Sourdough.Colors.faintInk)
+
+                Text(label)
+                    .foregroundStyle(Sourdough.Colors.ink)
+                    .sourdoughTextStyle(.body)
+
+                Spacer()
+
+                if isLocked {
+                    Text("PRO")
+                        .foregroundStyle(Sourdough.Colors.onAction)
+                        .sourdoughTextStyle(.caption)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(
+                            LinearGradient(
+                                colors: [Sourdough.Colors.action, Sourdough.Ramp.terracotta400],
+                                startPoint: .topTrailing,
+                                endPoint: .bottomLeading
+                            )
+                        )
+                        .clipShape(Capsule())
+                }
+            }
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .frame(maxWidth: .infinity, minHeight: 60)
+            .contentShape(Rectangle())
+            .opacity(isLocked ? 0.4 : 1)
+        }
+        .buttonStyle(.plain)
+        .disabled(isLocked)
+    }
+
+    // MARK: - Diet Select
+
+    private var dietSelectView: some View {
+        VStack(spacing: 0) {
+            selectionPageHeader(title: "Diet")
+
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 0) {
+                    ForEach(Array(GenerationOptions.DietType.allCases.enumerated()), id: \.element.id) { index, diet in
+                        let isLocked = !session.isPremium && diet != .any && diet != session.currentUserDietaryPreference
+                        selectionRow(
+                            label: diet.rawValue,
+                            isSelected: options.dietType == diet,
+                            isLocked: isLocked
+                        ) {
+                            options.dietType = diet
+                            goToStep(.options, forward: false)
+                        }
+                        if index < GenerationOptions.DietType.allCases.count - 1 {
+                            Divider().padding(.leading, Sourdough.Spacing.screenMargin)
+                        }
+                    }
+                }
+                .padding(.top, Sourdough.Spacing.insideChip)
+                .padding(.bottom, Sourdough.Spacing.aboveSectionHead)
+            }
+        }
+    }
+
+    // MARK: - Restrictions Select
+
+    private var restrictionsSelectView: some View {
+        VStack(spacing: 0) {
+            selectionPageHeader(title: "Restrictions")
+
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 0) {
+                    selectionRow(label: "None", isSelected: hasNoRestrictions) {
+                        hasNoRestrictions = true
+                        options.dietaryRestrictions.removeAll()
+                    }
+                    Divider().padding(.leading, Sourdough.Spacing.screenMargin)
+
+                    ForEach(Array(GenerationOptions.DietaryRestriction.allCases.enumerated()), id: \.element.id) { index, restriction in
+                        let isSelected = options.dietaryRestrictions.contains(restriction)
+                        let isLocked = !session.isPremium && !session.currentUserDietaryRestrictions.contains(restriction)
+                        selectionRow(label: restriction.rawValue, isSelected: isSelected, isLocked: isLocked) {
+                            if isSelected {
+                                options.dietaryRestrictions.remove(restriction)
+                                if options.dietaryRestrictions.isEmpty { hasNoRestrictions = true }
+                            } else {
+                                hasNoRestrictions = false
+                                options.dietaryRestrictions.insert(restriction)
+                            }
+                        }
+                        if index < GenerationOptions.DietaryRestriction.allCases.count - 1 {
+                            Divider().padding(.leading, Sourdough.Spacing.screenMargin)
+                        }
+                    }
+                }
+                .padding(.top, Sourdough.Spacing.insideChip)
+                .padding(.bottom, Sourdough.Spacing.aboveSectionHead)
+            }
+        }
+    }
+
+    // MARK: - Allergies Select
+
+    private var allergiesSelectView: some View {
+        VStack(spacing: 0) {
+            selectionPageHeader(title: "Allergies")
+
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 0) {
+                    let noneSelected = selectedAllergies.isEmpty && !showAllergyOtherField
+                    selectionRow(label: "None", isSelected: noneSelected) {
+                        selectedAllergies.removeAll()
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showAllergyOtherField = false
+                            customAllergy = ""
+                        }
+                    }
+                    Divider().padding(.leading, Sourdough.Spacing.screenMargin)
+
+                    ForEach(Array(AllergyType.allCases.enumerated()), id: \.element.id) { index, allergy in
+                        let isSelected = selectedAllergies.contains(allergy)
+                        selectionRow(label: allergy.rawValue, isSelected: isSelected) {
+                            if isSelected { selectedAllergies.remove(allergy) } else { selectedAllergies.insert(allergy) }
+                        }
+                        Divider().padding(.leading, Sourdough.Spacing.screenMargin)
+                    }
+
+                    selectionRow(label: "Other", isSelected: showAllergyOtherField) {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showAllergyOtherField.toggle()
+                            if !showAllergyOtherField { customAllergy = "" }
+                        }
+                    }
+
+                    if showAllergyOtherField {
+                        TextField("Type your allergy...", text: $customAllergy)
+                            .textInputAutocapitalization(.words)
+                            .autocorrectionDisabled()
+                            .foregroundStyle(Sourdough.Colors.ink)
+                            .sourdoughTextStyle(.body)
+                            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                            .frame(height: 52)
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+                }
+                .padding(.top, Sourdough.Spacing.insideChip)
+                .padding(.bottom, Sourdough.Spacing.aboveSectionHead)
+            }
+        }
+    }
+
+    // MARK: - Cook Time Select
+
+    private var cookTimeSelectView: some View {
+        VStack(spacing: 0) {
+            selectionPageHeader(title: "Cook Time")
+
+            Spacer()
+
+            CircularTimeDial(minutes: $options.maxTimeMinutes)
+                .frame(width: 260, height: 260)
+
+            Spacer()
+
+            stepButton(label: "Save", disabled: false) {
+                goToStep(.options, forward: false)
+            }
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .padding(.bottom, Sourdough.Spacing.rowInternals)
+        }
+    }
+
+    // MARK: - Calories Toggle Row
+
+    private var caloriesToggleRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            VStack(spacing: 0) {
+                HStack(spacing: Sourdough.Spacing.rowInternals) {
+                    Text("Calories")
+                        .foregroundStyle(Sourdough.Colors.ink)
+                        .sourdoughTextStyle(.body)
+                    Spacer()
+                    if !session.isPremium {
+                        Text("PRO")
+                            .foregroundStyle(Sourdough.Colors.onAction)
+                            .sourdoughTextStyle(.caption)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(
+                                LinearGradient(
+                                    colors: [Sourdough.Colors.action, Sourdough.Ramp.terracotta400],
+                                    startPoint: .topTrailing,
+                                    endPoint: .bottomLeading
+                                )
+                            )
+                            .clipShape(Capsule())
+                    }
+                    Toggle("", isOn: Binding(
+                        get: { caloriesEnabled },
+                        set: { enabled in
+                            withAnimation(DS.Motion.easeDefault) {
+                                caloriesEnabled = enabled
+                                options.targetCalories = enabled ? 500 : nil
+                            }
+                        }
+                    ))
+                    .labelsHidden()
+                    .disabled(!session.isPremium)
+                }
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                .frame(height: 52)
+
+                if caloriesEnabled && session.isPremium {
+                    Divider()
+                        .padding(.horizontal, Sourdough.Spacing.screenMargin)
+
+                    HStack {
+                        Text("Target per serving")
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                            .sourdoughTextStyle(.subhead)
+                        Spacer()
+                        TextField("500", value: Binding(
+                            get: { options.targetCalories ?? 500 },
+                            set: { options.targetCalories = min($0, 9999) }
+                        ), format: .number)
+                        .keyboardType(.numberPad)
+                        .multilineTextAlignment(.trailing)
+                        .foregroundStyle(Sourdough.Colors.ink)
+                        .sourdoughTextStyle(.body)
+                        .frame(width: 60)
+
+                        Text("cal")
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                            .sourdoughTextStyle(.subhead)
+                    }
+                    .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                    .padding(.vertical, Sourdough.Spacing.rowInternals)
+                }
+            }
+            .background(Sourdough.Colors.sunken)
+            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous)
+                    .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
+            )
+
+            if let cal = options.targetCalories, cal > 800 {
+                HStack(spacing: Sourdough.Spacing.iconToLabel) {
+                    Ph.warning.fill
+                        .frame(width: 12, height: 12)
+                    Text("Exceeds the recommended 800 cal max per serving")
+                        .foregroundStyle(Sourdough.Colors.destructive)
+                        .sourdoughTextStyle(.caption)
+                }
+                .foregroundStyle(Sourdough.Colors.destructive)
+                .padding(.horizontal, Sourdough.Spacing.insideChip)
+            }
+        }
+    }
+
+    // MARK: - Cuisine Select
+
+    private var cuisineSelectView: some View {
+        VStack(spacing: 0) {
+            selectionPageHeader(title: "Cuisine")
+
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 0) {
+                    selectionRow(label: "Any", isSelected: options.cuisine == nil) {
+                        options.cuisine = nil
+                        goToStep(.options, forward: false)
+                    }
+
+                    ForEach(Array(sortedCuisines.enumerated()), id: \.element.id) { index, cuisine in
+                        let isLocked = !session.isPremium && !freeCuisines.contains(cuisine)
+                        Divider().padding(.leading, Sourdough.Spacing.screenMargin)
+                        Button {
+                            if !isLocked {
+                                options.cuisine = cuisine
+                                goToStep(.options, forward: false)
+                            }
+                        } label: {
+                            HStack(spacing: Sourdough.Spacing.rowInternals) {
+                                Group {
+                                    if options.cuisine == cuisine {
+                                        Ph.checkCircle.fill
+                                    } else {
+                                        Ph.circle.regular
+                                    }
+                                }
+                                .frame(width: 20, height: 20)
+                                .foregroundStyle(options.cuisine == cuisine ? Sourdough.Ramp.sage500 : Sourdough.Colors.faintInk)
+
+                                Text(cuisineEmoji(cuisine))
+                                    .font(.system(size: 18))
+
+                                Text(cuisine.rawValue)
+                                    .foregroundStyle(Sourdough.Colors.ink)
+                                    .sourdoughTextStyle(.body)
+
+                                Spacer()
+
+                                if isLocked {
+                                    Text("PRO")
+                                        .foregroundStyle(Sourdough.Colors.onAction)
+                                        .sourdoughTextStyle(.caption)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(
+                                            LinearGradient(
+                                                colors: [Sourdough.Colors.action, Sourdough.Ramp.terracotta400],
+                                                startPoint: .topTrailing,
+                                                endPoint: .bottomLeading
+                                            )
+                                        )
+                                        .clipShape(Capsule())
+                                }
+                            }
+                            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                            .frame(maxWidth: .infinity, minHeight: 60)
+                            .contentShape(Rectangle())
+                            .opacity(isLocked ? 0.4 : 1)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isLocked)
+                    }
+                }
+                .padding(.top, Sourdough.Spacing.insideChip)
+                .padding(.bottom, Sourdough.Spacing.aboveSectionHead)
+            }
         }
     }
 
     private func cuisineEmoji(_ cuisine: Cuisine) -> String {
         switch cuisine {
-        case .american: return "🍔"
-        case .asian: return "🥢"
-        case .chinese: return "🥡"
-        case .filipino: return "🍖"
-        case .french: return "🥐"
-        case .greek: return "🥗"
-        case .indian: return "🍛"
-        case .italian: return "🍝"
-        case .japanese: return "🍣"
-        case .korean: return "🍲"
+        case .american:    return "🍔"
+        case .asian:       return "🥢"
+        case .chinese:     return "🥡"
+        case .filipino:    return "🍖"
+        case .french:      return "🥐"
+        case .greek:       return "🥗"
+        case .indian:      return "🍛"
+        case .italian:     return "🍝"
+        case .japanese:    return "🍣"
+        case .korean:      return "🍲"
         case .mediterranean: return "🫒"
-        case .mexican: return "🌮"
+        case .mexican:     return "🌮"
         case .middleEastern: return "🧆"
-        case .thai: return "🌶️"
-        case .spanish: return "🥘"
-        case .vietnamese: return "🍜"
-        case .brazilian: return "🥩"
-        case .ethiopian: return "🫓"
-        case .turkish: return "🥙"
-        case .peruvian: return "🌽"
-        case .caribbean: return "🫕"
-        case .other: return "🍽️"
+        case .thai:        return "🌶️"
+        case .spanish:     return "🥘"
+        case .vietnamese:  return "🍜"
+        case .brazilian:   return "🥩"
+        case .ethiopian:   return "🫓"
+        case .turkish:     return "🥙"
+        case .peruvian:    return "🌽"
+        case .caribbean:   return "🫕"
+        case .other:       return "🍽️"
         }
     }
 
     // MARK: - Loading
 
     private var generatingView: some View {
-        VStack(spacing: DS.Spacing.space4) {
+        VStack(spacing: Sourdough.Spacing.rowInternals) {
             Spacer()
 
-            ProgressView()
-                .controlSize(.large)
-                .tint(DS.ColorToken.primary)
+            LottieView(animation: .named("LOADING_ANIMATION"))
+                .playing(loopMode: .loop)
+                .frame(width: 300, height: 300)
+                .padding(.bottom, -60)
 
-            Text("Let me cook...")
-                .font(.custom("CalSans-Regular", size: 20))
-                .kerning(0)
-                .foregroundStyle(DS.ColorToken.textPrimary)
+            Text(Self.loadingPhrases[loadingPhraseIndex])
+                .foregroundStyle(Sourdough.Colors.ink)
+                .sourdoughTextStyle(.title2)
+                .id(loadingPhraseIndex)
+                .transition(.opacity)
 
             Text("Finding the best dishes from your ingredients")
-                .font(.custom("Satoshi Variable", size: 15))
-                .foregroundStyle(DS.ColorToken.textSecondary)
+                .foregroundStyle(Sourdough.Colors.mutedInk)
+                .sourdoughTextStyle(.body)
                 .multilineTextAlignment(.center)
 
             Spacer()
         }
         .frame(maxWidth: .infinity)
-        .padding(.horizontal, DS.Spacing.space5)
+        .padding(.horizontal, Sourdough.Spacing.screenMargin)
+        .task {
+            loadingPhraseIndex = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard !Task.isCancelled else { break }
+                withAnimation(.easeInOut(duration: 0.4)) {
+                    loadingPhraseIndex = (loadingPhraseIndex + 1) % Self.loadingPhrases.count
+                }
+            }
+        }
     }
 
     // MARK: - Results
 
     private var resultsView: some View {
         VStack(spacing: 0) {
-            if let errorText {
-                Text(errorText)
-                    .appTextStyle(.bodySM)
-                    .foregroundStyle(DS.ColorToken.error)
-                    .padding(.horizontal, DS.Spacing.space5)
-                    .padding(.top, DS.Spacing.space3)
-            }
-
-            if recipes.isEmpty {
+            if generationError != nil {
+                errorStateView
+            } else if recipes.isEmpty {
                 Spacer()
                 Text("No recipes generated.")
-                    .appTextStyle(.bodySM)
-                    .foregroundStyle(DS.ColorToken.textSecondary)
+                    .foregroundStyle(Sourdough.Colors.mutedInk)
+                    .sourdoughTextStyle(.subhead)
                 Spacer()
             } else {
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 0) {
-                        Label("TOP PICK FOR YOU", systemImage: "bolt.fill")
-                            .font(.custom("Satoshi Variable", size: 11).weight(.bold))
-                            .foregroundStyle(DS.ColorToken.accent)
-                            .padding(.horizontal, DS.Spacing.space5)
-                            .padding(.top, DS.Spacing.space3)
-                            .padding(.bottom, DS.Spacing.space2)
+                        HStack(spacing: Sourdough.Spacing.rowInternals) {
+                            Spacer()
+
+                            Button {
+                                generationTask?.cancel()
+                                generationTask = Task { await runGeneration() }
+                            } label: {
+                                Label {
+                                    Text("Regenerate")
+                                        .foregroundStyle(Sourdough.Colors.mutedInk)
+                                        .sourdoughTextStyle(.caption)
+                                } icon: {
+                                    Ph.arrowClockwise.regular.frame(width: 13, height: 13)
+                                }
+                                    .foregroundStyle(Sourdough.Colors.mutedInk)
+                                    .padding(.horizontal, Sourdough.Spacing.rowInternals)
+                                    .padding(.vertical, 7)
+                                    .background(Sourdough.Colors.sunken)
+                                    .clipShape(Capsule())
+                                    .overlay(Capsule().stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1))
+                            }
+                            .buttonStyle(.plain)
+
+                            Button {
+                                goToStep(.selectIngredients, forward: false)
+                                recipes = []
+                                generationError = nil
+                                selectedIngredientIDs.removeAll()
+                            } label: {
+                                Label {
+                                    Text("Generate new")
+                                        .foregroundStyle(Sourdough.Colors.mutedInk)
+                                        .sourdoughTextStyle(.caption)
+                                } icon: {
+                                    Ph.sparkle.regular.frame(width: 13, height: 13)
+                                }
+                                    .foregroundStyle(Sourdough.Colors.mutedInk)
+                                    .padding(.horizontal, Sourdough.Spacing.rowInternals)
+                                    .padding(.vertical, 7)
+                                    .background(Sourdough.Colors.sunken)
+                                    .clipShape(Capsule())
+                                    .overlay(Capsule().stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                        .padding(.top, Sourdough.Spacing.rowInternals)
+                        .padding(.bottom, Sourdough.Spacing.insideChip)
+
+                        Label {
+                            Text("TOP PICK FOR YOU")
+                                .foregroundStyle(Sourdough.Ramp.honey700)
+                                .sourdoughTextStyle(.sectionHead)
+                        } icon: {
+                            Ph.lightning.fill.frame(width: 11, height: 11)
+                        }
+                            .foregroundStyle(Sourdough.Ramp.honey700)
+                            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                            .padding(.top, Sourdough.Spacing.rowInternals)
+                            .padding(.bottom, Sourdough.Spacing.insideChip)
 
                         NavigationLink {
                             RecipeDetailView(recipe: recipes[0])
@@ -971,247 +1110,290 @@ struct GenerateView: View {
                             heroRecipeCard(recipes[0])
                         }
                         .buttonStyle(.plain)
-                        .padding(.horizontal, DS.Spacing.space5)
+                        .padding(.horizontal, Sourdough.Spacing.screenMargin)
 
                         if recipes.count > 1 {
                             HStack {
                                 Text("More for you")
-                                    .appTextStyle(.heading3)
-                                    .foregroundStyle(DS.ColorToken.textPrimary)
+                                    .foregroundStyle(Sourdough.Colors.ink)
+                                    .sourdoughTextStyle(.title2)
                                 Spacer()
                             }
-                            .padding(.horizontal, DS.Spacing.space5)
-                            .padding(.top, DS.Spacing.space5)
-                            .padding(.bottom, DS.Spacing.space3)
+                            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                            .padding(.top, Sourdough.Spacing.screenMargin)
+                            .padding(.bottom, Sourdough.Spacing.rowInternals)
 
-                            VStack(spacing: DS.Spacing.space3) {
+                            VStack(spacing: Sourdough.Spacing.rowInternals) {
                                 ForEach(recipes.dropFirst()) { recipe in
                                     NavigationLink {
                                         RecipeDetailView(recipe: recipe)
                                     } label: {
-                                        listRecipeRow(recipe)
+                                        generatedRecipeRow(recipe)
                                     }
                                     .buttonStyle(.plain)
                                 }
                             }
-                            .padding(.horizontal, DS.Spacing.space5)
+                            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                            .padding(.bottom, Sourdough.Spacing.rowInternals)
                         }
                     }
-                    .padding(.bottom, DS.Spacing.space4)
+                    .padding(.bottom, Sourdough.Spacing.rowInternals)
                 }
             }
 
-            VStack(spacing: DS.Spacing.space2) {
-                Button {
-                    generationTask?.cancel()
-                    generationTask = Task { await runGeneration() }
-                } label: {
-                    Label("Regenerate suggestions", systemImage: "bolt.fill")
-                        .font(.custom("Satoshi Variable", size: 16).weight(.semibold))
-                        .foregroundStyle(DS.ColorToken.textPrimary)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 52)
-                        .background(DS.ColorToken.bgSecondary)
-                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous)
-                                .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
-                        )
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        step = .selectIngredients
-                        recipes = []
-                        errorText = nil
-                    }
-                } label: {
-                    Text("Start Over")
-                        .font(.custom("Satoshi Variable", size: 16))
-                        .foregroundStyle(DS.ColorToken.textSecondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, DS.Spacing.space3)
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, DS.Spacing.space5)
-            .padding(.top, DS.Spacing.space3)
-            .padding(.bottom, DS.Spacing.space4)
         }
     }
 
     private func heroRecipeCard(_ recipe: Recipe) -> some View {
-        ZStack(alignment: .bottomLeading) {
-            Image("AI_GEN")
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(height: 260)
-                .clipped()
+        let tags: [String] = {
+            var t: [String] = []
+            if recipe.dietType != "any" { t.append(recipe.dietType.capitalized) }
+            t.append(contentsOf: recipe.dietaryRestrictions)
+            return Array(t.prefix(2)) + (t.count > 2 ? ["+\(t.count - 2) more"] : [])
+        }()
 
-            LinearGradient(
-                colors: [.clear, .black.opacity(0.78)],
-                startPoint: .center,
-                endPoint: .bottom
-            )
-
-            VStack(alignment: .leading, spacing: DS.Spacing.space1) {
-                Text(recipe.title)
-                    .font(.custom("CalSans-Regular", size: 22))
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-
-                HStack(spacing: DS.Spacing.space2) {
-                    Label("\(recipe.macros.calories) cal", systemImage: "bolt.fill")
-                    Text("·").foregroundStyle(.white.opacity(0.6))
-                    Label("\(recipe.macros.proteinG)g protein", systemImage: "heart.fill")
-                    Text("·").foregroundStyle(.white.opacity(0.6))
-                    Text("uses \(recipe.ingredientsUsed.count)")
+        return OnDarkHeroCard(
+            image: Image("AI_GEN"),
+            title: recipe.title,
+            meta: "\(recipe.macros.calories) cal · \(recipe.macros.proteinG)g protein",
+            tags: tags
+        ) {
+            if !recipe.ingredientsUsed.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 4) {
+                        ForEach(recipe.ingredientsUsed.prefix(6), id: \.id) { ingredient in
+                            Text(ingredient.name.capitalized)
+                                .foregroundStyle(Sourdough.Colors.heroTitleOnDark)
+                                .sourdoughTextStyle(.caption)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.white.opacity(0.2))
+                                .clipShape(Capsule())
+                        }
+                    }
                 }
-                .font(.custom("Satoshi Variable", size: 12))
-                .foregroundStyle(.white.opacity(0.85))
             }
-            .padding(DS.Spacing.space4)
+        }
+        .overlay(alignment: .topLeading) {
+            AIGeneratedBadge()
+                .padding(Sourdough.Spacing.rowInternals)
         }
         .overlay(alignment: .topTrailing) {
-            timePill(recipe.timeMinutes)
-                .padding(DS.Spacing.space3)
-        }
-        .frame(height: 260)
-        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous))
-        .shadow(color: .black.opacity(0.12), radius: 12, x: 0, y: 4)
-    }
-
-    private func listRecipeRow(_ recipe: Recipe) -> some View {
-        HStack(spacing: DS.Spacing.space3) {
-            Image("AI_GEN")
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(width: 72, height: 72)
-                .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(recipeTag(for: recipe))
-                    .font(.custom("Satoshi Variable", size: 10).weight(.bold))
-                    .foregroundStyle(DS.ColorToken.accent)
-                    .tracking(0.5)
-
-                Text(recipe.title)
-                    .appTextStyle(.bodySM)
-                    .foregroundStyle(DS.ColorToken.textPrimary)
-                    .lineLimit(1)
-
-                HStack(spacing: 4) {
-                    Label("\(recipe.timeMinutes) min", systemImage: "clock")
-                    Text("·").foregroundStyle(DS.ColorToken.textTertiary)
-                    Text("\(recipe.macros.calories)")
-                    if !recipe.ingredientsUsed.isEmpty {
-                        Text("·").foregroundStyle(DS.ColorToken.textTertiary)
-                        Text(recipe.ingredientsUsed.prefix(2).map { $0.name.capitalized }.joined(separator: ", "))
+            HStack(spacing: Sourdough.Spacing.insideChip) {
+                let isSaved = savedRecipesStore.isSaved(recipe)
+                Button {
+                    if isSaved { savedRecipesStore.unsaveRecipe(recipe) }
+                    else { savedRecipesStore.saveGeneratedRecipe(recipe) }
+                } label: {
+                    Group {
+                        if isSaved {
+                            Ph.bookmark.fill
+                        } else {
+                            Ph.bookmark.regular
+                        }
                     }
+                    .frame(width: 14, height: 14)
+                    .foregroundStyle(isSaved ? Sourdough.Ramp.sageDark : Sourdough.Colors.heroTitleOnDark)
+                    .frame(width: 36, height: 36)
+                    .background(.ultraThinMaterial)
+                    .clipShape(Circle())
                 }
-                .font(.custom("Satoshi Variable", size: 11))
-                .foregroundStyle(DS.ColorToken.textTertiary)
-                .lineLimit(1)
+                .buttonStyle(.plain)
+                timePill(recipe.timeMinutes)
             }
-
-            Spacer()
-
-            Button {
-                if session.isPremium {
-                    if savedRecipesStore.isSaved(recipe) {
-                        savedRecipesStore.unsaveRecipe(recipe)
-                    } else {
-                        savedRecipesStore.saveRecipe(recipe)
-                    }
-                } else {
-                    showPaywall = true
-                }
-            } label: {
-                Image(systemName: savedRecipesStore.isSaved(recipe) ? "heart.fill" : "heart")
-                    .font(.system(size: 16))
-                    .foregroundStyle(
-                        savedRecipesStore.isSaved(recipe) ? DS.ColorToken.primary : DS.ColorToken.textTertiary
-                    )
-            }
-            .buttonStyle(.plain)
+            .padding(Sourdough.Spacing.rowInternals)
         }
-        .padding(DS.Spacing.space3)
-        .background(DS.ColorToken.bgSecondary)
-        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous)
-                .stroke(DS.ColorToken.borderDefault, lineWidth: 1)
-        )
-    }
-
-    private func recipeTag(for recipe: Recipe) -> String {
-        if recipe.macros.proteinG >= 25 { return "HIGH PROTEIN" }
-        if recipe.timeMinutes <= 15 { return "QUICK" }
-        if recipe.macros.carbsG <= 20 { return "LOW CARB" }
-        return "COMFORTING"
     }
 
     private func timePill(_ minutes: Int) -> some View {
-        Label("\(minutes) min", systemImage: "clock")
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(.white)
+        Label {
+            Text("\(minutes) min")
+                .foregroundStyle(Sourdough.Colors.heroTitleOnDark)
+                .sourdoughTextStyle(.caption)
+        } icon: {
+            Ph.clock.regular.frame(width: 12, height: 12)
+        }
+            .foregroundStyle(Sourdough.Colors.heroTitleOnDark)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(.black.opacity(0.45))
             .clipShape(Capsule())
     }
 
-    // MARK: - Generation Limit Banner
+    private func generatedRecipeRow(_ recipe: Recipe) -> some View {
+        VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
+            HStack(spacing: 4) {
+                Ph.sparkle.regular
+                    .frame(width: 10, height: 10)
+                Text("AI Generated")
+                    .foregroundStyle(Sourdough.Colors.onAction)
+                    .sourdoughTextStyle(.caption)
+            }
+            .foregroundStyle(Sourdough.Colors.onAction)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                LinearGradient(
+                    colors: [Sourdough.Colors.action, Sourdough.Ramp.terracotta400],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+            .clipShape(Capsule())
 
-    private var generationLimitBanner: some View {
-        let remaining = max(0, 10 - activityStore.generationsThisWeek)
-        let exhausted = remaining == 0
+            HStack(alignment: .top, spacing: Sourdough.Spacing.insideChip) {
+                Text(recipe.title)
+                    .foregroundStyle(Sourdough.Colors.ink)
+                    .sourdoughTextStyle(.rowTitle)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-        return HStack(spacing: DS.Spacing.space3) {
-            Image(systemName: exhausted ? "exclamationmark.triangle.fill" : "bolt.fill")
-                .font(.system(size: 16))
-                .foregroundStyle(exhausted ? DS.ColorToken.error : DS.ColorToken.warning)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(exhausted ? "No free generations remaining" : "\(remaining) of 10 free generation\(remaining == 1 ? "" : "s") remaining this week")
-                    .font(.custom("Satoshi Variable", size: 14).weight(.semibold))
-                    .foregroundStyle(DS.ColorToken.textPrimary)
-
-                if let resetDate = activityStore.nextGenerationResetDate {
-                    Text(exhausted
-                         ? "Next 10 available \(activityStore.resetLabel(for: resetDate))"
-                         : "Resets \(activityStore.resetLabel(for: resetDate))")
-                        .font(.custom("Satoshi Variable", size: 12))
-                        .foregroundStyle(DS.ColorToken.textSecondary)
-                }
-
+                let isSaved = savedRecipesStore.isSaved(recipe)
                 Button {
-                    showPaywall = true
+                    if isSaved { savedRecipesStore.unsaveRecipe(recipe) }
+                    else { savedRecipesStore.saveGeneratedRecipe(recipe) }
                 } label: {
-                    Text("Upgrade for unlimited")
-                        .font(.custom("Satoshi Variable", size: 12).weight(.medium))
-                        .foregroundStyle(DS.ColorToken.primary)
+                    Group {
+                        if isSaved {
+                            Ph.bookmark.fill
+                        } else {
+                            Ph.bookmark.regular
+                        }
+                    }
+                    .frame(width: 15, height: 15)
+                    .foregroundStyle(isSaved ? Sourdough.Ramp.sage500 : Sourdough.Colors.mutedInk)
+                }
+                .buttonStyle(.plain)
+            }
+
+            Label {
+                Text("\(recipe.timeMinutes) min")
+                    .foregroundStyle(Sourdough.Colors.mutedInk)
+                    .sourdoughTextStyle(.subhead)
+            } icon: {
+                Ph.clock.regular.frame(width: 13, height: 13)
+            }
+                .foregroundStyle(Sourdough.Colors.mutedInk)
+
+            if !recipe.ingredientsUsed.isEmpty {
+                let displayed = Array(recipe.ingredientsUsed.prefix(5))
+                let overflow = recipe.ingredientsUsed.count - displayed.count
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 4) {
+                        ForEach(displayed, id: \.id) { ing in
+                            ingredientChip(ing.name)
+                        }
+                        if overflow > 0 {
+                            ingredientChip("+\(overflow) more")
+                        }
+                    }
+                    .padding(.horizontal, 1)
+                }
+            }
+        }
+        .padding(Sourdough.Spacing.screenMargin)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Sourdough.Colors.card)
+        .overlay(
+            RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous)
+                .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
+    }
+
+    private func ingredientChip(_ text: String) -> some View {
+        Text(text.capitalized)
+            .foregroundStyle(Sourdough.Colors.onAction)
+            .sourdoughTextStyle(.caption)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(Sourdough.Ramp.sage500)
+            .clipShape(Capsule())
+    }
+
+    // MARK: - Pro Reset Timer
+
+    @ViewBuilder
+    private var proResetTimerView: some View {
+        VStack(spacing: 4) {
+            Text("Daily limit reached")
+                .foregroundStyle(Sourdough.Colors.mutedInk)
+                .sourdoughTextStyle(.subhead)
+
+            if let resetDate = activityStore.nextDailyResetDate {
+                HStack(spacing: Sourdough.Spacing.insideChip) {
+                    Ph.clock.regular
+                        .frame(width: 14, height: 14)
+                    TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                        let remaining = max(0, resetDate.timeIntervalSince(ctx.date))
+                        Text(formatCountdown(remaining))
+                            .sourdoughTextStyle(.numeric)
+                    }
+                    Text("until next 5")
+                        .sourdoughTextStyle(.caption)
+                }
+                .foregroundStyle(Sourdough.Colors.ink)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 52)
+        .background(Sourdough.Colors.sunken)
+        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous)
+                .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
+        )
+    }
+
+    private func formatCountdown(_ seconds: TimeInterval) -> String {
+        let h = Int(seconds) / 3600
+        let m = (Int(seconds) % 3600) / 60
+        let s = Int(seconds) % 60
+        return h > 0
+            ? String(format: "%d:%02d:%02d", h, m, s)
+            : String(format: "%02d:%02d", m, s)
+    }
+
+    // MARK: - Generation Count Row
+
+    private var generationCountRow: some View {
+        let usedCount = session.isPremium ? activityStore.generationsToday : activityStore.generationsThisWeek
+        let limit = session.isPremium ? 5 : 3
+        let remaining = max(0, limit - usedCount)
+        let period = session.isPremium ? "day" : "week"
+        let label = "\(remaining) Generation\(remaining == 1 ? "" : "s") left for the \(period)"
+
+        return HStack(spacing: Sourdough.Spacing.insideChip) {
+            HStack(spacing: 4) {
+                Ph.lightning.fill
+                    .frame(width: 11, height: 11)
+                Text(label)
+                    .foregroundStyle(Sourdough.Colors.onAction)
+                    .sourdoughTextStyle(.caption)
+            }
+            .foregroundStyle(Sourdough.Colors.onAction)
+            .padding(.horizontal, Sourdough.Spacing.rowInternals)
+            .padding(.vertical, 6)
+            .background(
+                LinearGradient(
+                    colors: [Sourdough.Ramp.sage600, Sourdough.Ramp.sage500],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+            .clipShape(Capsule())
+
+            if !session.isPremium {
+                Button { showPaywall = true } label: {
+                    Text("Upgrade for more")
+                        .foregroundStyle(Sourdough.Colors.actionInk)
+                        .sourdoughTextStyle(.caption)
                 }
                 .buttonStyle(.plain)
             }
 
             Spacer()
-
-            Text("\(activityStore.generationsThisWeek)/10")
-                .font(.custom("Satoshi Variable", size: 16).weight(.bold))
-                .foregroundStyle(exhausted ? DS.ColorToken.error : DS.ColorToken.warning)
         }
-        .padding(DS.Spacing.space3)
-        .background(exhausted ? DS.ColorToken.errorLight : DS.ColorToken.warningLight)
-        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
-                .stroke(exhausted ? DS.ColorToken.error.opacity(0.2) : DS.ColorToken.warning.opacity(0.2), lineWidth: 1)
-        )
-        .padding(.horizontal, DS.Spacing.space5)
-        .padding(.bottom, DS.Spacing.space2)
     }
 
     // MARK: - Navigation Helpers
@@ -1219,48 +1401,107 @@ struct GenerateView: View {
     private func stepButton(label: String, disabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(label)
-                .font(.custom("Satoshi Variable", size: 16))
-                .foregroundStyle(.white)
+                .foregroundStyle(Sourdough.Colors.onAction)
+                .sourdoughTextStyle(.rowTitle)
                 .frame(maxWidth: .infinity)
                 .frame(height: 52)
-                .background(DS.ColorToken.primary)
-                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                .background(Sourdough.Colors.action)
+                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
         }
         .buttonStyle(.plain)
         .disabled(disabled)
         .opacity(disabled ? 0.5 : 1)
     }
 
-    private func stepNavButtons(back: GenerateStep, next: GenerateStep) -> some View {
-        VStack(spacing: DS.Spacing.space3) {
-            stepButton(label: "Next", disabled: false) {
-                goToStep(next)
-            }
+    // MARK: - Generation
 
-            Button { goToStep(back) } label: {
-                Text("Back")
-                    .font(.custom("Satoshi Variable", size: 14))
-                    .foregroundStyle(DS.ColorToken.textSecondary)
-                    .padding(.vertical, DS.Spacing.space3)
-            }
-            .buttonStyle(.plain)
+    // MARK: - Error State
+
+    private var errorIcon: Image {
+        switch generationError as? RecipeGenerationError {
+        case .apiError: return Ph.wifiSlash.regular
+        case .emptyResponse: return Ph.tray.regular
+        default: return Ph.warning.regular
         }
-        .padding(.horizontal, DS.Spacing.space5)
-        .padding(.bottom, DS.Spacing.space4)
     }
 
-    // MARK: - Generation
+    private var errorTitle: String {
+        switch generationError as? RecipeGenerationError {
+        case .apiError: return "Our Chef Must Be Busy!"
+        case .parsingError: return "Unexpected response"
+        case .emptyResponse: return "No recipes found"
+        default: return "Something went wrong"
+        }
+    }
+
+    private var errorMessage: String {
+        switch generationError as? RecipeGenerationError {
+        case .apiError: return "Check your connection and tap Try Again."
+        case .parsingError: return "Our Chef returned an unexpected response. Please try again."
+        case .emptyResponse: return "No recipes were generated. Try selecting more ingredients or adjusting your options."
+        default: return "An unexpected error occurred. Please try again."
+        }
+    }
+
+    private var errorStateView: some View {
+        VStack(spacing: Sourdough.Spacing.rowInternals) {
+            Spacer()
+            errorIcon
+                .frame(width: 52, height: 52)
+                .foregroundStyle(Sourdough.Colors.destructive)
+            VStack(spacing: Sourdough.Spacing.insideChip) {
+                Text(errorTitle)
+                    .foregroundStyle(Sourdough.Colors.ink)
+                    .sourdoughTextStyle(.title1)
+                    .multilineTextAlignment(.center)
+                Text(errorMessage)
+                    .foregroundStyle(Sourdough.Colors.mutedInk)
+                    .sourdoughTextStyle(.body)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, Sourdough.Spacing.betweenBlocks)
+            }
+            Spacer()
+            VStack(spacing: Sourdough.Spacing.rowInternals) {
+                Button {
+                    generationTask?.cancel()
+                    generationTask = Task { await runGeneration() }
+                } label: {
+                    Text("Try Again")
+                        .foregroundStyle(Sourdough.Colors.onAction)
+                        .sourdoughTextStyle(.rowTitle)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 52)
+                        .background(Sourdough.Colors.action)
+                        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    goToStep(.selectIngredients, forward: false)
+                    recipes = []
+                    generationError = nil
+                    selectedIngredientIDs.removeAll()
+                } label: {
+                    Text("Change Ingredients")
+                        .foregroundStyle(Sourdough.Colors.mutedInk)
+                        .sourdoughTextStyle(.caption)
+                        .padding(.vertical, Sourdough.Spacing.rowInternals)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .padding(.bottom, Sourdough.Spacing.rowInternals)
+        }
+    }
 
     @MainActor
     private func runGeneration() async {
-        errorText = nil
+        generationError = nil
 
-        withAnimation(.easeInOut(duration: 0.25)) {
-            step = .loading
-        }
+        goToStep(.loading)
 
         let names: [String] = pantryStore.ingredients
-            .filter { selectedIngredientIDs.contains($0.id) }
+            .filter { selectedIngredientIDs.contains($0.id) && !$0.isExpired }
             .map { ingredient in
                 if let amount = ingredient.amount, !amount.isEmpty {
                     return "\(ingredient.name) (\(amount))"
@@ -1268,22 +1509,30 @@ struct GenerateView: View {
                 return ingredient.name
             }
 
+        var parts = selectedAllergies.map(\.rawValue)
+        if !customAllergy.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append(customAllergy.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        options.allergies = parts
+
+        options.priorityIngredients = pantryStore.ingredients
+            .filter { selectedIngredientIDs.contains($0.id) && !$0.isExpired && $0.isExpiringSoon }
+            .map { $0.name }
+
+        options.diversifyIngredients = session.isPremium
+
         do {
             recipes = try await recipeGenerator.generateRecipes(
                 for: names,
                 options: options,
-                recipeCount: session.isPremium ? 3 : 1
+                recipeCount: session.isPremium ? 5 : 2
             )
-            activityStore.logEvent(type: "recipe_generated")
-            withAnimation(.easeInOut(duration: 0.25)) {
-                step = .results
-            }
+            activityStore.logEvent(type: .recipeGenerated)
+            goToStep(.results)
         } catch {
             recipes = []
-            errorText = error.localizedDescription
-            withAnimation(.easeInOut(duration: 0.25)) {
-                step = .results
-            }
+            generationError = error
+            goToStep(.results)
         }
     }
 }
@@ -1292,13 +1541,62 @@ struct GenerateView: View {
 
 private enum GenerateStep {
     case selectIngredients
-    case dietType
-    case dietaryRestrictions
-    case cookingTime
-    case calorieTarget
-    case cuisineType
+    case options
+    case selectDiet
+    case selectRestrictions
+    case selectAllergies
+    case selectCookTime
+    case selectCuisine
     case loading
     case results
+}
+
+// MARK: - Options Row
+
+private struct OptionsRow: View {
+    let label: String
+    let value: String
+    var isPro: Bool = false
+
+    var body: some View {
+        HStack(spacing: Sourdough.Spacing.rowInternals) {
+            Text(label)
+                .foregroundStyle(Sourdough.Colors.ink)
+                .sourdoughTextStyle(.body)
+            Spacer()
+            if isPro {
+                Text("PRO")
+                    .foregroundStyle(Sourdough.Colors.onAction)
+                    .sourdoughTextStyle(.caption)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        LinearGradient(
+                            colors: [Sourdough.Colors.action, Sourdough.Ramp.terracotta400],
+                            startPoint: .topTrailing,
+                            endPoint: .bottomLeading
+                        )
+                    )
+                    .clipShape(Capsule())
+            } else {
+                Text(value)
+                    .foregroundStyle(Sourdough.Colors.mutedInk)
+                    .sourdoughTextStyle(.subhead)
+                    .lineLimit(1)
+            }
+            Ph.caretRight.regular
+                .frame(width: 12, height: 12)
+                .foregroundStyle(Sourdough.Colors.faintInk)
+        }
+        .padding(.horizontal, Sourdough.Spacing.screenMargin)
+        .frame(height: 52)
+        .background(Sourdough.Colors.sunken)
+        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous)
+                .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
+        )
+    }
 }
 
 // MARK: - Circular Time Dial
@@ -1319,7 +1617,6 @@ private struct CircularTimeDial: View {
             let size = min(geo.size.width, geo.size.height)
             let center = CGPoint(x: size / 2, y: size / 2)
             let radius = size / 2 - 20
-            // Start at top (12 o'clock = -90°), full 360° circle
             let thumbAngleDeg = -90.0 + progress * 360.0
             let thumbAngle = Angle.degrees(thumbAngleDeg)
             let thumbPoint = CGPoint(
@@ -1328,33 +1625,29 @@ private struct CircularTimeDial: View {
             )
 
             ZStack {
-                // Full track ring
                 Circle()
-                    .stroke(DS.ColorToken.borderDefault, style: StrokeStyle(lineWidth: 12, lineCap: .round))
+                    .stroke(Sourdough.Colors.interactiveBorder, style: StrokeStyle(lineWidth: 12, lineCap: .round))
                     .frame(width: radius * 2, height: radius * 2)
 
-                // Filled arc from top
                 Circle()
                     .trim(from: 0, to: progress)
-                    .stroke(DS.ColorToken.primary, style: StrokeStyle(lineWidth: 12, lineCap: .round))
+                    .stroke(Sourdough.Colors.action, style: StrokeStyle(lineWidth: 12, lineCap: .round))
                     .rotationEffect(.degrees(-90))
                     .frame(width: radius * 2, height: radius * 2)
 
-                // Center label
                 VStack(spacing: 2) {
                     Text(minutes >= maxMinutes ? "60+" : "\(minutes)")
-                        .font(.custom("CalSans-Regular", size: 48))
-                        .foregroundStyle(DS.ColorToken.textPrimary)
+                        .foregroundStyle(Sourdough.Colors.ink)
+                        .sourdoughTextStyle(.display)
                     Text("min")
-                        .font(.custom("Satoshi Variable", size: 16).weight(.medium))
-                        .foregroundStyle(DS.ColorToken.textSecondary)
+                        .foregroundStyle(Sourdough.Colors.mutedInk)
+                        .sourdoughTextStyle(.caption)
                 }
 
-                // Thumb
                 Circle()
-                    .fill(DS.ColorToken.primary)
-                    .frame(width: 28, height: 28)
-                    .shadow(color: DS.ColorToken.primary.opacity(0.3), radius: 4, x: 0, y: 2)
+                    .fill(Sourdough.Colors.action)
+                .frame(width: 28, height: 28)
+                    .shadow(color: Sourdough.Colors.action.opacity(0.3), radius: 4, x: 0, y: 2)
                     .position(thumbPoint)
             }
             .frame(width: size, height: size)
@@ -1362,10 +1655,8 @@ private struct CircularTimeDial: View {
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
                         let vector = CGVector(dx: value.location.x - center.x, dy: value.location.y - center.y)
-                        // atan2 gives angle from positive x-axis; shift so top (12 o'clock) = 0
                         var angleDeg = atan2(vector.dy, vector.dx) * 180 / .pi + 90
                         if angleDeg < 0 { angleDeg += 360 }
-
                         let newProgress = angleDeg / 360.0
                         let rawMinutes = Double(minMinutes) + newProgress * Double(maxMinutes - minMinutes)
                         let snapped = Int((rawMinutes / Double(stepSize)).rounded()) * stepSize
@@ -1378,47 +1669,29 @@ private struct CircularTimeDial: View {
 
 // MARK: - Filter Enums
 
-private enum GenStorageFilter: CaseIterable, Identifiable {
-    case fridge, freezer, pantry
-
-    var id: String { label }
-
-    var label: String {
-        switch self {
-        case .fridge: return "Fridge"
-        case .freezer: return "Freezer"
-        case .pantry: return "Pantry"
-        }
-    }
-
-    var icon: String {
-        switch self {
-        case .fridge: return "refrigerator"
-        case .freezer: return "snowflake"
-        case .pantry: return "cabinet"
-        }
-    }
-
-    func matches(ingredient: Ingredient) -> Bool {
-        switch self {
-        case .fridge: return ingredient.location == .fridge
-        case .freezer: return ingredient.location == .freezer
-        case .pantry: return ingredient.location == .pantry
-        }
-    }
-}
-
 private enum GenCategory: String, CaseIterable, Identifiable {
-    case proteins, vegetables, carbs, dairy, fruits, condiments, other
+    case proteins, seafood, vegetables, carbs, dairy, fruits, condiments, other
 
     var id: String { rawValue }
 
     var label: String { ingredientCategory.title }
-    var icon: String { ingredientCategory.icon }
+    var icon: Image {
+        switch self {
+        case .proteins:   return Ph.hamburger.regular
+        case .seafood:    return Ph.fish.regular
+        case .vegetables: return Ph.leaf.regular
+        case .carbs:      return Ph.bread.regular
+        case .dairy:      return Ph.coffee.regular
+        case .fruits:     return Ph.orangeSlice.regular
+        case .condiments: return Ph.jar.regular
+        case .other:      return Ph.package.regular
+        }
+    }
 
     var ingredientCategory: Ingredient.Category {
         switch self {
-        case .proteins: return .proteins
+        case .proteins:   return .proteins
+        case .seafood:    return .seafood
         case .vegetables: return .vegetables
         case .carbs: return .carbs
         case .dairy: return .dairy
@@ -1437,7 +1710,7 @@ private enum GenCategory: String, CaseIterable, Identifiable {
 
 private struct GenFilterSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @Binding var selectedStorageFilters: Set<GenStorageFilter>
+    @Binding var selectedStorageFilters: Set<IngredientStorageFilter>
     @Binding var selectedCategories: Set<GenCategory>
 
     private var hasActiveFilters: Bool {
@@ -1447,17 +1720,17 @@ private struct GenFilterSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             Capsule()
-                .fill(DS.ColorToken.borderDefault)
+                .fill(Sourdough.Colors.hairline)
                 .frame(width: 36, height: 5)
-                .padding(.top, DS.Spacing.space3)
-                .padding(.bottom, DS.Spacing.space4)
+                .padding(.top, Sourdough.Spacing.rowInternals)
+                .padding(.bottom, Sourdough.Spacing.betweenBlocks)
 
             ScrollView(showsIndicators: false) {
-                VStack(spacing: DS.Spacing.space6) {
+                VStack(spacing: Sourdough.Spacing.betweenBlocks) {
                     HStack {
                         Text("Filters")
-                            .appTextStyle(.heading2)
-                            .foregroundStyle(DS.ColorToken.textPrimary)
+                            .foregroundStyle(Sourdough.Colors.ink)
+                            .sourdoughTextStyle(.title1)
 
                         Spacer()
 
@@ -1467,20 +1740,20 @@ private struct GenFilterSheet: View {
                                 selectedCategories.removeAll()
                             } label: {
                                 Text("Reset")
-                                    .font(.custom("Satoshi Variable", size: 14))
-                                    .foregroundStyle(DS.ColorToken.primary)
+                                    .foregroundStyle(Sourdough.Colors.actionInk)
+                                    .sourdoughTextStyle(.caption)
                             }
                             .buttonStyle(.plain)
                         }
                     }
 
-                    VStack(alignment: .leading, spacing: DS.Spacing.space3) {
-                        Text("Storage")
-                            .appTextStyle(.heading3)
-                            .foregroundStyle(DS.ColorToken.textSecondary)
+                    VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {
+                        Text("STORAGE")
+                            .foregroundStyle(Sourdough.Colors.faintInk)
+                            .sourdoughTextStyle(.sectionHead)
 
-                        VStack(spacing: DS.Spacing.space2) {
-                            ForEach(GenStorageFilter.allCases) { filter in
+                        VStack(spacing: Sourdough.Spacing.insideChip) {
+                            ForEach(IngredientStorageFilter.allCases) { filter in
                                 filterRow(
                                     icon: filter.icon,
                                     label: filter.label,
@@ -1492,12 +1765,12 @@ private struct GenFilterSheet: View {
                         }
                     }
 
-                    VStack(alignment: .leading, spacing: DS.Spacing.space3) {
-                        Text("Category")
-                            .appTextStyle(.heading3)
-                            .foregroundStyle(DS.ColorToken.textSecondary)
+                    VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {
+                        Text("CATEGORY")
+                            .foregroundStyle(Sourdough.Colors.faintInk)
+                            .sourdoughTextStyle(.sectionHead)
 
-                        VStack(spacing: DS.Spacing.space2) {
+                        VStack(spacing: Sourdough.Spacing.insideChip) {
                             ForEach(GenCategory.allCases) { category in
                                 filterRow(
                                     icon: category.icon,
@@ -1510,63 +1783,61 @@ private struct GenFilterSheet: View {
                         }
                     }
                 }
-                .padding(.horizontal, DS.Spacing.space5)
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
             }
 
             Button { dismiss() } label: {
                 Text("Apply Filters")
-                    .font(.custom("Satoshi Variable", size: 16))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Sourdough.Colors.onAction)
+                    .sourdoughTextStyle(.rowTitle)
                     .frame(maxWidth: .infinity)
                     .frame(height: 52)
-                    .background(DS.ColorToken.primary)
-                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.full, style: .continuous))
+                    .background(Sourdough.Colors.action)
+                    .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, DS.Spacing.space5)
-            .padding(.top, DS.Spacing.space3)
-            .padding(.bottom, DS.Spacing.space4)
-        }
-    }
-
-    private func toggleSet<T: Hashable>(_ set: inout Set<T>, _ item: T) {
-        if set.contains(item) {
-            set.remove(item)
-        } else {
-            set.insert(item)
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .padding(.top, Sourdough.Spacing.rowInternals)
+            .padding(.bottom, Sourdough.Spacing.betweenBlocks)
         }
     }
 
     private func filterRow(
-        icon: String,
+        icon: Image,
         label: String,
         isSelected: Bool,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            HStack(spacing: DS.Spacing.space3) {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 20))
-                    .foregroundStyle(isSelected ? DS.ColorToken.accent : DS.ColorToken.textTertiary)
+            HStack(spacing: Sourdough.Spacing.rowInternals) {
+                Group {
+                    if isSelected {
+                        Ph.checkCircle.fill
+                    } else {
+                        Ph.circle.regular
+                    }
+                }
+                .frame(width: 20, height: 20)
+                .foregroundStyle(isSelected ? Sourdough.Ramp.sage500 : Sourdough.Colors.faintInk)
 
-                Image(systemName: icon)
-                    .font(.system(size: 18))
-                    .foregroundStyle(isSelected ? DS.ColorToken.accent : DS.ColorToken.textSecondary)
+                icon
+                    .frame(width: 18, height: 18)
+                    .foregroundStyle(isSelected ? Sourdough.Ramp.sage500 : Sourdough.Colors.mutedInk)
                     .frame(width: 24)
 
                 Text(label)
-                    .font(.custom("Satoshi Variable", size: 16))
-                    .foregroundStyle(DS.ColorToken.textPrimary)
+                    .foregroundStyle(Sourdough.Colors.ink)
+                    .sourdoughTextStyle(.body)
 
                 Spacer()
             }
-            .padding(.horizontal, DS.Spacing.space5)
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
             .frame(height: 48)
-            .background(isSelected ? DS.ColorToken.accentLight : DS.ColorToken.bgSecondary)
-            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous))
+            .background(isSelected ? Sourdough.Ramp.sage100 : Sourdough.Colors.sunken)
+            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
-                    .stroke(isSelected ? DS.ColorToken.accent.opacity(0.3) : DS.ColorToken.borderDefault, lineWidth: 1)
+                RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous)
+                    .stroke(isSelected ? Sourdough.Ramp.sage500.opacity(0.3) : Sourdough.Colors.interactiveBorder, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)

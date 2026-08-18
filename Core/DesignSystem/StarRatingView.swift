@@ -1,4 +1,5 @@
 import SwiftUI
+import PhosphorSwift
 
 struct StarRatingView: View {
     let rating: Double
@@ -10,7 +11,7 @@ struct StarRatingView: View {
         HStack(spacing: size * 0.1) {
             ForEach(1...5, id: \.self) { index in
                 starImage(for: index)
-                    .font(.system(size: size))
+                    .frame(width: size, height: size)
                     .foregroundStyle(index <= Int(rating.rounded(.up)) && rating > 0 ? DS.ColorToken.warning : DS.ColorToken.bgTertiary)
                     .onTapGesture {
                         if interactive {
@@ -26,11 +27,11 @@ struct StarRatingView: View {
         let hasHalf = rating - Double(floor) >= 0.25 && rating - Double(floor) < 0.75
 
         if index <= floor {
-            return Image(systemName: "star.fill")
+            return Ph.star.fill
         } else if index == floor + 1 && hasHalf {
-            return Image(systemName: "star.leadinghalf.filled")
+            return Ph.starHalf.regular
         } else {
-            return Image(systemName: "star")
+            return Ph.star.regular
         }
     }
 }
