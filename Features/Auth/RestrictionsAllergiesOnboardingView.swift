@@ -2,7 +2,6 @@ import SwiftUI
 
 struct RestrictionsAllergiesOnboardingView: View {
     @EnvironmentObject private var onboardingAnswers: OnboardingAnswers
-    var onBack: () -> Void
     var onContinue: () -> Void
 
     @State private var selectedRestrictions: Set<GenerationOptions.DietaryRestriction> = []
@@ -105,22 +104,15 @@ struct RestrictionsAllergiesOnboardingView: View {
                 }
             }
 
-            VStack(spacing: Sourdough.Spacing.insideChip) {
-                Button { onBack() } label: {
-                    Text("Back").frame(maxWidth: .infinity)
-                }
-                .buttonStyle(Sourdough.SecondaryButtonStyle(fullWidth: true))
-
-                Button {
-                    onboardingAnswers.restrictions = selectedRestrictions
-                    onboardingAnswers.allergies = selectedAllergies
-                    onboardingAnswers.customAllergyText = otherAllergyText.trimmingCharacters(in: .whitespacesAndNewlines)
-                    onContinue()
-                } label: {
-                    Text("Continue").frame(maxWidth: .infinity)
-                }
-                .buttonStyle(Sourdough.PrimaryButtonStyle(fullWidth: true))
+            Button {
+                onboardingAnswers.restrictions = selectedRestrictions
+                onboardingAnswers.allergies = selectedAllergies
+                onboardingAnswers.customAllergyText = otherAllergyText.trimmingCharacters(in: .whitespacesAndNewlines)
+                onContinue()
+            } label: {
+                Text("Continue").frame(maxWidth: .infinity)
             }
+            .buttonStyle(Sourdough.PrimaryButtonStyle(fullWidth: true))
             .padding(.horizontal, Sourdough.Spacing.screenMargin)
             .padding(.bottom, Sourdough.Spacing.screenMargin)
         }

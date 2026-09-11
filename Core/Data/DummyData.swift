@@ -457,4 +457,54 @@ enum DummyData {
             rating: 3.5
         )
     ]
+
+    /// Synthetic `pantry_events` spanning ~6 months so the Stats preview renders populated charts.
+    static let samplePantryEvents: [PantryEvent] = {
+        let cal = Calendar.current
+        let now = Date()
+        func daysAgo(_ n: Int) -> Date { cal.date(byAdding: .day, value: -n, to: now) ?? now }
+
+        struct Spec { let name: String; let category: Ingredient.Category; let cost: Double }
+        let bought: [(Spec, Int)] = [
+            (Spec(name: "baby spinach", category: .vegetables, cost: 3.80), 4),
+            (Spec(name: "baby spinach", category: .vegetables, cost: 3.80), 40),
+            (Spec(name: "baby spinach", category: .vegetables, cost: 3.80), 74),
+            (Spec(name: "baby spinach", category: .vegetables, cost: 3.80), 110),
+            (Spec(name: "whole milk", category: .dairy, cost: 4.20), 6),
+            (Spec(name: "whole milk", category: .dairy, cost: 4.20), 33),
+            (Spec(name: "whole milk", category: .dairy, cost: 4.20), 61),
+            (Spec(name: "sourdough loaf", category: .carbs, cost: 5.50), 9),
+            (Spec(name: "sourdough loaf", category: .carbs, cost: 5.50), 52),
+            (Spec(name: "chicken breast", category: .proteins, cost: 9.40), 12),
+            (Spec(name: "chicken breast", category: .proteins, cost: 9.40), 70),
+            (Spec(name: "cheddar", category: .dairy, cost: 6.10), 20),
+            (Spec(name: "roma tomatoes", category: .produce, cost: 2.90), 15),
+            (Spec(name: "roma tomatoes", category: .produce, cost: 2.90), 88),
+            (Spec(name: "basil", category: .produce, cost: 2.40), 18),
+            (Spec(name: "greek yogurt", category: .dairy, cost: 5.30), 25),
+        ]
+        let wasted: [(Spec, Int)] = [
+            (Spec(name: "baby spinach", category: .vegetables, cost: 3.80), 3),
+            (Spec(name: "baby spinach", category: .vegetables, cost: 3.80), 44),
+            (Spec(name: "baby spinach", category: .vegetables, cost: 3.80), 78),
+            (Spec(name: "whole milk", category: .dairy, cost: 4.20), 5),
+            (Spec(name: "whole milk", category: .dairy, cost: 4.20), 64),
+            (Spec(name: "sourdough loaf", category: .carbs, cost: 5.50), 55),
+            (Spec(name: "roma tomatoes", category: .produce, cost: 2.90), 90),
+            (Spec(name: "basil", category: .produce, cost: 2.40), 20),
+        ]
+        func rows(_ specs: [(Spec, Int)], _ outcome: PantryEventOutcome) -> [PantryEvent] {
+            specs.map { spec, day in
+                PantryEvent(
+                    ingredientName: spec.name,
+                    ingredientKey: spec.name,
+                    category: spec.category,
+                    outcome: outcome,
+                    costValue: spec.cost,
+                    occurredAt: daysAgo(day)
+                )
+            }
+        }
+        return rows(bought, .bought) + rows(wasted, .wasted)
+    }()
 }

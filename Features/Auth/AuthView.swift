@@ -22,6 +22,7 @@ struct AuthView: View {
     @State private var isLoading = false
     @State private var showRetrySave = false
     @State private var showRetryFinish = false
+    @State private var showOTPVerification = false
     @FocusState private var focusedField: AuthField?
 
     private enum AuthField { case email, password }
@@ -203,8 +204,7 @@ struct AuthView: View {
                                     let saved = await session.saveOnboardingAnswers(onboardingAnswers)
                                     showRetrySave = !saved
                                     if !showRetrySave {
-                                        await session.completeNicknameOnboarding(
-                                            nickname: onboardingAnswers.preferredName,
+                                        await session.finalizeAccountSetup(
                                             displayName: onboardingAnswers.preferredName
                                         )
                                         showRetryFinish = !session.isAuthenticated
@@ -229,8 +229,7 @@ struct AuthView: View {
                             Button {
                                 Task {
                                     isLoading = true
-                                    await session.completeNicknameOnboarding(
-                                        nickname: onboardingAnswers.preferredName,
+                                    await session.finalizeAccountSetup(
                                         displayName: onboardingAnswers.preferredName
                                     )
                                     showRetryFinish = !session.isAuthenticated
@@ -254,12 +253,13 @@ struct AuthView: View {
                                         email: email.trimmingCharacters(in: .whitespacesAndNewlines),
                                         password: password
                                     )
-                                    if session.authError == nil, session.emailError == nil, session.passwordError == nil {
+                                    if session.requiresOTPVerification {
+                                        showOTPVerification = true
+                                    } else if session.authError == nil, session.emailError == nil, session.passwordError == nil {
                                         let saved = await session.saveOnboardingAnswers(onboardingAnswers)
                                         showRetrySave = !saved
                                         if !showRetrySave {
-                                            await session.completeNicknameOnboarding(
-                                                nickname: onboardingAnswers.preferredName,
+                                            await session.finalizeAccountSetup(
                                                 displayName: onboardingAnswers.preferredName
                                             )
                                             showRetryFinish = !session.isAuthenticated
@@ -312,6 +312,13 @@ struct AuthView: View {
         .background(Sourdough.Colors.canvas)
         .toolbar(.hidden, for: .navigationBar)
         .background(SwipeBackEnabler())
+        .fullScreenCover(isPresented: $showOTPVerification) {
+            OTPVerificationView(
+                email: email.trimmingCharacters(in: .whitespacesAndNewlines),
+                onboardingAnswers: onboardingAnswers
+            )
+            .environmentObject(session)
+        }
     }
 }
 
@@ -371,82 +378,6 @@ struct AuthBackButtonStyle: ButtonStyle {
             )
             .scaleEffect(configuration.isPressed ? 0.985 : 1.0)
             .animation(.easeInOut(duration: 0.15), value: configuration.isPressed)
-    }
-}
-
-struct NicknameOnboardingView: View {
-    @EnvironmentObject private var session: AppSession
-    @Binding var username: String
-    @Binding var displayName: String
-    var onContinue: () -> Void
-    @State private var isLoading = false
-
-    private var canContinue: Bool {
-        !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        && !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        && !isLoading
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: Sourdough.Spacing.screenMargin) {
-                    Text("Set Up Your Profile")
-                        .foregroundStyle(Sourdough.Colors.ink)
-                        .sourdoughTextStyle(.display)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.top, Sourdough.Spacing.betweenBlocks)
-
-                    VStack(alignment: .leading, spacing: Sourdough.Spacing.iconToLabel) {
-                        Text("Username")
-                            .foregroundStyle(Sourdough.Colors.ink)
-                            .sourdoughTextStyle(.rowTitle)
-
-                        TextField("Choose a unique username", text: $username)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .foregroundStyle(Sourdough.Colors.ink)
-                            .sourdoughTextStyle(.body)
-                            .padding(.horizontal, Sourdough.Spacing.rowInternals)
-                            .frame(height: 52)
-                            .background(Sourdough.Colors.sunken)
-                            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
-                    }
-
-                    if let error = session.nicknameError {
-                        AuthErrorBanner(message: error)
-                    }
-                }
-                .padding(.horizontal, Sourdough.Spacing.screenMargin)
-            }
-
-            VStack(spacing: 0) {
-                Button {
-                    Task {
-                        isLoading = true
-                        let cleaned = username.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let available = try? await session.profileService.isNicknameAvailable(cleaned, excludingUserId: nil)
-                        isLoading = false
-                        if available == false {
-                            session.nicknameError = "This nickname is already taken."
-                        } else {
-                            session.nicknameError = nil
-                            onContinue()
-                        }
-                    }
-                } label: {
-                    HStack(spacing: Sourdough.Spacing.insideChip) {
-                        if isLoading { ProgressView().tint(.white) }
-                        Text("Continue")
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(Sourdough.PrimaryButtonStyle(fullWidth: true, isDisabled: !canContinue))
-                .disabled(!canContinue)
-            }
-            .padding(.horizontal, Sourdough.Spacing.screenMargin)
-            .padding(.bottom, Sourdough.Spacing.screenMargin)
-        }
     }
 }
 

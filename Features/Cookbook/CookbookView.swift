@@ -4,62 +4,67 @@ import PhosphorSwift
 struct CookbookView: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var savedRecipesStore: SavedRecipesStore
-    @State private var showingSettings = false
     @State private var showAddRecipeOptions = false
     @State private var showPasteURLSheet = false
     @State private var cookbookRecipeData: RecipeImportData? = nil
     @State private var pendingSheetWork: DispatchWorkItem? = nil
-    @State private var selectedTab: CookbookTab = .all
-    @State private var selectedMealFilter: MealFilter? = nil
+    @State private var primaryTab: CookbookPrimaryTab = .recipes
+    @State private var recipesFilter: RecipesFilter = .all
+    @AppStorage("cookbookLayoutMode") private var cookbookLayoutMode: CookbookLayoutMode = .list
     @State private var searchText = ""
     @State private var navigateToRecipe: Recipe?
+    @State private var navigateToCollection: RecipeCollection?
+    @State private var collectionPendingDelete: RecipeCollection?
     @State private var allergenPendingRecipe: Recipe?
     @State private var allergenWarningDetected: [String] = []
-    private enum CookbookTab: CaseIterable {
-        case all, personal, saved, shared
+    @State private var recipePendingDelete: Recipe?
+    @State private var recipePendingCollectionPick: Recipe?
+
+    private enum CookbookPrimaryTab: CaseIterable {
+        case recipes, collections
         var label: String {
             switch self {
-            case .all:      return "All"
-            case .personal: return "Personal"
-            case .saved:    return "Saved"
-            case .shared:   return "Shared"
+            case .recipes:     return "Recipes"
+            case .collections: return "Collections"
             }
         }
     }
 
-    private enum MealFilter: String, CaseIterable {
-        case breakfast, lunch, dinner, snack
-        var label: String { rawValue.capitalized }
-        var icon: Image {
+    private enum RecipesFilter: CaseIterable {
+        case all, saved, sharedByYou
+        var label: String {
             switch self {
-            case .breakfast: return Ph.sunHorizon.fill
-            case .lunch:     return Ph.sun.fill
-            case .dinner:    return Ph.moon.fill
-            case .snack:     return Ph.coffee.fill
+            case .all:         return "All"
+            case .saved:       return "Saved"
+            case .sharedByYou: return "Shared by you"
             }
         }
+    }
+
+    private enum CookbookLayoutMode: String {
+        case list, grid
     }
 
     private var searchQuery: String {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// "Saved" = bookmarked, not authored by the current user. "Shared by you" = authored by the
+    /// current user *and* published (`isUserShared` excludes private/unshared cookbook recipes
+    /// from this pill). "All" = `savedRecipes`, unfiltered. `isUserShared` is a recipe-level
+    /// "published to the community" flag set by the author at creation time — it does NOT mean
+    /// "shared by the current viewer", so it must be combined with `createdBy` to identify
+    /// authorship (same pattern as `RecipeDetailView.swift`'s `isOwner` check).
     private var baseRecipes: [Recipe] {
-        switch selectedTab {
-        case .all:      return savedRecipesStore.savedRecipes
-        case .personal: return savedRecipesStore.savedRecipes.filter { !$0.isUserShared }
-        case .saved:    return savedRecipesStore.savedRecipes.filter { $0.isUserShared }
-        case .shared:   return savedRecipesStore.sharedRecipes
+        switch recipesFilter {
+        case .all:         return savedRecipesStore.savedRecipes
+        case .saved:       return savedRecipesStore.savedRecipes.filter { $0.createdBy != savedRecipesStore.userId?.uuidString }
+        case .sharedByYou: return savedRecipesStore.savedRecipes.filter { $0.isUserShared && $0.createdBy == savedRecipesStore.userId?.uuidString }
         }
     }
 
     private var filteredRecipes: [Recipe] {
-        var recipes = baseRecipes
-        if let meal = selectedMealFilter {
-            recipes = recipes.filter {
-                savedRecipesStore.savedRecipeCategories[$0.id] == meal.rawValue
-            }
-        }
+        let recipes = baseRecipes
         let query = searchQuery
         guard !query.isEmpty else { return recipes }
         return recipes.filter {
@@ -77,23 +82,17 @@ struct CookbookView: View {
                 Spacer()
                 Button { showAddRecipeOptions = true } label: {
                     HStack(spacing: Sourdough.Spacing.iconToLabel) {
-                        Ph.plus.regular
-                            .frame(width: 14, height: 14)
+                        Ph.plus.bold
+                            .frame(width: 16, height: 16)
                         Text("Add")
                             .foregroundStyle(Sourdough.Colors.onAction)
-                            .sourdoughTextStyle(.caption)
+                            .sourdoughTextStyle(.numeric)
                     }
                     .foregroundStyle(Sourdough.Colors.onAction)
-                    .padding(.horizontal, Sourdough.Spacing.rowInternals)
-                    .frame(height: 36)
+                    .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                    .frame(height: 40)
                     .background(Sourdough.Colors.action)
                     .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                Button { showingSettings = true } label: {
-                    Ph.gear.regular
-                        .frame(width: 22, height: 22)
-                        .foregroundStyle(Sourdough.Colors.mutedInk)
                 }
                 .buttonStyle(.plain)
                 NotificationBellButton()
@@ -110,14 +109,34 @@ struct CookbookView: View {
         .navigationDestination(item: $navigateToRecipe) { recipe in
             RecipeDetailView(recipe: recipe)
         }
+        .navigationDestination(item: $navigateToCollection) { collection in
+            CollectionDetailView(collection: collection)
+        }
+        .alert("Delete collection?", isPresented: isShowingDeleteCollectionAlert, presenting: collectionPendingDelete) { collection in
+            Button("Cancel", role: .cancel) { collectionPendingDelete = nil }
+            Button("Delete", role: .destructive) {
+                savedRecipesStore.deleteCollection(collection)
+                collectionPendingDelete = nil
+            }
+        } message: { collection in
+            Text("This will delete \"\(collection.name)\". Recipes inside it will stay in your cookbook.")
+        }
+        .alert("Delete Recipe?", isPresented: Binding(
+            get: { recipePendingDelete != nil },
+            set: { if !$0 { recipePendingDelete = nil } }
+        ), presenting: recipePendingDelete) { recipe in
+            Button("Delete", role: .destructive) {
+                savedRecipesStore.deleteRecipe(recipe)
+                recipePendingDelete = nil
+            }
+            Button("Cancel", role: .cancel) { recipePendingDelete = nil }
+        } message: { recipe in
+            Text("\"\(recipe.title)\" will be permanently deleted and cannot be recovered.")
+        }
         .sheet(item: $allergenPendingRecipe) { recipe in
             AllergenWarningSheet(recipeName: recipe.title) {
                 navigateToRecipe = recipe
             }
-        }
-        .sheet(isPresented: $showingSettings) {
-            NavigationStack { SettingsView() }
-                .preferredColorScheme(session.preferredColorScheme)
         }
         .sheet(isPresented: $showAddRecipeOptions) {
             AddRecipeOptionsSheet(
@@ -153,24 +172,68 @@ struct CookbookView: View {
         .sheet(item: $cookbookRecipeData) { data in
             ShareRecipeSheet(sheetTitle: "Add Recipe", prefill: data, isCookbookRecipe: true)
         }
+        .sheet(item: $recipePendingCollectionPick) { recipe in
+            CollectionPickerSheet(recipe: recipe, excludeExisting: true) {
+                recipePendingCollectionPick = nil
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
+    }
+
+    // MARK: - Search Bar
+
+    private var searchBar: some View {
+        HStack(spacing: Sourdough.Spacing.insideChip) {
+            Ph.magnifyingGlass.regular
+                .frame(width: 18, height: 18)
+                .foregroundStyle(Sourdough.Colors.faintInk)
+            TextField(primaryTab == .collections ? "Search collections" : "Search recipes", text: $searchText)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .foregroundStyle(Sourdough.Colors.ink)
+                .sourdoughTextStyle(.body)
+            if !searchText.isEmpty {
+                Button { searchText = "" } label: {
+                    Ph.xCircle.fill
+                        .frame(width: 18, height: 18)
+                        .foregroundStyle(Sourdough.Colors.faintInk)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, Sourdough.Spacing.rowInternals)
+        .frame(height: 48)
+        .background(Sourdough.Colors.sunken)
+        .overlay(
+            RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous)
+                .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+        .padding(.horizontal, Sourdough.Spacing.screenMargin)
+        .padding(.top, Sourdough.Spacing.iconToLabel)
+        .padding(.bottom, Sourdough.Spacing.rowInternals)
     }
 
     // MARK: - Tab Bar
 
-    private var tabBar: some View {
+    private var primaryTabBar: some View {
         HStack(spacing: Sourdough.Spacing.iconToLabel) {
-            ForEach(CookbookTab.allCases, id: \.label) { tab in
+            ForEach(CookbookPrimaryTab.allCases, id: \.label) { tab in
                 Button {
-                    withAnimation(.easeInOut(duration: 0.2)) { selectedTab = tab }
+                    // Both tabs share one search field; carrying a recipe query across would
+                    // silently filter the collections grid (and vice versa).
+                    searchText = ""
+                    withAnimation(.easeInOut(duration: 0.2)) { primaryTab = tab }
                 } label: {
                     Text(tab.label)
-                        .foregroundStyle(selectedTab == tab ? Sourdough.Colors.ink : Sourdough.Colors.mutedInk)
-                        .sourdoughTextStyle(.caption)
+                        .foregroundStyle(primaryTab == tab ? Sourdough.Colors.ink : Sourdough.Colors.mutedInk)
+                        .sourdoughTextStyle(.rowTitle)
                         .frame(maxWidth: .infinity)
                         .frame(height: 36)
-                        .background(selectedTab == tab ? Sourdough.Colors.card : Color.clear)
+                        .background(primaryTab == tab ? Sourdough.Colors.card : Color.clear)
                         .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.input, style: .continuous))
-                        .shadow(color: selectedTab == tab ? .black.opacity(0.08) : .clear, radius: 4, y: 2)
+                        .shadow(color: primaryTab == tab ? .black.opacity(0.08) : .clear, radius: 4, y: 2)
                 }
                 .buttonStyle(.plain)
             }
@@ -179,184 +242,294 @@ struct CookbookView: View {
         .background(Sourdough.Colors.sunken)
         .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.tile, style: .continuous))
         .padding(.horizontal, Sourdough.Spacing.screenMargin)
-        .padding(.vertical, Sourdough.Spacing.rowInternals)
+        .padding(.bottom, Sourdough.Spacing.rowInternals)
+    }
+
+    private var recipesFilterRow: some View {
+        HStack(spacing: Sourdough.Spacing.iconToLabel) {
+            ForEach(RecipesFilter.allCases, id: \.label) { filter in
+                SelectableChip(label: filter.label, isSelected: recipesFilter == filter, size: .medium) {
+                    withAnimation(.easeInOut(duration: 0.2)) { recipesFilter = filter }
+                }
+            }
+            Spacer()
+            layoutToggle
+        }
+        .padding(.horizontal, Sourdough.Spacing.screenMargin)
+        .padding(.bottom, Sourdough.Spacing.rowInternals)
+    }
+
+    private var layoutToggle: some View {
+        HStack(spacing: 2) {
+            layoutToggleButton(.list, icon: Ph.list.bold)
+            layoutToggleButton(.grid, icon: Ph.squaresFour.bold)
+        }
+        .padding(3)
+        .background(Sourdough.Colors.sunken)
+        .clipShape(Capsule())
+    }
+
+    private func layoutToggleButton(_ mode: CookbookLayoutMode, icon: Image) -> some View {
+        let selected = cookbookLayoutMode == mode
+        return Button {
+            withAnimation(.easeInOut(duration: 0.16)) { cookbookLayoutMode = mode }
+        } label: {
+            icon
+                .frame(width: 15, height: 15)
+                .foregroundStyle(selected ? Sourdough.Colors.ink : Sourdough.Colors.mutedInk)
+                .frame(width: 30, height: 30)
+                .background(selected ? Sourdough.Colors.card : Color.clear)
+                .clipShape(Circle())
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Premium Content
 
     private var premiumContent: some View {
         VStack(spacing: 0) {
-            tabBar
+            searchBar
+            primaryTabBar
 
-            HStack(spacing: Sourdough.Spacing.insideChip) {
-                Ph.magnifyingGlass.regular
-                    .frame(width: 18, height: 18)
-                    .foregroundStyle(Sourdough.Colors.faintInk)
-                TextField("Search recipes", text: $searchText)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .foregroundStyle(Sourdough.Colors.ink)
-                    .sourdoughTextStyle(.body)
-                if !searchText.isEmpty {
-                    Button { searchText = "" } label: {
-                        Ph.xCircle.fill
-                            .frame(width: 18, height: 18)
-                            .foregroundStyle(Sourdough.Colors.faintInk)
-                    }
-                    .buttonStyle(.plain)
-                }
-                Menu {
-                    Button { selectedMealFilter = nil } label: {
-                        Label {
-                            Text("All")
-                        } icon: {
-                            if selectedMealFilter == nil {
-                                Ph.check.regular.frame(width: 16, height: 16)
-                            }
-                        }
-                    }
-                    Divider()
-                    ForEach(MealFilter.allCases, id: \.self) { meal in
-                        Button { selectedMealFilter = meal } label: {
-                            Label {
-                                Text(meal.label)
-                            } icon: {
-                                if selectedMealFilter == meal {
-                                    Ph.check.regular.frame(width: 16, height: 16)
-                                } else {
-                                    meal.icon.frame(width: 16, height: 16)
-                                }
-                            }
-                        }
-                    }
-                } label: {
-                    Ph.fadersHorizontal.regular
-                        .frame(width: 16, height: 16)
-                        .foregroundStyle(selectedMealFilter != nil ? Sourdough.Ramp.sage500 : Sourdough.Colors.faintInk)
-                }
-            }
-            .onChange(of: selectedTab) { selectedMealFilter = nil }
-            .padding(.horizontal, Sourdough.Spacing.rowInternals)
-            .frame(height: 48)
-            .background(Sourdough.Colors.sunken)
-            .overlay(
-                RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous)
-                    .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
-            .padding(.horizontal, Sourdough.Spacing.screenMargin)
-            .padding(.top, Sourdough.Spacing.iconToLabel)
-            .padding(.bottom, Sourdough.Spacing.rowInternals)
-
-            if savedRecipesStore.savedRecipes.isEmpty && searchQuery.isEmpty {
-                Spacer()
-                VStack(spacing: Sourdough.Spacing.rowInternals) {
-                    Ph.book.regular
-                        .frame(width: 48, height: 48)
-                        .foregroundStyle(Sourdough.Colors.faintInk)
-                    Text("Your cookbook is empty")
-                        .foregroundStyle(Sourdough.Colors.ink)
-                        .sourdoughTextStyle(.title2)
-                    Text("Save recipes from the community to build your collection.")
-                        .foregroundStyle(Sourdough.Colors.mutedInk)
-                        .sourdoughTextStyle(.subhead)
-                        .multilineTextAlignment(.center)
-                }
-                .padding(.horizontal, Sourdough.Spacing.aboveSectionHead)
-                Spacer()
+            if primaryTab == .collections {
+                CollectionsSection(
+                    navigateToCollection: $navigateToCollection,
+                    collectionPendingDelete: $collectionPendingDelete,
+                    searchQuery: searchText
+                )
             } else {
-                recipeList
+                recipesFilterRow
+
+                if savedRecipesStore.savedRecipes.isEmpty && searchQuery.isEmpty {
+                    Spacer()
+                    VStack(spacing: Sourdough.Spacing.rowInternals) {
+                        Ph.book.regular
+                            .frame(width: 48, height: 48)
+                            .foregroundStyle(Sourdough.Colors.faintInk)
+                        Text("Your cookbook is empty")
+                            .foregroundStyle(Sourdough.Colors.ink)
+                            .sourdoughTextStyle(.title2)
+                        Text("Save recipes from the community to build your collection.")
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                            .sourdoughTextStyle(.subhead)
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(.horizontal, Sourdough.Spacing.aboveSectionHead)
+                    Spacer()
+                } else {
+                    recipeList
+                }
             }
         }
+    }
+
+    private var isShowingDeleteCollectionAlert: Binding<Bool> {
+        Binding(
+            get: { collectionPendingDelete != nil },
+            set: { newValue in
+                if !newValue { collectionPendingDelete = nil }
+            }
+        )
     }
 
     // MARK: - Recipe List
 
     private var emptyStateMessage: String {
         if !searchQuery.isEmpty { return "No results for \"\(searchQuery)\"" }
-        switch selectedTab {
-        case .all:      return "Your cookbook is empty"
-        case .personal: return "No personal recipes yet"
-        case .saved:    return "No saved recipes yet"
-        case .shared:   return "No shared recipes yet"
+        switch recipesFilter {
+        case .all:         return "Your cookbook is empty"
+        case .saved:       return "No saved recipes yet"
+        case .sharedByYou: return "No shared recipes yet"
         }
     }
 
     private var emptyStateSubtitle: String {
         if !searchQuery.isEmpty { return "Try a different search term." }
-        switch selectedTab {
-        case .all:      return "Save recipes from the community to build your collection."
-        case .personal: return "Add one with the button above."
-        case .saved:    return "Browse the community to find recipes."
-        case .shared:   return "Share a recipe with the community."
+        switch recipesFilter {
+        case .all:         return "Save recipes from the community to build your collection."
+        case .saved:       return "Browse the community to find recipes."
+        case .sharedByYou: return "Share a recipe with the community."
         }
     }
 
-    private var recipeList: some View {
-        ScrollView(showsIndicators: false) {
-            LazyVStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
-                if filteredRecipes.isEmpty {
-                    VStack(spacing: Sourdough.Spacing.rowInternals) {
-                        Group {
-                            if searchQuery.isEmpty {
-                                Ph.book.regular
-                            } else {
-                                Ph.magnifyingGlass.regular
-                            }
-                        }
-                        .frame(width: 40, height: 40)
-                        .foregroundStyle(Sourdough.Colors.faintInk)
-                        Text(emptyStateMessage)
-                            .foregroundStyle(Sourdough.Colors.ink)
-                            .sourdoughTextStyle(.rowTitle)
-                        Text(emptyStateSubtitle)
-                            .foregroundStyle(Sourdough.Colors.mutedInk)
-                            .sourdoughTextStyle(.subhead)
-                            .multilineTextAlignment(.center)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.horizontal, Sourdough.Spacing.aboveSectionHead)
-                    .padding(.top, Sourdough.Spacing.aboveSectionHead)
+    private func handleTap(_ recipe: Recipe) {
+        allergenWarningDetected = []
+        let detected = detectAllergens(
+            in: recipe,
+            userAllergies: session.currentUserAllergies,
+            customAllergy: session.currentUserCustomAllergy
+        )
+        if detected.isEmpty {
+            navigateToRecipe = recipe
+        } else {
+            allergenWarningDetected = detected
+            allergenPendingRecipe = recipe
+        }
+    }
+
+    private var noResultsState: some View {
+        VStack(spacing: Sourdough.Spacing.rowInternals) {
+            Group {
+                if searchQuery.isEmpty {
+                    Ph.book.regular
                 } else {
-                    ForEach(filteredRecipes) { recipe in
-                        CookbookListRow(
-                            recipe: recipe,
-                            category: savedRecipesStore.savedRecipeCategories[recipe.id],
-                            onTap: { r in
-                                allergenWarningDetected = []
-                                let detected = detectAllergens(
-                                    in: r,
-                                    userAllergies: session.currentUserAllergies,
-                                    customAllergy: session.currentUserCustomAllergy
-                                )
-                                if detected.isEmpty {
-                                    navigateToRecipe = r
-                                } else {
-                                    allergenWarningDetected = detected
-                                    allergenPendingRecipe = r
-                                }
-                            },
-                            onUnsave: selectedTab == .saved ? {
-                                savedRecipesStore.unsaveRecipe(recipe)
-                            } : nil
-                        )
-                        .padding(.horizontal, Sourdough.Spacing.screenMargin)
-                    }
+                    Ph.magnifyingGlass.regular
                 }
             }
-            .padding(.bottom, 96)
+            .frame(width: 40, height: 40)
+            .foregroundStyle(Sourdough.Colors.faintInk)
+            Text(emptyStateMessage)
+                .foregroundStyle(Sourdough.Colors.ink)
+                .sourdoughTextStyle(.rowTitle)
+            Text(emptyStateSubtitle)
+                .foregroundStyle(Sourdough.Colors.mutedInk)
+                .sourdoughTextStyle(.subhead)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, Sourdough.Spacing.aboveSectionHead)
+    }
+
+    @ViewBuilder
+    private var recipeList: some View {
+        switch cookbookLayoutMode {
+        case .list: recipeRows
+        case .grid: recipeGrid
+        }
+    }
+
+    private var recipeRows: some View {
+        List {
+            if filteredRecipes.isEmpty {
+                noResultsState
+                    .padding(.top, Sourdough.Spacing.aboveSectionHead)
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            } else {
+                ForEach(filteredRecipes) { recipe in
+                    CookbookListRow(
+                        recipe: recipe,
+                        onTap: { handleTap($0) },
+                        onAddToCollection: { recipePendingCollectionPick = recipe },
+                        onUnsave: recipe.createdBy != savedRecipesStore.userId?.uuidString ? {
+                            savedRecipesStore.unsaveRecipe(recipe)
+                        } : nil,
+                        onDelete: (recipe.createdBy == savedRecipesStore.userId?.uuidString && !recipe.isUserShared) ? {
+                            recipePendingDelete = recipe
+                        } : nil
+                    )
+                    .listRowInsets(EdgeInsets(top: 0, leading: Sourdough.Spacing.screenMargin, bottom: 0, trailing: Sourdough.Spacing.screenMargin))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                }
+
+                Color.clear
+                    .frame(height: 96)
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            }
+        }
+        .listStyle(.plain)
+        .listRowSpacing(Sourdough.Spacing.insideChip)
+        .scrollIndicators(.hidden)
+        .scrollContentBackground(.hidden)
+    }
+
+    private let gridColumns = [
+        GridItem(.flexible(), spacing: Sourdough.Spacing.rowInternals),
+        GridItem(.flexible(), spacing: Sourdough.Spacing.rowInternals),
+    ]
+
+    private var recipeGrid: some View {
+        ScrollView(showsIndicators: false) {
+            if filteredRecipes.isEmpty {
+                noResultsState
+                    .padding(.top, Sourdough.Spacing.aboveSectionHead)
+            } else {
+                LazyVGrid(columns: gridColumns, spacing: Sourdough.Spacing.betweenBlocks) {
+                    ForEach(filteredRecipes) { recipe in
+                        CookbookGridTile(
+                            recipe: recipe,
+                            isSaved: savedRecipesStore.isSaved(recipe),
+                            onTap: { handleTap(recipe) },
+                            onAddToCollection: { recipePendingCollectionPick = recipe },
+                            onUnsave: recipe.createdBy != savedRecipesStore.userId?.uuidString ? {
+                                savedRecipesStore.unsaveRecipe(recipe)
+                            } : nil,
+                            onDelete: (recipe.createdBy == savedRecipesStore.userId?.uuidString && !recipe.isUserShared) ? {
+                                recipePendingDelete = recipe
+                            } : nil
+                        )
+                    }
+                }
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                .padding(.top, Sourdough.Spacing.insideChip)
+                .padding(.bottom, 96)
+            }
         }
     }
 
 }
 
+/// Grid-mode counterpart to `CookbookListRow` — same add/unsave/delete contract, rendered as a
+/// `RecipeCard` tile instead of a row. No `.swipeActions` (not inside a `List`); long-press
+/// context menu covers the same actions.
+private struct CookbookGridTile: View {
+    let recipe: Recipe
+    var isSaved: Bool = false
+    let onTap: () -> Void
+    var onAddToCollection: (() -> Void)? = nil
+    var onUnsave: (() -> Void)? = nil
+    var onDelete: (() -> Void)? = nil
+
+    var body: some View {
+        Button(action: onTap) {
+            RecipeCard(recipe: recipe, isSaved: isSaved)
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            if let onAddToCollection {
+                Button { onAddToCollection() } label: {
+                    Label {
+                        Text("Add to Collection")
+                    } icon: {
+                        Ph.folders.regular.frame(width: 16, height: 16)
+                    }
+                }
+            }
+            if let onUnsave {
+                Button(role: .destructive) { onUnsave() } label: {
+                    Label {
+                        Text("Remove from Saved")
+                    } icon: {
+                        Ph.bookmark.regular.frame(width: 16, height: 16)
+                    }
+                }
+            }
+            if let onDelete {
+                Button(role: .destructive) { onDelete() } label: {
+                    Label {
+                        Text("Delete Recipe")
+                    } icon: {
+                        Ph.trash.regular.frame(width: 16, height: 16)
+                    }
+                }
+            }
+        }
+    }
+}
+
 // MARK: - Cookbook List Row
 
-private struct CookbookListRow: View {
+struct CookbookListRow: View {
     let recipe: Recipe
-    let category: String?
     let onTap: (Recipe) -> Void
+    var onAddToCollection: (() -> Void)? = nil
     var onUnsave: (() -> Void)? = nil
+    var onDelete: (() -> Void)? = nil
+    var onRemoveFromCollection: (() -> Void)? = nil
 
     var metaLine: String {
         var parts: [String] = ["\(recipe.timeMinutes) min"]
@@ -370,17 +543,8 @@ private struct CookbookListRow: View {
             HStack(spacing: Sourdough.Spacing.rowInternals) {
                 // Thumbnail
                 Group {
-                    if recipe.isAIGenerated && recipe.imageData == nil && recipe.imagePath == nil {
-                        ZStack {
-                            LinearGradient(
-                                colors: [Sourdough.Colors.action, Sourdough.Ramp.sage500],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                            Ph.forkKnife.regular
-                                .frame(width: 20, height: 20)
-                                .foregroundStyle(Sourdough.Colors.onAction.opacity(0.85))
-                        }
+                    if recipe.imageData == nil && recipe.imagePath == nil {
+                        RecipeImagePlaceholder()
                     } else {
                         CachedRecipeImage(recipeID: recipe.id, imageData: recipe.imageData, imagePath: recipe.imagePath, thumbnail: true)
                     }
@@ -420,6 +584,15 @@ private struct CookbookListRow: View {
         .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
         .sourdoughElevation(.hairline, cornerRadius: Sourdough.Radius.card)
         .contextMenu {
+            if let onAddToCollection {
+                Button { onAddToCollection() } label: {
+                    Label {
+                        Text("Add to Collection")
+                    } icon: {
+                        Ph.folders.regular.frame(width: 16, height: 16)
+                    }
+                }
+            }
             if let onUnsave {
                 Button(role: .destructive) { onUnsave() } label: {
                     Label {
@@ -428,6 +601,44 @@ private struct CookbookListRow: View {
                         Ph.bookmark.regular.frame(width: 16, height: 16)
                     }
                 }
+            }
+            if let onDelete {
+                Button(role: .destructive) { onDelete() } label: {
+                    Label {
+                        Text("Delete Recipe")
+                    } icon: {
+                        Ph.trash.regular.frame(width: 16, height: 16)
+                    }
+                }
+            }
+            if let onRemoveFromCollection {
+                Button(role: .destructive) { onRemoveFromCollection() } label: {
+                    Label {
+                        Text("Remove from Collection")
+                    } icon: {
+                        Ph.folders.regular.frame(width: 16, height: 16)
+                    }
+                }
+            }
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            if let onUnsave {
+                Button(role: .destructive, action: onUnsave) {
+                    Label("Unsave", systemImage: "bookmark.slash")
+                }
+                .tint(Sourdough.Colors.destructive)
+            }
+            if let onDelete {
+                Button(role: .destructive, action: onDelete) {
+                    Label("Delete", systemImage: "trash")
+                }
+                .tint(Sourdough.Colors.destructive)
+            }
+            if let onRemoveFromCollection {
+                Button(role: .destructive, action: onRemoveFromCollection) {
+                    Label("Remove", systemImage: "folder.badge.minus")
+                }
+                .tint(Sourdough.Colors.destructive)
             }
         }
     }

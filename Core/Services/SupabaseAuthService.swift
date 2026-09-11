@@ -42,6 +42,58 @@ final class SupabaseAuthService: AuthServicing {
         }
     }
 
+    func requestPasswordReset(email: String) async throws {
+        do {
+            try await client.auth.resetPasswordForEmail(email)
+        } catch {
+            throw mapError(error)
+        }
+    }
+
+    func verifyPasswordResetOTP(email: String, token: String) async throws -> AppUser {
+        do {
+            let response = try await client.auth.verifyOTP(
+                email: email,
+                token: token,
+                type: .recovery
+            )
+            let user = response.user
+            return AppUser(id: user.id, email: user.email, phone: user.phone)
+        } catch {
+            throw mapError(error)
+        }
+    }
+
+    func updatePassword(_ newPassword: String) async throws {
+        do {
+            try await client.auth.update(user: UserAttributes(password: newPassword))
+        } catch {
+            throw mapError(error)
+        }
+    }
+
+    func updateEmail(_ newEmail: String) async throws {
+        do {
+            try await client.auth.update(user: UserAttributes(email: newEmail))
+        } catch {
+            throw mapError(error)
+        }
+    }
+
+    func verifyEmailChangeOTP(newEmail: String, token: String) async throws -> AppUser {
+        do {
+            let response = try await client.auth.verifyOTP(
+                email: newEmail,
+                token: token,
+                type: .emailChange
+            )
+            let user = response.user
+            return AppUser(id: user.id, email: user.email, phone: user.phone)
+        } catch {
+            throw mapError(error)
+        }
+    }
+
     func signOut() {
         Task { try? await client.auth.signOut() }
     }

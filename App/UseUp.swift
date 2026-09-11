@@ -6,9 +6,10 @@ struct UseUp: App {
     @StateObject private var pantryStore = PantryStore()
     @StateObject private var savedRecipesStore = SavedRecipesStore()
     @StateObject private var activityStore = UserActivityStore()
+    @StateObject private var statsStore = StatsStore()
     @StateObject private var revenueCatManager = RevenueCatManager.shared
     @Environment(\.scenePhase) private var scenePhase
-    private let recipeGenerator: RecipeGenerating = GeminiRecipeGenerator()
+    private let recipeGenerator: RecipeGenerating = SupabaseRecipeGenerator()
 
     init() {
         RevenueCatManager.shared.configure()
@@ -21,15 +22,20 @@ struct UseUp: App {
                 .environmentObject(pantryStore)
                 .environmentObject(savedRecipesStore)
                 .environmentObject(activityStore)
+                .environmentObject(statsStore)
                 .environmentObject(revenueCatManager)
                 .tint(DS.ColorToken.primary)
                 .preferredColorScheme(session.preferredColorScheme)
                 .task {
+                    revenueCatManager.session = session
+
+                    await session.clearSessionIfFreshInstall()
                     await session.restoreSession()
                     pantryStore.userId = session.currentUserId
                     savedRecipesStore.userId = session.currentUserId
                     savedRecipesStore.currentUserNickname = session.currentUserNickname
                     activityStore.userId = session.currentUserId
+                    statsStore.userId = session.currentUserId
 
                     if session.isAuthenticated, let userId = session.currentUserId {
                         await revenueCatManager.logIn(userId: userId.uuidString)
@@ -61,6 +67,7 @@ struct UseUp: App {
                     savedRecipesStore.userId = newId
                     savedRecipesStore.currentUserNickname = session.currentUserNickname
                     activityStore.userId = newId
+                    statsStore.userId = newId
                     if let newId {
                         Task {
                             await revenueCatManager.logIn(userId: newId.uuidString)
@@ -70,17 +77,9 @@ struct UseUp: App {
                         pantryStore.clearForSignOut()
                         savedRecipesStore.clearForSignOut()
                         activityStore.clearForSignOut()
+                        statsStore.clearForSignOut()
                         ExpirationNotificationScheduler.cancelAll()
                         Task { await revenueCatManager.logOut() }
-                    }
-                }
-                .onChange(of: revenueCatManager.isPremium) { _, isPremium in
-                    if isPremium {
-                        session.isPremium = true
-                        session.hasSeenOnboardingPaywall = true
-                    } else {
-                        session.isPremium = false
-                        Task { await session.refreshPremiumStatus() }
                     }
                 }
                 .onTapGesture {

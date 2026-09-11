@@ -5,6 +5,9 @@ enum OpenFoodFactsService {
         let name: String
         let quantity: String?
         let category: Ingredient.Category?
+        /// The scanned barcode, retained so downstream (cost resolution's Open Prices tier) can
+        /// use it without a second scan.
+        let barcode: String
     }
 
     enum LookupError: Error {
@@ -52,7 +55,8 @@ enum OpenFoodFactsService {
         }
 
         let hierarchy = product["categories_hierarchy"] as? [String] ?? []
-        return ProductInfo(name: name, quantity: quantity, category: mapCategory(from: hierarchy))
+        let category = mapCategory(from: hierarchy) ?? mapCategory(fromName: name)
+        return ProductInfo(name: name, quantity: quantity, category: category, barcode: barcode)
     }
 
     // Extracts a single canonical "value unit" pair from raw strings that may contain
@@ -126,6 +130,30 @@ enum OpenFoodFactsService {
         ]
         for (keywords, cat) in rules {
             for kw in keywords where hierarchy.contains(kw) {
+                return cat
+            }
+        }
+        return nil
+    }
+
+    // TODO(product): OFF's `categories_hierarchy` only covers a handful of taxonomy branches
+    // (packaged/processed goods, drinks, baby food, etc. mostly fall outside the rules above),
+    // so `mapCategory(from:)` returns nil for a large share of real scans. This is a rougher,
+    // illustrative fallback over the product name itself for those cases — better than always
+    // landing on "Other", but a keyword substring match, not authoritative.
+    static func mapCategory(fromName name: String) -> Ingredient.Category? {
+        let lowered = name.lowercased()
+        let rules: [([String], Ingredient.Category)] = [
+            (["chicken", "beef", "pork", "turkey", "bacon", "sausage", "ham", "steak", "meatball"], .proteins),
+            (["fish", "salmon", "tuna", "shrimp", "crab", "cod", "sardine", "anchovy"], .seafood),
+            (["milk", "cheese", "yogurt", "yoghurt", "butter", "cream"], .dairy),
+            (["bread", "pasta", "rice", "cereal", "oats", "oatmeal", "tortilla", "bagel", "noodle", "cracker"], .carbs),
+            (["apple", "banana", "berry", "berries", "orange", "grape", "mango", "pear", "peach", "melon"], .fruits),
+            (["carrot", "broccoli", "spinach", "lettuce", "pepper", "onion", "potato", "tomato", "cucumber", "kale"], .vegetables),
+            (["sauce", "ketchup", "mustard", "mayo", "mayonnaise", "dressing", "syrup", "jam", "honey", "salsa"], .condiments),
+        ]
+        for (keywords, cat) in rules {
+            for kw in keywords where lowered.contains(kw) {
                 return cat
             }
         }

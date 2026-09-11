@@ -15,6 +15,7 @@ private struct RecipeNotification: Identifiable {
     let matchedIngredient: String
     let cuisine: String
     let timeMinutes: Int
+    let recipe: Recipe?
 }
 
 // MARK: - Main View
@@ -27,6 +28,7 @@ struct NotificationListView: View {
 
     @State private var selectedTab: NotifTab = .all
     @State private var recipeSearchIngredient: Ingredient? = nil
+    @State private var navigateToRecipe: Recipe? = nil
     @State private var allExpiringItems: [Ingredient] = []
     @State private var todayItems: [Ingredient] = []
     @State private var thisWeekItems: [Ingredient] = []
@@ -35,8 +37,8 @@ struct NotificationListView: View {
 
     // MARK: - Data
 
-    private func shouldHide(_ id: String) -> Bool {
-        guard let readAt = pantryStore.notifReadTimestamps[id] else { return false }
+    private func shouldHide(_ readAt: Date?) -> Bool {
+        guard let readAt else { return false }
         return Date().timeIntervalSince(readAt) >= autoHideInterval
     }
 
@@ -44,7 +46,7 @@ struct NotificationListView: View {
     // via todayItems/thisWeekItems/unreadCount each re-filtering pantry.
     private func recomputeExpiring() {
         let all = pantryStore.expiringAlertCandidates()
-            .filter { !shouldHide("expiring_\($0.id)") }
+            .filter { !shouldHide($0.notifReadAt) }
             .sorted { ($0.expirationDate ?? .distantFuture) < ($1.expirationDate ?? .distantFuture) }
         allExpiringItems = all
         todayItems = all.filter { $0.isExpired || ($0.daysUntilExpiration ?? Int.max) == 0 }
@@ -56,7 +58,7 @@ struct NotificationListView: View {
 
     private var recipeSuggestionEligibleItems: [Ingredient] {
         pantryStore.ingredients.filter { ingredient in
-            guard !pantryStore.dismissedIngredientIds.contains(ingredient.id) else { return false }
+            guard !ingredient.dismissed else { return false }
             guard let days = ingredient.daysUntilExpiration else { return false }
             return days >= 0 && days <= 3
         }
@@ -64,6 +66,7 @@ struct NotificationListView: View {
 
     private var recipeNotifications: [RecipeNotification] {
         guard session.recipeSuggestionsEnabled else { return [] }
+        let allRecipes = savedRecipesStore.savedRecipes + savedRecipesStore.communityRecipes
         return recipeSuggestionEligibleItems
             .flatMap { ingredient -> [RecipeNotification] in
                 recipeCache.suggestions(for: ingredient).prefix(3).map { suggestion in
@@ -72,16 +75,18 @@ struct NotificationListView: View {
                         recipeName: suggestion.title,
                         matchedIngredient: ingredient.name,
                         cuisine: suggestion.cuisineRaw,
-                        timeMinutes: suggestion.timeMinutes
+                        timeMinutes: suggestion.timeMinutes,
+                        recipe: allRecipes.first { $0.id == suggestion.id }
                     )
                 }
             }
-            .filter { !shouldHide("recipe_\($0.id)") }
+            .filter { !shouldHide(pantryStore.recipeNotifReadTimestamps["recipe_\($0.id)"]) }
+            .filter { !pantryStore.dismissedRecipeNotifIDs.contains("recipe_\($0.id)") }
     }
 
     private var unreadCount: Int {
-        allExpiringItems.filter { pantryStore.notifReadTimestamps["expiring_\($0.id)"] == nil }.count
-            + recipeNotifications.filter { pantryStore.notifReadTimestamps["recipe_\($0.id)"] == nil }.count
+        allExpiringItems.filter { $0.notifReadAt == nil }.count
+            + recipeNotifications.filter { pantryStore.recipeNotifReadTimestamps["recipe_\($0.id)"] == nil }.count
     }
 
     private var needsAttentionCount: Int { todayItems.count }
@@ -105,28 +110,35 @@ struct NotificationListView: View {
             if isEmpty {
                 emptyStateView
             } else {
-                ScrollView(showsIndicators: false) {
-                    LazyVStack(spacing: 0) {
-                        switch selectedTab {
-                        case .all:      allTabContent
-                        case .expiring: expiringTabContent
-                        case .recipes:  recipesTabContent
-                        }
+                List {
+                    switch selectedTab {
+                    case .all:      allTabContent
+                    case .expiring: expiringTabContent
+                    case .recipes:  recipesTabContent
                     }
-                    .padding(.bottom, Sourdough.Spacing.betweenBlocks)
+
+                    Color.clear
+                        .frame(height: Sourdough.Spacing.betweenBlocks)
+                        .listRowInsets(EdgeInsets())
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
                 }
+                .listStyle(.plain)
+                .listRowSpacing(Sourdough.Spacing.insideChip)
+                .scrollIndicators(.hidden)
+                .scrollContentBackground(.hidden)
             }
         }
         .background(Sourdough.Colors.canvas)
         .toolbar(.hidden, for: .navigationBar)
         .preference(key: HideTabBarKey.self, value: true)
+        .background(SwipeBackEnabler())
         .onAppear {
             recomputeExpiring()
             markAllRead()
         }
         .onChange(of: pantryStore.ingredients) { _, _ in recomputeExpiring() }
-        .onChange(of: pantryStore.dismissedIngredientIds) { _, _ in recomputeExpiring() }
-        .onChange(of: pantryStore.notifReadTimestamps) { _, _ in recomputeExpiring() }
+        .onChange(of: pantryStore.recipeNotifReadTimestamps) { _, _ in recomputeExpiring() }
         .onChange(of: savedRecipesStore.communityRecipes) { _, recipes in
             guard session.recipeSuggestionsEnabled, !recipes.isEmpty else { return }
             SuggestedRecipeCache.shared.refresh(expiringIngredients: recipeSuggestionEligibleItems, allRecipes: recipes)
@@ -134,6 +146,9 @@ struct NotificationListView: View {
         .sheet(item: $recipeSearchIngredient) { ingredient in
             RecipeSuggestionSheet(ingredient: ingredient)
                 .environmentObject(savedRecipesStore)
+        }
+        .navigationDestination(item: $navigateToRecipe) { recipe in
+            RecipeDetailView(recipe: recipe)
         }
     }
 
@@ -211,63 +226,53 @@ struct NotificationListView: View {
     // MARK: - Tab Content
 
     @ViewBuilder
+    private func expiringSection(_ title: String, items: [Ingredient]) -> some View {
+        sectionHeader(title, count: items.count)
+            .notificationRow()
+        ForEach(items) { item in
+            expiringCard(item)
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                .notificationRow()
+        }
+    }
+
+    @ViewBuilder
+    private var recipeSection: some View {
+        sectionHeader("SUGGESTED RECIPES", count: nil)
+            .notificationRow()
+        ForEach(recipeNotifications) { notif in
+            recipeNotificationCard(notif)
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                .notificationRow()
+        }
+    }
+
+    @ViewBuilder
     private var allTabContent: some View {
         if !todayItems.isEmpty {
-            sectionHeader("NEEDS ATTENTION", count: todayItems.count)
-            ForEach(todayItems) { item in
-                expiringCard(item)
-                    .padding(.horizontal, Sourdough.Spacing.screenMargin)
-                    .padding(.bottom, Sourdough.Spacing.rowInternals)
-            }
+            expiringSection("NEEDS ATTENTION", items: todayItems)
         }
-
         if !thisWeekItems.isEmpty {
-            sectionHeader("THIS WEEK", count: thisWeekItems.count)
-            ForEach(thisWeekItems) { item in
-                expiringCard(item)
-                    .padding(.horizontal, Sourdough.Spacing.screenMargin)
-                    .padding(.bottom, Sourdough.Spacing.rowInternals)
-            }
+            expiringSection("THIS WEEK", items: thisWeekItems)
         }
-
         if !recipeNotifications.isEmpty {
-            sectionHeader("SUGGESTED RECIPES", count: nil)
-            ForEach(recipeNotifications) { notif in
-                recipeNotificationCard(notif)
-                    .padding(.horizontal, Sourdough.Spacing.screenMargin)
-                    .padding(.bottom, Sourdough.Spacing.rowInternals)
-            }
+            recipeSection
         }
     }
 
     @ViewBuilder
     private var expiringTabContent: some View {
         if !todayItems.isEmpty {
-            sectionHeader("NEEDS ATTENTION", count: todayItems.count)
-            ForEach(todayItems) { item in
-                expiringCard(item)
-                    .padding(.horizontal, Sourdough.Spacing.screenMargin)
-                    .padding(.bottom, Sourdough.Spacing.rowInternals)
-            }
+            expiringSection("NEEDS ATTENTION", items: todayItems)
         }
-
         if !thisWeekItems.isEmpty {
-            sectionHeader("THIS WEEK", count: thisWeekItems.count)
-            ForEach(thisWeekItems) { item in
-                expiringCard(item)
-                    .padding(.horizontal, Sourdough.Spacing.screenMargin)
-                    .padding(.bottom, Sourdough.Spacing.rowInternals)
-            }
+            expiringSection("THIS WEEK", items: thisWeekItems)
         }
     }
 
     @ViewBuilder
     private var recipesTabContent: some View {
-        ForEach(recipeNotifications) { notif in
-            recipeNotificationCard(notif)
-                .padding(.horizontal, Sourdough.Spacing.screenMargin)
-                .padding(.bottom, Sourdough.Spacing.rowInternals)
-        }
+        recipeSection
     }
 
     // MARK: - Section Header
@@ -295,15 +300,14 @@ struct NotificationListView: View {
     // MARK: - Expiring Card
 
     private func expiringCard(_ item: Ingredient) -> some View {
-        let notifId = "expiring_\(item.id)"
-        let isUnread = pantryStore.notifReadTimestamps[notifId] == nil
+        let isUnread = item.notifReadAt == nil
         let days = item.daysUntilExpiration
         let state: Sourdough.FreshnessState = item.isExpired ? .expired : Sourdough.FreshnessState(daysUntilExpiration: days ?? 0)
         let chipText = item.isExpired ? "Expired" : (days == 0 ? "Today" : days == 1 ? "1 day" : "\(days ?? 0) days")
 
         return VStack(spacing: 0) {
             HStack(spacing: Sourdough.Spacing.screenMargin) {
-                Text(item.category.icon)
+                Text(item.icon ?? item.category.icon)
                     .font(.system(size: 22))
                     .frame(width: 50, height: 50)
                     .background(Sourdough.Colors.sunken)
@@ -316,7 +320,7 @@ struct NotificationListView: View {
                         .lineLimit(1)
 
                     (Text(expirationLabel(item))
-                        .foregroundStyle(state.style.label)
+                        .foregroundStyle(state.inkSafeLabel)
                     + Text(infoSuffix(item))
                         .foregroundStyle(Sourdough.Colors.faintInk)
                     )
@@ -326,16 +330,6 @@ struct NotificationListView: View {
                 Spacer()
 
                 FreshnessChip(state: state, dayCountText: chipText)
-
-                Button {
-                    pantryStore.dismissNotification(for: item.id)
-                } label: {
-                    Ph.xCircle.fill
-                        .frame(width: 18, height: 18)
-                        .foregroundStyle(Sourdough.Colors.faintInk)
-                }
-                .buttonStyle(.plain)
-                .padding(.leading, Sourdough.Spacing.iconToLabel)
             }
             .padding(.top, Sourdough.Spacing.screenMargin)
             .padding(.horizontal, Sourdough.Spacing.screenMargin)
@@ -372,67 +366,96 @@ struct NotificationListView: View {
         .background(Sourdough.Colors.card)
         .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
         .sourdoughElevation(.hairline, cornerRadius: Sourdough.Radius.card)
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) {
+                withAnimation { pantryStore.dismissNotification(for: item.id) }
+            } label: {
+                Label { Text("Delete") } icon: { Image(systemName: "trash") }
+            }
+            .tint(Sourdough.Colors.destructive)
+        }
     }
 
     // MARK: - Recipe Notification Card
 
     private func recipeNotificationCard(_ notif: RecipeNotification) -> some View {
         let notifId = "recipe_\(notif.id)"
-        let isUnread = pantryStore.notifReadTimestamps[notifId] == nil
+        let isUnread = pantryStore.recipeNotifReadTimestamps[notifId] == nil
 
-        return VStack(alignment: .leading, spacing: 0) {
-            Text("Suggested")
-                .foregroundStyle(Sourdough.Ramp.honey600)
-                .sourdoughTextStyle(.sectionHead)
-                .padding(.horizontal, Sourdough.Spacing.rowInternals)
-                .padding(.vertical, 4)
-                .background(Sourdough.Ramp.honey100)
-                .clipShape(Capsule())
-                .padding(.top, Sourdough.Spacing.rowInternals)
-                .padding(.leading, Sourdough.Spacing.screenMargin)
+        return Button {
+            if let recipe = notif.recipe {
+                navigateToRecipe = recipe
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Suggested")
+                    .foregroundStyle(Sourdough.Ramp.honey600)
+                    .sourdoughTextStyle(.sectionHead)
+                    .padding(.horizontal, Sourdough.Spacing.rowInternals)
+                    .padding(.vertical, 4)
+                    .background(Sourdough.Ramp.honey100)
+                    .clipShape(Capsule())
+                    .padding(.top, Sourdough.Spacing.rowInternals)
+                    .padding(.leading, Sourdough.Spacing.screenMargin)
 
-            HStack(spacing: Sourdough.Spacing.screenMargin) {
-                Text("🍽️")
-                    .font(.system(size: 22))
+                HStack(spacing: Sourdough.Spacing.screenMargin) {
+                    Group {
+                        if let recipe = notif.recipe, recipe.imagePath != nil || recipe.imageData != nil {
+                            CachedRecipeImage(recipeID: recipe.id, imageData: recipe.imageData, imagePath: recipe.imagePath, thumbnail: true)
+                        } else {
+                            Text("🍽️")
+                                .font(.system(size: 22))
+                        }
+                    }
                     .frame(width: 50, height: 50)
                     .background(Sourdough.Colors.sunken)
                     .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.tile, style: .continuous))
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(notif.recipeName)
-                        .foregroundStyle(Sourdough.Colors.ink)
-                        .sourdoughTextStyle(.rowTitle)
-                        .lineLimit(1)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(notif.recipeName)
+                            .foregroundStyle(Sourdough.Colors.ink)
+                            .sourdoughTextStyle(.rowTitle)
+                            .lineLimit(1)
 
-                    (Text("Uses your \(notif.matchedIngredient.lowercased())")
-                        .foregroundStyle(Sourdough.Colors.mutedInk)
-                    + Text("  ·  \(notif.cuisine) · \(notif.timeMinutes) min")
+                        (Text("Uses your \(notif.matchedIngredient.lowercased())")
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                        + Text("  ·  \(notif.cuisine) · \(notif.timeMinutes) min")
+                            .foregroundStyle(Sourdough.Colors.faintInk)
+                        )
+                        .sourdoughTextStyle(.subhead)
+                    }
+
+                    Spacer()
+
+                    Ph.caretRight.regular
+                        .frame(width: 13, height: 13)
                         .foregroundStyle(Sourdough.Colors.faintInk)
-                    )
-                    .sourdoughTextStyle(.subhead)
                 }
-
-                Spacer()
-
-                Ph.caretRight.regular
-                    .frame(width: 13, height: 13)
-                    .foregroundStyle(Sourdough.Colors.faintInk)
+                .padding(.top, Sourdough.Spacing.screenMargin)
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                .padding(.bottom, Sourdough.Spacing.rowInternals)
+                .overlay(alignment: .topTrailing) {
+                    Circle()
+                        .fill(Sourdough.Ramp.honey500)
+                        .frame(width: 8, height: 8)
+                        .opacity(isUnread ? 1 : 0)
+                        .padding(.top, Sourdough.Spacing.rowInternals)
+                        .padding(.trailing, Sourdough.Spacing.rowInternals)
+                }
             }
-            .padding(.top, Sourdough.Spacing.screenMargin)
-            .padding(.horizontal, Sourdough.Spacing.screenMargin)
-            .padding(.bottom, Sourdough.Spacing.rowInternals)
-            .overlay(alignment: .topTrailing) {
-                Circle()
-                    .fill(Sourdough.Ramp.honey500)
-                    .frame(width: 8, height: 8)
-                    .opacity(isUnread ? 1 : 0)
-                    .padding(.top, Sourdough.Spacing.rowInternals)
-                    .padding(.trailing, Sourdough.Spacing.rowInternals)
-            }
+            .background(Sourdough.Colors.card)
+            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
+            .sourdoughElevation(.hairline, cornerRadius: Sourdough.Radius.card)
         }
-        .background(Sourdough.Colors.card)
-        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
-        .sourdoughElevation(.hairline, cornerRadius: Sourdough.Radius.card)
+        .buttonStyle(.plain)
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) {
+                withAnimation { pantryStore.dismissRecipeNotification("recipe_\(notif.id)") }
+            } label: {
+                Label { Text("Delete") } icon: { Image(systemName: "trash") }
+            }
+            .tint(Sourdough.Colors.destructive)
+        }
     }
 
     // MARK: - Empty State
@@ -473,9 +496,21 @@ struct NotificationListView: View {
     }
 
     private func markAllRead() {
-        let ids = allExpiringItems.map { "expiring_\($0.id)" }
-            + recipeNotifications.map { "recipe_\($0.id)" }
-        pantryStore.markAllNotificationsRead(ids: ids)
+        pantryStore.markAllExpiringNotificationsRead(ids: allExpiringItems.map(\.id))
+        pantryStore.markAllRecipeNotificationsRead(ids: recipeNotifications.map { "recipe_\($0.id)" })
+    }
+}
+
+// MARK: - List Row Styling
+
+private extension View {
+    /// Strips the default `List` row chrome so notification cards sit flush on the canvas,
+    /// matching the pantry list rows.
+    func notificationRow() -> some View {
+        self
+            .listRowInsets(EdgeInsets())
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
     }
 }
 
@@ -488,6 +523,8 @@ private struct RecipeSuggestionSheet: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var cache = SuggestedRecipeCache.shared
     @State private var selectedRecipe: Recipe? = nil
+    @State private var recipePendingSaveFlow: Recipe?
+    @State private var recipePendingCollectionPick: Recipe?
 
     private var suggestions: [SuggestedRecipeCache.Suggestion] {
         cache.suggestions(for: ingredient)
@@ -515,9 +552,11 @@ private struct RecipeSuggestionSheet: View {
                             showBadge: false,
                             isSaved: savedRecipesStore.isSaved(recipe),
                             onSave: {
-                                savedRecipesStore.isSaved(recipe)
-                                    ? savedRecipesStore.unsaveRecipe(recipe)
-                                    : savedRecipesStore.saveRecipe(recipe)
+                                if savedRecipesStore.isSaved(recipe) {
+                                    savedRecipesStore.unsaveRecipe(recipe)
+                                } else {
+                                    recipePendingSaveFlow = recipe
+                                }
                             }
                         )
                     }
@@ -581,6 +620,25 @@ private struct RecipeSuggestionSheet: View {
             }
             .navigationDestination(item: $selectedRecipe) { recipe in
                 RecipeDetailView(recipe: recipe)
+            }
+            .sheet(item: $recipePendingSaveFlow) { recipe in
+                SaveChoiceSheet(
+                    onSaveToCollection: {
+                        recipePendingSaveFlow = nil
+                        recipePendingCollectionPick = recipe
+                    },
+                    onJustSave: {
+                        savedRecipesStore.saveRecipe(recipe)
+                        recipePendingSaveFlow = nil
+                    }
+                )
+                .presentationDetents([.height(220)])
+            }
+            .sheet(item: $recipePendingCollectionPick) { recipe in
+                CollectionPickerSheet(recipe: recipe) {
+                    recipePendingCollectionPick = nil
+                }
+                .presentationDetents([.medium, .large])
             }
             .navigationTitle("Recipes using \(ingredient.name.lowercased())")
             .navigationBarTitleDisplayMode(.inline)

@@ -1,7 +1,7 @@
 import Foundation
 
 final class MockRecipeGenerator: RecipeGenerating {
-    func generateRecipes(for ingredientNames: [String], options: GenerationOptions, recipeCount: Int = 3) async throws -> [Recipe] {
+    func generateRecipes(for ingredientNames: [String], options: GenerationOptions, count: Int) async throws -> [Recipe] {
         let cleaned = ingredientNames
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
             .filter { !$0.isEmpty }
@@ -13,7 +13,7 @@ final class MockRecipeGenerator: RecipeGenerating {
         try await Task.sleep(for: .seconds(3))
 
         let uniqueIngredients = Array(Set(cleaned)).sorted()
-        let templates = Array(recipeTemplates(for: uniqueIngredients).prefix(recipeCount))
+        let templates = Array(recipeTemplates(for: uniqueIngredients).prefix(count))
 
         return templates.map { template in
             let macros = estimateMacros(
@@ -34,6 +34,12 @@ final class MockRecipeGenerator: RecipeGenerating {
                 sources: template.sources
             )
         }
+    }
+
+    func snapChefRecipe(for ingredientNames: [String], options: GenerationOptions, isRegeneration: Bool) async throws -> SnapChefGeneration {
+        let recipes = try await generateRecipes(for: ingredientNames, options: options, count: 1)
+        guard let recipe = recipes.first else { throw RecipeGenerationError.emptyResponse }
+        return SnapChefGeneration(recipe: recipe, freeRegensRemaining: isRegeneration ? 1 : 2, countedAgainstDailyLimit: !isRegeneration)
     }
 
     private func recipeTemplates(for ingredients: [String]) -> [RecipeTemplate] {

@@ -106,6 +106,22 @@ struct QuantityConverter {
         return Parsed(value: value, unit: unit)
     }
 
+    /// The `Unit` for a bare label like `"g"` / `"lb"` / `"whole"` (`.unknown` for unrecognized).
+    static func unit(fromLabel label: String) -> Unit {
+        parse("1 \(label)")?.unit ?? .unknown
+    }
+
+    /// Converts `value` from one unit label to another, or nil when the units aren't in the same
+    /// measurable category (weight/volume/count) — e.g. "cup" → "lb" can't be done without a
+    /// density, so the caller should fall back rather than guess.
+    static func convertQuantity(_ value: Double, from fromLabel: String, to toLabel: String) -> Double? {
+        let f = unit(fromLabel: fromLabel)
+        let t = unit(fromLabel: toLabel)
+        if f == t { return value }
+        guard f.category == t.category, f.category != .unknown else { return nil }
+        return t.fromBase(f.toBase(value))
+    }
+
     static func formatQuantity(_ value: Double) -> String {
         let s = String(format: "%.1f", value)
         return s.hasSuffix(".0") ? String(s.dropLast(2)) : s
@@ -133,6 +149,28 @@ struct QuantityConverter {
         guard gapBase > 0 else { return nil }
         let gapValue = need.unit.fromBase(gapBase)
         return "\(formatQuantity(gapValue)) \(need.unit.label)"
+    }
+
+    // MARK: - Resolved quantity fallback chain
+
+    enum ResolvedQuantity {
+        case precise(String)
+        case estimate(Ingredient.QuantityEstimate)
+        case uncertain
+    }
+
+    /// Resolves what's known about an ingredient's quantity, preferring the precise `amount`
+    /// string (unchanged meaning/consumers) over the rough `quantityEstimate` bucket, falling
+    /// back to `.uncertain` when neither is set. `.uncertain` is never persisted — it only
+    /// exists here, at read time.
+    ///
+    // TODO(product): hook point for a future "is this enough for N meals" weekly-planning
+    // feature. Not built here — this only guarantees a clean three-way resolved value to build
+    // it against later.
+    static func resolvedQuantity(for ingredient: Ingredient) -> ResolvedQuantity {
+        if let amount = ingredient.amount, !amount.isEmpty { return .precise(amount) }
+        if let estimate = ingredient.quantityEstimate { return .estimate(estimate) }
+        return .uncertain
     }
 
     // MARK: - Private helpers

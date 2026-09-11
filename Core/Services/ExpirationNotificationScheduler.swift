@@ -24,78 +24,107 @@ enum ExpirationNotificationScheduler {
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyyMMdd"
 
-        var grouped: [Date: [Ingredient]] = [:]
-        for ingredient in expiring {
-            guard let date = ingredient.expirationDate else { continue }
-            let key = calendar.startOfDay(for: date)
-            grouped[key, default: []].append(ingredient)
-        }
-
         var allRequests: [(fireDate: Date, request: UNNotificationRequest)] = []
 
-        for (expirationDate, ingredientsForDate) in grouped {
-            guard let daysUntil = calendar.dateComponents([.day], from: today, to: expirationDate).day else { continue }
+        let expiringItemsEnabled = (UserDefaults.standard.object(forKey: "expiringItemsNotificationsEnabled") as? Bool) ?? true
 
-            for reminderOffset in 0...daysUntil {
-                guard let fireDate = calendar.date(byAdding: .day, value: reminderOffset, to: today) else { continue }
-                let daysRemaining = daysUntil - reminderOffset
-
-                let content = UNMutableNotificationContent()
-                content.sound = .default
-
-                if ingredientsForDate.count == 1 {
-                    let name = ingredientsForDate[0].name
-                    switch daysRemaining {
-                    case 0:
-                        content.title = "Your \(name) expires today"
-                    case 1:
-                        content.title = "Your \(name) expires tomorrow"
-                    default:
-                        content.title = "Your \(name) expires in \(daysRemaining) days"
-                    }
-                } else {
-                    let count = ingredientsForDate.count
-                    switch daysRemaining {
-                    case 0:
-                        content.title = "You have \(count) things expiring today"
-                    case 1:
-                        content.title = "You have \(count) things expiring tomorrow"
-                    default:
-                        content.title = "You have \(count) things about to go bad in \(daysRemaining) days"
-                    }
-                    content.body = ingredientsForDate.map(\.name).joined(separator: ", ")
-                }
-
-                var dateComponents = calendar.dateComponents([.year, .month, .day], from: fireDate)
-                dateComponents.hour = 9
-                dateComponents.minute = 0
-
-                let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: false)
-                let identifier = "expiration-\(dateFormatter.string(from: fireDate))-\(dateFormatter.string(from: expirationDate))"
-                let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
-
-                allRequests.append((fireDate: fireDate, request: request))
+        // Group by the day the reminder actually FIRES (not by expiration date) so ingredients
+        // with different expiration dates whose daily reminder cascades happen to land on the
+        // same morning are merged into one notification instead of arriving separately.
+        var byFireOffset: [Int: [(ingredient: Ingredient, daysRemaining: Int)]] = [:]
+        for ingredient in expiring {
+            guard let expirationDate = ingredient.expirationDate,
+                  let daysUntil = calendar.dateComponents([.day], from: today, to: calendar.startOfDay(for: expirationDate)).day,
+                  daysUntil >= 0
+            else { continue }
+            for fireOffset in 0...daysUntil {
+                byFireOffset[fireOffset, default: []].append((ingredient, daysUntil - fireOffset))
             }
+        }
+
+        for (fireOffset, items) in byFireOffset where expiringItemsEnabled {
+            guard let fireDate = calendar.date(byAdding: .day, value: fireOffset, to: today) else { continue }
+
+            let content = UNMutableNotificationContent()
+            content.sound = .default
+
+            if items.count == 1 {
+                let (ingredient, daysRemaining) = items[0]
+                switch daysRemaining {
+                case 0:
+                    content.title = "Your \(ingredient.name) expires today"
+                case 1:
+                    content.title = "Your \(ingredient.name) expires tomorrow"
+                default:
+                    content.title = "Your \(ingredient.name) expires in \(daysRemaining) days"
+                }
+            } else {
+                let uniqueDays = Set(items.map(\.daysRemaining))
+                if uniqueDays.count == 1, let daysRemaining = uniqueDays.first {
+                    switch daysRemaining {
+                    case 0:
+                        content.title = "You have \(items.count) things expiring today"
+                    case 1:
+                        content.title = "You have \(items.count) things expiring tomorrow"
+                    default:
+                        content.title = "You have \(items.count) things about to go bad in \(daysRemaining) days"
+                    }
+                    content.body = items.map { $0.ingredient.name }.joined(separator: ", ")
+                } else {
+                    // Mixed urgency (different expiration dates, same fire day) — annotate each.
+                    content.title = "You have \(items.count) items expiring soon"
+                    content.body = items
+                        .sorted { $0.daysRemaining < $1.daysRemaining }
+                        .map { entry -> String in
+                            switch entry.daysRemaining {
+                            case 0: return "\(entry.ingredient.name) (today)"
+                            case 1: return "\(entry.ingredient.name) (tomorrow)"
+                            default: return "\(entry.ingredient.name) (\(entry.daysRemaining)d)"
+                            }
+                        }
+                        .joined(separator: ", ")
+                }
+            }
+
+            var dateComponents = calendar.dateComponents([.year, .month, .day], from: fireDate)
+            dateComponents.hour = 9
+            dateComponents.minute = 0
+
+            let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: false)
+            let identifier = "expiration-\(dateFormatter.string(from: fireDate))"
+            let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
+
+            allRequests.append((fireDate: fireDate, request: request))
         }
 
         let recipeSuggestionsEnabled = (UserDefaults.standard.object(forKey: "recipeSuggestionsEnabled") as? Bool) ?? true
         if recipeSuggestionsEnabled {
+            var byFireDay: [Date: [Ingredient]] = [:]
             for ingredient in expiring {
                 guard let expirationDate = ingredient.expirationDate else { continue }
                 let daysUntil = calendar.dateComponents([.day], from: today, to: calendar.startOfDay(for: expirationDate)).day ?? 0
-                let fireDay = daysUntil > 0 ? expirationDate : Date()
+                let fireDay = daysUntil > 0 ? calendar.startOfDay(for: expirationDate) : today
+                byFireDay[fireDay, default: []].append(ingredient)
+            }
 
+            for (fireDay, ingredientsForDay) in byFireDay {
                 let content = UNMutableNotificationContent()
                 content.sound = .default
-                content.title = "Use your \(ingredient.name) before it expires!"
-                content.body = "Tap for recipe ideas to use it up."
+
+                if ingredientsForDay.count == 1 {
+                    content.title = "Use your \(ingredientsForDay[0].name) before it expires!"
+                    content.body = "Tap for recipe ideas to use it up."
+                } else {
+                    content.title = "Use up \(ingredientsForDay.count) ingredients before they expire!"
+                    content.body = ingredientsForDay.map(\.name).joined(separator: ", ") + " — tap for recipe ideas."
+                }
 
                 var dateComponents = calendar.dateComponents([.year, .month, .day], from: fireDay)
                 dateComponents.hour = 18
                 dateComponents.minute = 0
 
                 let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: false)
-                let identifier = "recipe-suggestion-\(ingredient.id.uuidString)"
+                let identifier = "recipe-suggestion-\(dateFormatter.string(from: fireDay))"
                 let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
 
                 allRequests.append((fireDate: fireDay, request: request))

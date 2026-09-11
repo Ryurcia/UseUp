@@ -20,9 +20,9 @@ struct GroceryListView: View {
     private var items: [GroceryItem] {
         (recipe.ingredientsUsed + recipe.missingIngredients).map { ingredient in
             let pantryMatch = PantryMatcher.find(for: ingredient.name, in: pantryStore.ingredients)
-            let sufficient = QuantityConverter.isSufficient(have: pantryMatch?.amount, need: ingredient.quantity)
+            let sufficient = QuantityConverter.isSufficient(have: pantryMatch?.totalAmount, need: ingredient.quantity)
             let shortfall = sufficient == false
-                ? QuantityConverter.shortfallDescription(have: pantryMatch?.amount, need: ingredient.quantity)
+                ? QuantityConverter.shortfallDescription(have: pantryMatch?.totalAmount, need: ingredient.quantity)
                 : nil
             return GroceryItem(id: ingredient.id, ingredient: ingredient, isInPantry: pantryMatch != nil, isSufficient: sufficient, shortfall: shortfall)
         }

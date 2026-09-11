@@ -2,8 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>NSFaceIDUsageDescription</key>
-	<string>UseUp uses Face ID to protect your account.</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
@@ -22,25 +20,20 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<key>GeminiAPIKey</key>
-	<string>$(GEMINI_API_KEY)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSCameraUsageDescription</key>
-	<string>UseUp uses the camera to let you take photos of your recipes.</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>UseUp uses your microphone to let you speak ingredients into your pantry.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>UseUp transcribes your voice so you can add ingredients hands-free.</string>
+	<string>UseUp uses the camera to scan groceries and barcodes into your pantry and to photograph your recipes.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>UseUp uses your photo library to let you add photos to your recipes.</string>
+	<string>UseUp uses your photo library to let you add photos of groceries and recipes.</string>
 	<key>SupabaseAnonKey</key>
 	<string>$(SUPABASE_ANON_KEY)</string>
+	<key>RevenueCatAPIKey</key>
+	<string>$(REVENUECAT_API_KEY)</string>
 	<key>UIAppFonts</key>
 	<array>
-		<string>Satoshi-Variable.ttf</string>
 		<string>CalSans-Regular.ttf</string>
 		<string>Figtree-VariableFont_wght.ttf</string>
 		<string>Newsreader-VariableFont_opsz,wght.ttf</string>
@@ -55,13 +48,6 @@
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
-	</array>
-	<key>UISupportedInterfaceOrientations~ipad</key>
-	<array>
-		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationPortraitUpsideDown</string>
-		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 </dict>
 </plist>

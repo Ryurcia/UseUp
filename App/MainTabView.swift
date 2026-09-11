@@ -43,12 +43,17 @@ struct MainTabView: View {
     let recipeGenerator: RecipeGenerating
     @EnvironmentObject private var session: AppSession
     @State private var selectedTab: Tab = .pantry
-    @State private var slideDirection: Edge = .trailing
     @State private var pantryPath = NavigationPath()
     @State private var recipesPath = NavigationPath()
     @State private var generatePath = NavigationPath()
     @State private var cookbookPath = NavigationPath()
     @State private var hideTabBar = false
+
+    // Global "Add Ingredient" flow — lives here (not PantryView) so it's reachable from any tab.
+    // Pro is required to log items at all: Photo Scan is the sole logging entry point, gated by
+    // the paywall for free accounts (manual entry has been fully retired).
+    @State private var showingPhotoScan = false
+    @State private var showingPaywall = false
 
     private func notificationBinding(for tab: Tab) -> Binding<Bool> {
         Binding(
@@ -57,13 +62,36 @@ struct MainTabView: View {
         )
     }
 
+    private func profileBinding(for tab: Tab) -> Binding<Bool> {
+        Binding(
+            get: { session.showProfile && selectedTab == tab },
+            set: { if !$0 { session.showProfile = false } }
+        )
+    }
+
+    /// Single entry point for switching tabs. Generate requires Pro — a non-paying user tapping it
+    /// gets the paywall and stays where they are (mirrors the "+" Add button's gate).
+    private func selectTab(_ tab: Tab) {
+        if tab == .generate, !session.isPremium {
+            showingPaywall = true
+            return
+        }
+        guard tab != selectedTab else { return }
+        withAnimation(.easeInOut(duration: 0.25)) {
+            selectedTab = tab
+        }
+    }
+
     var body: some View {
         ZStack {
             ZStack {
                 NavigationStack(path: $pantryPath) {
-                    PantryView()
+                    PantryView(isActiveTab: selectedTab == .pantry)
                         .navigationDestination(isPresented: notificationBinding(for: .pantry)) {
                             NotificationListView()
+                        }
+                        .navigationDestination(isPresented: profileBinding(for: .pantry)) {
+                            AccountSettingsView()
                         }
                 }
                 .opacity(selectedTab == .pantry ? 1 : 0)
@@ -74,6 +102,9 @@ struct MainTabView: View {
                         .navigationDestination(isPresented: notificationBinding(for: .recipes)) {
                             NotificationListView()
                         }
+                        .navigationDestination(isPresented: profileBinding(for: .recipes)) {
+                            AccountSettingsView()
+                        }
                 }
                 .opacity(selectedTab == .recipes ? 1 : 0)
                 .allowsHitTesting(selectedTab == .recipes)
@@ -83,6 +114,9 @@ struct MainTabView: View {
                         .navigationDestination(isPresented: notificationBinding(for: .generate)) {
                             NotificationListView()
                         }
+                        .navigationDestination(isPresented: profileBinding(for: .generate)) {
+                            AccountSettingsView()
+                        }
                 }
                 .opacity(selectedTab == .generate ? 1 : 0)
                 .allowsHitTesting(selectedTab == .generate)
@@ -91,6 +125,9 @@ struct MainTabView: View {
                     CookbookView()
                         .navigationDestination(isPresented: notificationBinding(for: .cookbook)) {
                             NotificationListView()
+                        }
+                        .navigationDestination(isPresented: profileBinding(for: .cookbook)) {
+                            AccountSettingsView()
                         }
                 }
                 .opacity(selectedTab == .cookbook ? 1 : 0)
@@ -102,12 +139,22 @@ struct MainTabView: View {
                 generatePath = NavigationPath()
                 cookbookPath = NavigationPath()
                 session.showNotifications = false
+                session.showProfile = false
             }
             .onChange(of: session.requestedTab) { _, tab in
                 guard let tab else { return }
                 session.showNotifications = false
-                selectedTab = tab
                 session.requestedTab = nil
+                selectTab(tab)
+            }
+            .onChange(of: session.requestedShowAddIngredient) { _, requested in
+                guard requested else { return }
+                if session.isPremium {
+                    showingPhotoScan = true
+                } else {
+                    showingPaywall = true
+                }
+                session.requestedShowAddIngredient = false
             }
             .onPreferenceChange(HideTabBarKey.self) { hideTabBar = $0 }
             .safeAreaInset(edge: .bottom) {
@@ -119,21 +166,51 @@ struct MainTabView: View {
             if !hideTabBar {
                 VStack {
                     Spacer()
-                    FloatingTabBar(
-                        selectedTab: $selectedTab,
-                        slideDirection: $slideDirection
+                    GlobalBottomNav(
+                        selectedTab: selectedTab,
+                        onSelect: selectTab,
+                        onAddTapped: {
+                            if session.isPremium {
+                                showingPhotoScan = true
+                            } else {
+                                showingPaywall = true
+                            }
+                        }
                     )
                 }
             }
         }
+        .fullScreenCover(isPresented: $showingPhotoScan) {
+            PhotoScanCaptureView(onComplete: { showingPhotoScan = false })
+        }
+        .sheet(isPresented: $showingPaywall) {
+            UseUpPaywallView(onDismiss: { showingPaywall = false })
+        }
     }
 }
 
-// MARK: - Floating Tab Bar
+// MARK: - Global Bottom Nav (two groups: tabs pill + isolated Add circle)
 
-private struct FloatingTabBar: View {
-    @Binding var selectedTab: Tab
-    @Binding var slideDirection: Edge
+private struct GlobalBottomNav: View {
+    let selectedTab: Tab
+    let onSelect: (Tab) -> Void
+    let onAddTapped: () -> Void
+
+    var body: some View {
+        HStack(spacing: Sourdough.Spacing.rowInternals) {
+            TabGroup(selectedTab: selectedTab, onSelect: onSelect)
+            AddPillButton(action: onAddTapped)
+        }
+        .padding(.horizontal, Sourdough.Spacing.screenMargin)
+        .padding(.bottom, Sourdough.Spacing.insideChip)
+    }
+}
+
+// MARK: - Group A: tab cluster
+
+private struct TabGroup: View {
+    let selectedTab: Tab
+    let onSelect: (Tab) -> Void
 
     var body: some View {
         HStack(spacing: 0) {
@@ -142,18 +219,14 @@ private struct FloatingTabBar: View {
                     tab: tab,
                     isSelected: selectedTab == tab
                 ) {
-                    slideDirection = tab.rawValue > selectedTab.rawValue ? .trailing : .leading
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        selectedTab = tab
-                    }
+                    onSelect(tab)
                 }
             }
         }
-        .padding(.vertical, DS.Spacing.space2)
-        .padding(.horizontal, DS.Spacing.space5)
+        .padding(.vertical, Sourdough.Spacing.insideChip)
+        .padding(.horizontal, Sourdough.Spacing.screenMargin)
         .modifier(TabBarBackgroundModifier())
-        .padding(.horizontal, DS.Spacing.space5)
-        .padding(.bottom, DS.Spacing.space2)
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -173,7 +246,7 @@ private struct TabBarBackgroundModifier: ViewModifier {
                 )
                 .overlay(
                     Capsule()
-                        .stroke(DS.ColorToken.borderDefault.opacity(0.3), lineWidth: 0.5)
+                        .stroke(Sourdough.Colors.hairline, lineWidth: 0.5)
                 )
         }
     }
@@ -197,12 +270,37 @@ private struct TabBarButton: View {
             }
             .foregroundStyle(
                 isSelected
-                    ? DS.ColorToken.accent
-                    : DS.ColorToken.textTertiary
+                    ? Sourdough.Colors.action
+                    : Sourdough.Colors.mutedInk
             )
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Group B: isolated Add circle
+
+/// Styling copied directly from the FAB this replaces (formerly `PantryView.fabButton`'s "+"
+/// circle) — same size/fill/shadow, just relocated into the global nav. Opens Photo Scan for Pro
+/// accounts, the paywall otherwise — logging an item requires Pro.
+private struct AddPillButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Ph.plus.bold
+                .frame(width: 24, height: 24)
+                .foregroundStyle(Sourdough.Colors.onAction)
+                .frame(width: 56, height: 56)
+                .background(
+                    Circle()
+                        .fill(Sourdough.Colors.action)
+                        .shadow(color: Sourdough.Ramp.linen900.opacity(0.3), radius: 8, x: 0, y: 4)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Add Ingredient")
     }
 }

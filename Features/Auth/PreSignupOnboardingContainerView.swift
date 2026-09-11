@@ -4,26 +4,29 @@ struct PreSignupOnboardingContainerView: View {
     @EnvironmentObject private var session: AppSession
     @Environment(\.dismiss) private var dismiss
     @StateObject private var onboardingAnswers = OnboardingAnswers()
-    @State private var currentStep = 0 // 0=Intro 1=Name 2=Struggle 3=Spend 4=Waste 5=Goal 6=PreferencesPreview 7=Dietary 8=RestrictionsAllergies 9=CookingSkill 10=SignUp
+    // 0=Intro 1=Name 2=Struggle 3=Spend 4=SpendReveal 5=GroceryBudget 6=Waste 7=WasteReveal
+    // 8=SavingsPitch 9=Goal 10=PreferencesPreview 11=Dietary 12=RestrictionsAllergies 13=CookingSkill 14=SignUp
+    @State private var currentStep = 0
 
     private var progressStep: Int? {
         switch currentStep {
         case 1: return 1
         case 2: return 2
         case 3: return 3
-        case 4: return 4
-        case 5: return 5
-        case 7: return 6
-        case 8: return 7
-        case 9: return 8
-        default: return nil // Intro, PreferencesPreview, SignUp
+        case 5: return 4
+        case 6: return 5
+        case 9: return 6
+        case 11: return 7
+        case 12: return 8
+        case 13: return 9
+        default: return nil // Intro, SpendReveal, WasteReveal, SavingsPitch, PreferencesPreview, SignUp
         }
     }
 
     var body: some View {
         VStack(spacing: 0) {
             if let progressStep {
-                OnboardingProgressBar(progress: Double(progressStep) / 8.0)
+                OnboardingProgressBar(progress: Double(progressStep) / 9.0)
                     .padding(.horizontal, Sourdough.Spacing.screenMargin)
                     .padding(.top, Sourdough.Spacing.rowInternals)
             }
@@ -38,42 +41,58 @@ struct PreSignupOnboardingContainerView: View {
                         .environmentObject(onboardingAnswers)
                         .transition(.push(from: .trailing))
                 case 2:
-                    StruggleOnboardingView(onBack: { advance(to: 1) }, onContinue: { advance(to: 3) })
+                    StruggleOnboardingView(onContinue: { advance(to: 3) })
                         .environmentObject(onboardingAnswers)
                         .transition(.push(from: .trailing))
                 case 3:
-                    SpendOnboardingView(onBack: { advance(to: 2) }, onContinue: { advance(to: 4) })
+                    SpendOnboardingView(onContinue: { advance(to: 4) })
                         .environmentObject(onboardingAnswers)
                         .transition(.push(from: .trailing))
                 case 4:
-                    WasteOnboardingView(onBack: { advance(to: 3) }, onContinue: { advance(to: 5) })
+                    SpendRevealView(onContinue: { advance(to: 5) })
                         .environmentObject(onboardingAnswers)
                         .transition(.push(from: .trailing))
                 case 5:
-                    GoalOnboardingView(onBack: { advance(to: 4) }, onContinue: { advance(to: 6) })
+                    GroceryBudgetOnboardingView(onContinue: { advance(to: 6) })
                         .environmentObject(onboardingAnswers)
                         .transition(.push(from: .trailing))
                 case 6:
-                    PreferencesPreviewOnboardingView(
-                        onBack: { advance(to: 5) },
-                        onSkip: { advance(to: 10) },
-                        onContinue: { advance(to: 7) }
-                    )
-                    .transition(.push(from: .trailing))
+                    WasteOnboardingView(onContinue: { advance(to: 7) })
+                        .environmentObject(onboardingAnswers)
+                        .transition(.push(from: .trailing))
                 case 7:
-                    DietaryPreferenceOnboardingView(onBack: { advance(to: 6) }, onContinue: { advance(to: 8) })
+                    WasteRevealView(onContinue: { advance(to: 8) })
                         .environmentObject(onboardingAnswers)
                         .transition(.push(from: .trailing))
                 case 8:
-                    RestrictionsAllergiesOnboardingView(onBack: { advance(to: 7) }, onContinue: { advance(to: 9) })
+                    SavingsPitchView(onContinue: { advance(to: 9) })
                         .environmentObject(onboardingAnswers)
                         .transition(.push(from: .trailing))
                 case 9:
-                    CookingSkillOnboardingView(onBack: { advance(to: 8) }, onContinue: { advance(to: 10) })
+                    GoalOnboardingView(onContinue: { advance(to: 10) })
+                        .environmentObject(onboardingAnswers)
+                        .transition(.push(from: .trailing))
+                case 10:
+                    PreferencesPreviewOnboardingView(
+                        onBack: { advance(to: 9) },
+                        onSkip: { advance(to: 14) },
+                        onContinue: { advance(to: 11) }
+                    )
+                    .transition(.push(from: .trailing))
+                case 11:
+                    DietaryPreferenceOnboardingView(onContinue: { advance(to: 12) })
+                        .environmentObject(onboardingAnswers)
+                        .transition(.push(from: .trailing))
+                case 12:
+                    RestrictionsAllergiesOnboardingView(onContinue: { advance(to: 13) })
+                        .environmentObject(onboardingAnswers)
+                        .transition(.push(from: .trailing))
+                case 13:
+                    CookingSkillOnboardingView(onContinue: { advance(to: 14) })
                         .environmentObject(onboardingAnswers)
                         .transition(.push(from: .trailing))
                 default:
-                    AuthView(onBack: { advance(to: 9) })
+                    AuthView(onBack: { advance(to: 13) })
                         .environmentObject(onboardingAnswers)
                         .transition(.push(from: .trailing))
                 }

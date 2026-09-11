@@ -2,7 +2,6 @@ import SwiftUI
 
 struct StruggleOnboardingView: View {
     @EnvironmentObject private var onboardingAnswers: OnboardingAnswers
-    var onBack: () -> Void
     var onContinue: () -> Void
     @State private var selectedOption: String?
 
@@ -17,7 +16,6 @@ struct StruggleOnboardingView: View {
         PrimingQuestionView(
             question: "What do you struggle with the most?",
             options: options,
-            onBack: onBack,
             onContinue: {
                 onboardingAnswers.struggleAnswer = selectedOption
                 onContinue()

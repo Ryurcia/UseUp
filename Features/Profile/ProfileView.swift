@@ -1,17 +1,7 @@
 import SwiftUI
 import PhotosUI
-import RevenueCatUI
 import UserNotifications
-import LocalAuthentication
 import PhosphorSwift
-
-#Preview("Account Settings") {
-    PreviewContainer {
-        NavigationStack {
-            AccountSettingsView()
-        }
-    }
-}
 
 // MARK: - Settings
 
@@ -19,117 +9,45 @@ struct SettingsView: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var savedRecipesStore: SavedRecipesStore
     @EnvironmentObject private var pantryStore: PantryStore
-    @AppStorage("biometricLoginEnabled") private var biometricLoginEnabled = false
-    @State private var notificationsAuthorized = false
+    @EnvironmentObject private var userActivityStore: UserActivityStore
+    @EnvironmentObject private var statsStore: StatsStore
     @State private var showClearCacheAlert = false
+    @State private var isExportingData = false
+    @State private var exportedFileURLs: [URL] = []
+    @State private var showExportShare = false
+    @State private var showExportError = false
 
     var body: some View {
-        Form {
-            Section("Appearance") {
-                Picker("Color Scheme", selection: $session.colorSchemePreference) {
-                    Text("System").tag(ColorSchemePreference.system)
-                    Text("Light").tag(ColorSchemePreference.light)
-                    Text("Dark").tag(ColorSchemePreference.dark)
-                }
-                .pickerStyle(.segmented)
-            }
-
-            Section("Notifications") {
-                Toggle("Enable Notifications", isOn: Binding(
-                    get: { notificationsAuthorized },
-                    set: { _ in handleNotificationToggle() }
-                ))
-
-                Toggle("Recipe Suggestions", isOn: $session.recipeSuggestionsEnabled)
-                    .onChange(of: session.recipeSuggestionsEnabled) { _, newValue in
-                        if newValue {
-                            Task { await requestAuthorizationIfNeeded() }
-                        }
-                        Task { await ExpirationNotificationScheduler.rescheduleAll(for: pantryStore.ingredients) }
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: Sourdough.Spacing.betweenBlocks) {
+                settingsGroup("Preferences", footer: "Theme and notifications apply to this device.") {
+                    themeRow
+                    settingsNavRow(icon: Ph.bell.regular, tint: Sourdough.Ramp.sage100, ink: Sourdough.Ramp.sage600,
+                                   label: "Notifications", first: false) {
+                        NotificationSettingsView()
                     }
+                }
 
-                if session.recipeSuggestionsEnabled && !notificationsAuthorized {
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: Sourdough.Spacing.insideChip) {
-                            Ph.warning.fill
-                                .frame(width: 16, height: 16)
-                                .foregroundStyle(Sourdough.Ramp.honey600)
-                            Text("Notifications aren't enabled, so recipe suggestions won't be pushed to your device. You'll still see them in the Notifications tab.")
-                                .foregroundStyle(Sourdough.Colors.mutedInk)
-                                .sourdoughTextStyle(.caption)
-                        }
-                        Button("Enable Notifications") {
-                            handleNotificationToggle()
-                        }
-                        .foregroundStyle(Sourdough.Colors.actionInk)
-                        .sourdoughTextStyle(.caption)
+                settingsGroup("Cache", footer: "Cached recipe photos are re-downloaded automatically when needed.") {
+                    settingsRow(icon: Ph.trash.regular, tint: Sourdough.Ramp.linen100, ink: Sourdough.Ramp.linen500,
+                                label: "Clear Image Cache", first: true) {
+                        showClearCacheAlert = true
                     }
-                    .padding(.vertical, 4)
                 }
-            }
 
-            Section("Security") {
-                Toggle("Log in with Face ID", isOn: $biometricLoginEnabled)
-            }
+                settingsGroup("Data", footer: "Download a copy of everything Use Up stores about you, as CSV files.") {
+                    exportDataRow
+                }
 
-            Section("Cache") {
-                Button("Clear Image Cache") {
-                    showClearCacheAlert = true
-                }
-                .foregroundStyle(Sourdough.Colors.ink)
+                blockedAccountsRow
             }
-
-            Section {
-                NavigationLink {
-                    BlockedAccountsView()
-                        .environmentObject(savedRecipesStore)
-                } label: {
-                    Label {
-                        Text("Blocked Accounts")
-                    } icon: {
-                        Ph.prohibit.regular
-                            .frame(width: 16, height: 16)
-                    }
-                        .foregroundStyle(Sourdough.Colors.ink)
-                }
-            }
-
-            Section {
-                Link(destination: URL(string: "https://www.useupnow.com/privacy")!) {
-                    Label {
-                        Text("Privacy Policy")
-                    } icon: {
-                        Ph.handPalm.regular
-                            .frame(width: 16, height: 16)
-                    }
-                        .foregroundStyle(Sourdough.Colors.ink)
-                }
-                Link(destination: URL(string: "https://www.useupnow.com/terms")!) {
-                    Label {
-                        Text("Terms & Conditions")
-                    } icon: {
-                        Ph.fileText.regular
-                            .frame(width: 16, height: 16)
-                    }
-                        .foregroundStyle(Sourdough.Colors.ink)
-                }
-            }
-
-            Section {
-                Button {
-                    session.signOut()
-                } label: {
-                    Label {
-                        Text("Sign Out")
-                    } icon: {
-                        Ph.signOut.regular
-                            .frame(width: 16, height: 16)
-                    }
-                        .foregroundStyle(Sourdough.Colors.destructive)
-                }
-            }
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .padding(.top, Sourdough.Spacing.betweenBlocks)
+            .padding(.bottom, Sourdough.Spacing.underTitle)
         }
+        .background(Sourdough.Colors.canvas)
         .navigationTitle("Settings")
+        .preference(key: HideTabBarKey.self, value: true)
         .alert("Clear Image Cache", isPresented: $showClearCacheAlert) {
             Button("Clear", role: .destructive) {
                 RecipeImageCache.shared.clear()
@@ -140,12 +58,310 @@ struct SettingsView: View {
         } message: {
             Text("All cached images will be removed and re-downloaded when needed.")
         }
-        .task {
-            await refreshNotificationStatus()
+        .sheet(isPresented: $showExportShare) {
+            ShareSheet(items: exportedFileURLs)
         }
+        .alert("Export Failed", isPresented: $showExportError) {
+            Button("OK") {}
+        } message: {
+            Text("Couldn't export your data. Please try again.")
+        }
+    }
+
+    private var exportDataRow: some View {
+        Button {
+            Task { await exportData() }
+        } label: {
+            HStack(spacing: Sourdough.Spacing.rowInternals) {
+                Ph.export.regular
+                    .frame(width: 13, height: 13)
+                    .foregroundStyle(Sourdough.Ramp.sage600)
+                    .frame(width: 26, height: 26)
+                    .background(Sourdough.Ramp.sage100)
+                    .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.thumbnail, style: .continuous))
+
+                Text("Export My Data")
+                    .sourdoughTextStyle(.body, color: Sourdough.Colors.ink)
+
+                Spacer(minLength: Sourdough.Spacing.rowInternals)
+
+                if isExportingData {
+                    ProgressView()
+                } else {
+                    Ph.caretRight.regular
+                        .frame(width: 9, height: 12)
+                        .foregroundStyle(Sourdough.Colors.faintInk)
+                }
+            }
+            .padding(.horizontal, Sourdough.Spacing.rowInternals)
+            .padding(.vertical, Sourdough.Spacing.rowInternals)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isExportingData)
+    }
+
+    private func exportData() async {
+        isExportingData = true
+        let urls = await DataExportService.exportAll(
+            session: session,
+            pantryStore: pantryStore,
+            savedRecipesStore: savedRecipesStore,
+            userActivityStore: userActivityStore,
+            statsStore: statsStore
+        )
+        isExportingData = false
+        if urls.isEmpty {
+            showExportError = true
+        } else {
+            exportedFileURLs = urls
+            showExportShare = true
+        }
+    }
+
+    // MARK: - Sourdough row styling (mirrors AccountSettingsView's profileGroup / settingRow)
+
+    @ViewBuilder
+    private func settingsGroup<Rows: View>(
+        _ title: String,
+        footer: String,
+        @ViewBuilder rows: () -> Rows
+    ) -> some View {
+        VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
+            Text(title)
+                .sourdoughTextStyle(.sectionHead, color: Sourdough.Colors.faintInk)
+                .padding(.leading, 4)
+
+            VStack(spacing: 0) { rows() }
+                .background(Sourdough.Colors.card)
+                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
+                .sourdoughElevation(.hairline, cornerRadius: Sourdough.Radius.card)
+
+            Text(footer)
+                .sourdoughTextStyle(.caption, color: Sourdough.Colors.faintInk)
+                .padding(.leading, 4)
+        }
+    }
+
+    @ViewBuilder
+    private func settingsRow(
+        icon: Image,
+        tint: Color,
+        ink: Color,
+        label: String,
+        first: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: Sourdough.Spacing.rowInternals) {
+                icon
+                    .frame(width: 13, height: 13)
+                    .foregroundStyle(ink)
+                    .frame(width: 26, height: 26)
+                    .background(tint)
+                    .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.thumbnail, style: .continuous))
+
+                Text(label)
+                    .sourdoughTextStyle(.body, color: Sourdough.Colors.ink)
+
+                Spacer(minLength: Sourdough.Spacing.rowInternals)
+
+                Ph.caretRight.regular
+                    .frame(width: 9, height: 12)
+                    .foregroundStyle(Sourdough.Colors.faintInk)
+            }
+            .padding(.horizontal, Sourdough.Spacing.rowInternals)
+            .padding(.vertical, Sourdough.Spacing.rowInternals)
+            .contentShape(Rectangle())
+            .overlay(alignment: .top) {
+                if !first {
+                    Rectangle()
+                        .fill(Sourdough.Colors.hairline)
+                        .frame(height: 1)
+                        .padding(.leading, 26 + Sourdough.Spacing.rowInternals * 2)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func settingsToggleRow(
+        icon: Image,
+        tint: Color,
+        ink: Color,
+        label: String,
+        isOn: Binding<Bool>,
+        first: Bool
+    ) -> some View {
+        HStack(spacing: Sourdough.Spacing.rowInternals) {
+            icon
+                .frame(width: 13, height: 13)
+                .foregroundStyle(ink)
+                .frame(width: 26, height: 26)
+                .background(tint)
+                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.thumbnail, style: .continuous))
+
+            Text(label)
+                .sourdoughTextStyle(.body, color: Sourdough.Colors.ink)
+
+            Spacer(minLength: Sourdough.Spacing.rowInternals)
+
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+        }
+        .padding(.horizontal, Sourdough.Spacing.rowInternals)
+        .padding(.vertical, Sourdough.Spacing.rowInternals)
+        .overlay(alignment: .top) {
+            if !first {
+                Rectangle()
+                    .fill(Sourdough.Colors.hairline)
+                    .frame(height: 1)
+                    .padding(.leading, 26 + Sourdough.Spacing.rowInternals * 2)
+            }
+        }
+    }
+
+    /// Row that pushes a `destination` via `NavigationLink`, styled like `settingsRow` (icon tile +
+    /// label + chevron, hairline divider when `!first`). `NavigationLink`'s label renders as-is
+    /// outside a `List`/`Form`, so no double chevron.
+    @ViewBuilder
+    private func settingsNavRow<Destination: View>(
+        icon: Image,
+        tint: Color,
+        ink: Color,
+        label: String,
+        first: Bool,
+        @ViewBuilder destination: () -> Destination
+    ) -> some View {
+        NavigationLink {
+            destination()
+        } label: {
+            HStack(spacing: Sourdough.Spacing.rowInternals) {
+                icon
+                    .frame(width: 13, height: 13)
+                    .foregroundStyle(ink)
+                    .frame(width: 26, height: 26)
+                    .background(tint)
+                    .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.thumbnail, style: .continuous))
+
+                Text(label)
+                    .sourdoughTextStyle(.body, color: Sourdough.Colors.ink)
+
+                Spacer(minLength: Sourdough.Spacing.rowInternals)
+
+                Ph.caretRight.regular
+                    .frame(width: 9, height: 12)
+                    .foregroundStyle(Sourdough.Colors.faintInk)
+            }
+            .padding(.horizontal, Sourdough.Spacing.rowInternals)
+            .padding(.vertical, Sourdough.Spacing.rowInternals)
+            .contentShape(Rectangle())
+            .overlay(alignment: .top) {
+                if !first {
+                    Rectangle()
+                        .fill(Sourdough.Colors.hairline)
+                        .frame(height: 1)
+                        .padding(.leading, 26 + Sourdough.Spacing.rowInternals * 2)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var blockedAccountsRow: some View {
+        settingsNavRow(icon: Ph.prohibit.regular, tint: Sourdough.Ramp.linen100, ink: Sourdough.Ramp.linen500,
+                       label: "Blocked Accounts", first: true) {
+            BlockedAccountsView().environmentObject(savedRecipesStore)
+        }
+        .background(Sourdough.Colors.card)
+        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
+        .sourdoughElevation(.hairline, cornerRadius: Sourdough.Radius.card)
+    }
+
+    /// Light/dark toggle, flanked by sun/moon indicator icons. Bespoke shape (not built from
+    /// `settingsToggleRow`) — moved here from `AccountSettingsView`.
+    private var themeRow: some View {
+        let isDark = session.colorSchemePreference == .dark
+        return HStack(spacing: Sourdough.Spacing.rowInternals) {
+            Ph.lightbulb.regular
+                .frame(width: 13, height: 13)
+                .foregroundStyle(Sourdough.Ramp.honey700)
+                .frame(width: 26, height: 26)
+                .background(Sourdough.Ramp.honey100)
+                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.thumbnail, style: .continuous))
+
+            Text("Theme")
+                .sourdoughTextStyle(.body, color: Sourdough.Colors.ink)
+
+            Spacer(minLength: Sourdough.Spacing.rowInternals)
+
+            Image(systemName: "sun.max.fill")
+                .font(.system(size: 13))
+                .foregroundStyle(isDark ? Sourdough.Colors.faintInk : Sourdough.Colors.ink)
+
+            Toggle("", isOn: Binding(
+                get: { isDark },
+                set: { session.colorSchemePreference = $0 ? .dark : .light }
+            ))
+            .labelsHidden()
+
+            Image(systemName: "moon.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(isDark ? Sourdough.Colors.ink : Sourdough.Colors.faintInk)
+        }
+        .padding(.horizontal, Sourdough.Spacing.rowInternals)
+        .padding(.vertical, Sourdough.Spacing.rowInternals)
+    }
+}
+
+// MARK: - Notification Settings
+
+struct NotificationSettingsView: View {
+    @EnvironmentObject private var pantryStore: PantryStore
+    @AppStorage("expiringItemsNotificationsEnabled") private var expiringItemsEnabled = true
+    @AppStorage("recipeSuggestionsEnabled") private var recipeSuggestionsEnabled = true
+    @State private var notificationsAuthorized = false
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Allow Notifications", isOn: Binding(
+                    get: { notificationsAuthorized },
+                    set: { _ in handleNotificationToggle() }
+                ))
+            } footer: {
+                if !notificationsAuthorized {
+                    Text("Turn on notifications for Use Up in the iOS Settings app to receive these reminders.")
+                        .foregroundStyle(Sourdough.Colors.mutedInk)
+                        .sourdoughTextStyle(.caption)
+                }
+            }
+
+            Section {
+                Toggle("Expiring Items", isOn: $expiringItemsEnabled)
+                Toggle("Recipe Suggestions", isOn: $recipeSuggestionsEnabled)
+            } header: {
+                Text("Reminders")
+            } footer: {
+                Text("Choose which reminders Use Up sends to your device.")
+            }
+        }
+        .navigationTitle("Notifications")
+        .preference(key: HideTabBarKey.self, value: true)
+        .task { await refreshNotificationStatus() }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             Task { await refreshNotificationStatus() }
         }
+        .onChange(of: expiringItemsEnabled) { _, _ in reschedule() }
+        .onChange(of: recipeSuggestionsEnabled) { _, newValue in
+            if newValue { Task { await requestAuthorizationIfNeeded() } }
+            reschedule()
+        }
+    }
+
+    private func reschedule() {
+        Task { await ExpirationNotificationScheduler.rescheduleAll(for: pantryStore.ingredients) }
     }
 
     private func refreshNotificationStatus() async {
@@ -235,545 +451,3 @@ struct BlockedAccountsView: View {
         }
     }
 }
-
-// MARK: - Account Settings
-
-struct AccountSettingsView: View {
-    @EnvironmentObject private var session: AppSession
-
-    // Profile editing state
-    @State private var nicknameText = ""
-    @State private var displayNameText = ""
-    @State private var selectedDietType: GenerationOptions.DietType = .any
-    @State private var selectedRestrictions: Set<GenerationOptions.DietaryRestriction> = []
-    @State private var selectedAllergies: Set<AllergyType> = []
-    @State private var selectedCustomAllergy: String = ""
-    @State private var showAllergyOtherField = false
-    @State private var selectedSkillLevel: Int = 1
-    @State private var showPhotosPicker = false
-    @State private var selectedPhoto: PhotosPickerItem?
-    @State private var selectedImage: UIImage?
-    @State private var isSaving = false
-    @State private var saveError: String?
-
-    // Account state
-    @State private var showPaywall = false
-    @State private var showCustomerCenter = false
-    @State private var showDeleteAccountAlert = false
-    @State private var isDeletingAccount = false
-    @State private var deleteError: String?
-
-    private var nicknameChanged: Bool {
-        nicknameText.trimmingCharacters(in: .whitespacesAndNewlines) != (session.currentUserNickname ?? "")
-    }
-
-    private var displayNameChanged: Bool {
-        displayNameText.trimmingCharacters(in: .whitespacesAndNewlines) != (session.currentUserDisplayName ?? "")
-    }
-
-    private var dietaryCooldownDaysRemaining: Int? {
-        cooldownRemainingDays(since: session.dietaryUpdatedAt, cooldownDays: 15)
-    }
-
-    private var dietaryCooldownMessage: String? {
-        guard let remaining = dietaryCooldownDaysRemaining else { return nil }
-        return "You can change your diet & restrictions again in \(remaining) day\(remaining == 1 ? "" : "s")."
-    }
-
-    private var cooldownMessage: String? {
-        guard let remaining = cooldownRemainingDays(since: session.nicknameUpdatedAt, cooldownDays: 30) else { return nil }
-        return "You can change your nickname again in \(remaining) day\(remaining == 1 ? "" : "s")."
-    }
-
-    private var hasChanges: Bool {
-        selectedImage != nil
-        || nicknameChanged
-        || displayNameChanged
-        || selectedDietType != session.currentUserDietaryPreference
-        || selectedRestrictions != session.currentUserDietaryRestrictions
-        || selectedAllergies != session.currentUserAllergies
-        || selectedCustomAllergy != session.currentUserCustomAllergy
-        || selectedSkillLevel != session.currentUserCookingSkillLevel
-    }
-
-    var body: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(spacing: Sourdough.Spacing.betweenBlocks) {
-                profilePictureSection
-                nicknameSection
-                displayNameSection
-                dietaryPreferenceSection
-                dietaryRestrictionsSection
-                allergiesSection
-                if let message = dietaryCooldownMessage {
-                    HStack(spacing: Sourdough.Spacing.insideChip) {
-                        Ph.clock.fill
-                            .frame(width: 12, height: 12)
-                            .foregroundStyle(Sourdough.Ramp.honey600)
-                        Text(message)
-                            .foregroundStyle(Sourdough.Ramp.honey600)
-                            .sourdoughTextStyle(.caption)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                cookingSkillSection
-                saveButtonSection
-                Divider().padding(.vertical, Sourdough.Spacing.insideChip)
-                emailSection
-                membershipSection
-                deleteAccountSection
-            }
-            .padding(.horizontal, Sourdough.Spacing.screenMargin)
-            .padding(.top, Sourdough.Spacing.rowInternals)
-            .padding(.bottom, Sourdough.Spacing.underTitle * 2)
-        }
-        .background(Sourdough.Colors.canvas)
-        .navigationTitle("Account Settings")
-        .navigationBarTitleDisplayMode(.inline)
-        .onAppear {
-            nicknameText = session.currentUserNickname ?? ""
-            displayNameText = session.currentUserDisplayName ?? ""
-            selectedDietType = session.currentUserDietaryPreference
-            selectedRestrictions = session.currentUserDietaryRestrictions
-            selectedAllergies = session.currentUserAllergies
-            selectedCustomAllergy = session.currentUserCustomAllergy
-            showAllergyOtherField = !session.currentUserCustomAllergy.isEmpty
-            selectedSkillLevel = session.currentUserCookingSkillLevel
-            session.nicknameError = nil
-        }
-        .photosPicker(isPresented: $showPhotosPicker, selection: $selectedPhoto, matching: .images)
-        .onChange(of: selectedPhoto) { _, newItem in
-            Task {
-                if let data = try? await newItem?.loadTransferable(type: Data.self),
-                   let image = UIImage(data: data) {
-                    selectedImage = image
-                }
-            }
-        }
-        .alert("Error", isPresented: Binding(
-            get: { saveError != nil || session.profileUpdateError != nil },
-            set: { if !$0 { saveError = nil; session.profileUpdateError = nil } }
-        )) {
-            Button("OK") { saveError = nil; session.profileUpdateError = nil }
-        } message: {
-            Text(saveError ?? session.profileUpdateError ?? "")
-        }
-        .sheet(isPresented: $showPaywall) {
-            UseUpPaywallView { showPaywall = false }
-        }
-        .sheet(isPresented: $showCustomerCenter) {
-            CustomerCenterView()
-        }
-        .alert("Delete Account?", isPresented: $showDeleteAccountAlert) {
-            Button("Delete", role: .destructive) {
-                Task {
-                    isDeletingAccount = true
-                    do {
-                        try await session.deleteAccount()
-                    } catch {
-                        isDeletingAccount = false
-                        deleteError = "Failed to delete account: \(error.localizedDescription)"
-                    }
-                }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This will permanently delete your account, pantry, recipes, and all data. This cannot be undone.")
-        }
-        .alert("Deletion Failed", isPresented: Binding(
-            get: { deleteError != nil },
-            set: { if !$0 { deleteError = nil } }
-        )) {
-            Button("OK") { deleteError = nil }
-        } message: {
-            Text(deleteError ?? "")
-        }
-    }
-
-    // MARK: - Sections
-
-    @ViewBuilder private var profilePictureSection: some View {
-        VStack(spacing: Sourdough.Spacing.rowInternals) {
-            Button { showPhotosPicker = true } label: {
-                ZStack(alignment: .bottomTrailing) {
-                    if let selectedImage {
-                        Image(uiImage: selectedImage)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: 100, height: 100)
-                            .clipShape(Circle())
-                    } else if let data = session.profileImageData,
-                              let uiImage = UIImage(data: data) {
-                        Image(uiImage: uiImage)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: 100, height: 100)
-                            .clipShape(Circle())
-                    } else {
-                        Ph.userCircle.fill
-                            .frame(width: 80, height: 80)
-                            .foregroundStyle(Sourdough.Ramp.sage500)
-                            .frame(width: 100, height: 100)
-                    }
-                    Ph.camera.fill
-                        .frame(width: 12, height: 12)
-                        .foregroundStyle(Sourdough.Colors.onAction)
-                        .frame(width: 28, height: 28)
-                        .background(Sourdough.Colors.action)
-                        .clipShape(Circle())
-                        .overlay(Circle().stroke(Sourdough.Colors.canvas, lineWidth: 2))
-                }
-            }
-            .buttonStyle(.plain)
-            Text("Tap to change photo")
-                .foregroundStyle(Sourdough.Colors.faintInk)
-                .sourdoughTextStyle(.caption)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.top, Sourdough.Spacing.insideChip)
-    }
-
-    @ViewBuilder private var nicknameSection: some View {
-        VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
-            Text("Nickname")
-                .foregroundStyle(Sourdough.Colors.ink)
-                .sourdoughTextStyle(.rowTitle)
-            TextField("Enter a nickname", text: $nicknameText)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .foregroundStyle(Sourdough.Colors.ink)
-                .sourdoughTextStyle(.body)
-                .padding(.horizontal, Sourdough.Spacing.rowInternals)
-                .frame(height: 52)
-                .background(Sourdough.Colors.sunken)
-                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
-                .disabled(cooldownMessage != nil)
-            if let cooldown = cooldownMessage {
-                Text(cooldown).foregroundStyle(Sourdough.Ramp.honey600).sourdoughTextStyle(.caption)
-            } else {
-                Text("This is how you're greeted on the home screen.").foregroundStyle(Sourdough.Colors.faintInk).sourdoughTextStyle(.caption)
-            }
-            if let error = session.nicknameError {
-                Text(error).foregroundStyle(Sourdough.Colors.destructive).sourdoughTextStyle(.caption)
-            }
-        }
-    }
-
-    @ViewBuilder private var displayNameSection: some View {
-        VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
-            Text("Display Name")
-                .foregroundStyle(Sourdough.Colors.ink)
-                .sourdoughTextStyle(.rowTitle)
-            TextField("Enter a display name", text: $displayNameText)
-                .textInputAutocapitalization(.words)
-                .autocorrectionDisabled()
-                .foregroundStyle(Sourdough.Colors.ink)
-                .sourdoughTextStyle(.body)
-                .padding(.horizontal, Sourdough.Spacing.rowInternals)
-                .frame(height: 52)
-                .background(Sourdough.Colors.sunken)
-                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
-            Text("Your full name or how you'd like to be known.")
-                .foregroundStyle(Sourdough.Colors.faintInk)
-                .sourdoughTextStyle(.caption)
-        }
-    }
-
-    @ViewBuilder private var dietaryPreferenceSection: some View {
-        VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
-            Text("Dietary Preference")
-                .foregroundStyle(Sourdough.Colors.ink)
-                .sourdoughTextStyle(.rowTitle)
-            FlowLayout(spacing: Sourdough.Spacing.insideChip) {
-                ForEach(GenerationOptions.DietType.allCases) { dietType in
-                    SelectableChip(label: dietType.rawValue, isSelected: selectedDietType == dietType) {
-                        selectedDietType = dietType
-                    }
-                }
-            }
-            Text("Used as your default diet when generating recipes.")
-                .foregroundStyle(Sourdough.Colors.faintInk)
-                .sourdoughTextStyle(.caption)
-        }
-        .opacity(dietaryCooldownDaysRemaining != nil ? 0.5 : 1)
-        .disabled(dietaryCooldownDaysRemaining != nil)
-    }
-
-    @ViewBuilder private var dietaryRestrictionsSection: some View {
-        VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
-            Text("Dietary Restrictions")
-                .foregroundStyle(Sourdough.Colors.ink)
-                .sourdoughTextStyle(.rowTitle)
-            FlowLayout(spacing: Sourdough.Spacing.insideChip) {
-                ForEach(GenerationOptions.DietaryRestriction.allCases) { restriction in
-                    let isSelected = selectedRestrictions.contains(restriction)
-                    SelectableChip(label: restriction.rawValue, isSelected: isSelected) {
-                        if isSelected { selectedRestrictions.remove(restriction) }
-                        else { selectedRestrictions.insert(restriction) }
-                    }
-                }
-            }
-            Text("Applied by default when generating recipes.")
-                .foregroundStyle(Sourdough.Colors.faintInk)
-                .sourdoughTextStyle(.caption)
-        }
-        .opacity(dietaryCooldownDaysRemaining != nil ? 0.5 : 1)
-        .disabled(dietaryCooldownDaysRemaining != nil)
-    }
-
-    @ViewBuilder private var allergiesSection: some View {
-        VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
-            Text("Allergies")
-                .foregroundStyle(Sourdough.Colors.ink)
-                .sourdoughTextStyle(.rowTitle)
-            FlowLayout(spacing: Sourdough.Spacing.insideChip) {
-                ForEach(AllergyType.allCases) { allergy in
-                    let isSelected = selectedAllergies.contains(allergy)
-                    SelectableChip(label: allergy.rawValue, isSelected: isSelected) {
-                        if isSelected { selectedAllergies.remove(allergy) }
-                        else { selectedAllergies.insert(allergy) }
-                    }
-                }
-                SelectableChip(label: "Other", isSelected: showAllergyOtherField) {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        showAllergyOtherField.toggle()
-                        if !showAllergyOtherField { selectedCustomAllergy = "" }
-                    }
-                }
-            }
-            if showAllergyOtherField {
-                TextField("Type your allergy...", text: $selectedCustomAllergy)
-                    .textInputAutocapitalization(.words)
-                    .autocorrectionDisabled()
-                    .foregroundStyle(Sourdough.Colors.ink)
-                    .sourdoughTextStyle(.body)
-                    .padding(.horizontal, Sourdough.Spacing.rowInternals)
-                    .frame(height: 52)
-                    .background(Sourdough.Colors.sunken)
-                    .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-            Text("We'll use this to keep unsafe ingredients out of your recipes.")
-                .foregroundStyle(Sourdough.Colors.faintInk)
-                .sourdoughTextStyle(.caption)
-        }
-    }
-
-    @ViewBuilder private var cookingSkillSection: some View {
-        let skillOptions: [(level: Int, label: String)] = [
-            (1, "I'd rather order in"),
-            (2, "I can cook a decent meal"),
-            (3, "Just call me Gordon Ramsay"),
-        ]
-        VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
-            Text("Cooking Skill Level")
-                .foregroundStyle(Sourdough.Colors.ink)
-                .sourdoughTextStyle(.rowTitle)
-            VStack(spacing: Sourdough.Spacing.insideChip) {
-                ForEach(skillOptions, id: \.level) { option in
-                    let isSelected = selectedSkillLevel == option.level
-                    Button { selectedSkillLevel = option.level } label: {
-                        HStack {
-                            Text(option.label)
-                                .foregroundStyle(isSelected ? Sourdough.Colors.onAction : Sourdough.Colors.mutedInk)
-                                .sourdoughTextStyle(.caption)
-                            Spacer()
-                            if isSelected {
-                                Ph.check.bold
-                                    .frame(width: 12, height: 12)
-                                    .foregroundStyle(Sourdough.Colors.onAction)
-                            }
-                        }
-                        .padding(.horizontal, Sourdough.Spacing.rowInternals)
-                        .padding(.vertical, Sourdough.Spacing.rowInternals)
-                        .background(isSelected ? Sourdough.Ramp.sage500 : Sourdough.Colors.sunken)
-                        .overlay(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous).stroke(isSelected ? Color.clear : Sourdough.Colors.interactiveBorder, lineWidth: 1))
-                        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            Text("Recipes will be tailored to your skill level.")
-                .foregroundStyle(Sourdough.Colors.faintInk)
-                .sourdoughTextStyle(.caption)
-        }
-    }
-
-    @ViewBuilder private var saveButtonSection: some View {
-        Button { save() } label: {
-            HStack(spacing: Sourdough.Spacing.insideChip) {
-                if isSaving { ProgressView().tint(Sourdough.Colors.onAction) }
-                Text("Save Changes")
-                    .foregroundStyle(Sourdough.Colors.onAction)
-                    .sourdoughTextStyle(.rowTitle)
-            }
-            .foregroundStyle(Sourdough.Colors.onAction)
-            .frame(maxWidth: .infinity)
-            .frame(height: 52)
-            .background(hasChanges ? Sourdough.Colors.action : Sourdough.Colors.action.opacity(0.4))
-            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .disabled(isSaving || !hasChanges)
-    }
-
-    @ViewBuilder private var emailSection: some View {
-        profileCard(header: "Email") {
-            HStack(spacing: Sourdough.Spacing.rowInternals) {
-                Ph.envelope.fill
-                    .frame(width: 16, height: 16)
-                    .foregroundStyle(Sourdough.Colors.actionInk)
-                    .frame(width: 24)
-                Text(session.currentUserEmail ?? "No email")
-                    .foregroundStyle(Sourdough.Colors.ink)
-                    .sourdoughTextStyle(.body)
-                Spacer()
-            }
-            .padding(Sourdough.Spacing.screenMargin)
-        }
-    }
-
-    @ViewBuilder private var membershipSection: some View {
-        profileCard(header: "Membership Plan") {
-            VStack(spacing: Sourdough.Spacing.rowInternals) {
-                HStack(spacing: Sourdough.Spacing.rowInternals) {
-                    (session.isPremium ? Ph.sparkle.regular : Ph.leaf.fill)
-                        .frame(width: 20, height: 20)
-                        .foregroundStyle(session.isPremium ? Sourdough.Colors.actionInk : Sourdough.Ramp.sage500)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(session.isPremium ? "UseUp Pro" : "Free Plan")
-                            .foregroundStyle(Sourdough.Colors.ink)
-                            .sourdoughTextStyle(.body)
-                        Text(session.isPremium ? "Full access to all features" : "Basic pantry tracking & recipe browsing")
-                            .foregroundStyle(Sourdough.Colors.mutedInk)
-                            .sourdoughTextStyle(.caption)
-                    }
-                    Spacer()
-                    Text("Active")
-                        .foregroundStyle(Sourdough.Ramp.sage600)
-                        .sourdoughTextStyle(.sectionHead)
-                        .padding(.horizontal, Sourdough.Spacing.insideChip)
-                        .padding(.vertical, 4)
-                        .background(Sourdough.Ramp.sage100)
-                        .clipShape(Capsule())
-                }
-                if session.isPremium {
-                    Button { showCustomerCenter = true } label: {
-                        Text("Manage Subscription")
-                            .foregroundStyle(Sourdough.Colors.actionInk)
-                            .sourdoughTextStyle(.caption)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 44)
-                            .background(Sourdough.Ramp.terracotta100)
-                            .overlay(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous).stroke(Sourdough.Colors.actionInk.opacity(0.2), lineWidth: 1))
-                            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                } else {
-                    Button { showPaywall = true } label: {
-                        HStack(spacing: Sourdough.Spacing.insideChip) {
-                            Ph.sparkle.regular.frame(width: 14, height: 14)
-                            Text("Upgrade to Pro")
-                                .foregroundStyle(Sourdough.Colors.onAction)
-                                .sourdoughTextStyle(.caption)
-                        }
-                        .foregroundStyle(Sourdough.Colors.onAction)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 44)
-                        .background(LinearGradient(colors: [Sourdough.Colors.action, Sourdough.Ramp.terracotta400], startPoint: .topTrailing, endPoint: .bottomLeading))
-                        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    Button {
-                        Task { try? await RevenueCatManager.shared.restorePurchases() }
-                    } label: {
-                        Text("Restore Purchases")
-                            .foregroundStyle(Sourdough.Colors.mutedInk)
-                            .sourdoughTextStyle(.caption)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(Sourdough.Spacing.screenMargin)
-        }
-    }
-
-    @ViewBuilder private var deleteAccountSection: some View {
-        profileCard(header: "Danger Zone") {
-            Button {
-                showDeleteAccountAlert = true
-            } label: {
-                HStack(spacing: Sourdough.Spacing.rowInternals) {
-                    Ph.trash.regular
-                        .frame(width: 16, height: 16)
-                        .foregroundStyle(Sourdough.Colors.destructive)
-                    Text(isDeletingAccount ? "Deleting…" : "Delete Account")
-                        .foregroundStyle(Sourdough.Colors.destructive)
-                        .sourdoughTextStyle(.body)
-                    Spacer()
-                }
-                .padding(Sourdough.Spacing.screenMargin)
-            }
-            .buttonStyle(.plain)
-            .disabled(isDeletingAccount)
-        }
-    }
-
-    private func save() {
-        let hasNewPhoto = selectedImage != nil
-        let hasNicknameChange = nicknameChanged
-        let hasDisplayNameChange = displayNameChanged
-        let hasDietChange = selectedDietType != session.currentUserDietaryPreference
-        let hasRestrictionsChange = selectedRestrictions != session.currentUserDietaryRestrictions
-        let hasAllergiesChange = selectedAllergies != session.currentUserAllergies || selectedCustomAllergy != session.currentUserCustomAllergy
-        let hasSkillLevelChange = selectedSkillLevel != session.currentUserCookingSkillLevel
-
-        guard hasNewPhoto || hasNicknameChange || hasDisplayNameChange || hasDietChange || hasRestrictionsChange || hasAllergiesChange || hasSkillLevelChange else { return }
-
-        Task {
-            isSaving = true
-
-            if let img = selectedImage, let data = img.jpegData(compressionQuality: 0.8) {
-                do {
-                    try await session.updateProfilePhoto(data)
-                    selectedImage = nil
-                } catch {
-                    saveError = "Failed to save photo. Please try again."
-                }
-            }
-            if hasNicknameChange {
-                let cleaned = nicknameText.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !cleaned.isEmpty { await session.updateNickname(cleaned) }
-            }
-            if hasDisplayNameChange {
-                await session.updateDisplayName(displayNameText)
-            }
-            if hasDietChange { await session.updateDietaryPreference(dietType: selectedDietType) }
-            if hasRestrictionsChange { await session.updateDietaryRestrictions(restrictions: selectedRestrictions) }
-            if hasAllergiesChange { await session.updateAllergies(selectedAllergies, customAllergy: selectedCustomAllergy) }
-            if hasSkillLevelChange { await session.updateCookingSkillLevel(level: selectedSkillLevel) }
-
-            isSaving = false
-        }
-    }
-
-    @ViewBuilder
-    private func profileCard<Content: View>(header: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
-            Text(header)
-                .foregroundStyle(Sourdough.Colors.faintInk)
-                .sourdoughTextStyle(.sectionHead)
-                .padding(.leading, 4)
-
-            content()
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Sourdough.Colors.sunken)
-                .overlay(
-                    RoundedRectangle(cornerRadius: Sourdough.Radius.hero, style: .continuous)
-                        .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.hero, style: .continuous))
-        }
-    }
-}
-

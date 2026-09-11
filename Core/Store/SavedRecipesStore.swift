@@ -178,12 +178,10 @@ private struct SourceLinkInsert: Encodable {
 private struct SavedRecipeRow: Decodable {
     let userId: UUID
     let recipeId: UUID
-    let category: String?
 
     enum CodingKeys: String, CodingKey {
         case userId = "user_id"
         case recipeId = "recipe_id"
-        case category
     }
 }
 
@@ -191,19 +189,54 @@ private struct SavedRecipeRow: Decodable {
 private struct SavedRecipeInsert: Encodable {
     let userId: UUID
     let recipeId: UUID
-    let category: String?
 
     enum CodingKeys: String, CodingKey {
         case userId = "user_id"
         case recipeId = "recipe_id"
-        case category
+    }
+}
+
+/// Decodable row for `collections`.
+private struct CollectionRow: Decodable {
+    let id: UUID
+    let name: String
+    let createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, name
+        case createdAt = "created_at"
     }
 
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(userId, forKey: .userId)
-        try container.encode(recipeId, forKey: .recipeId)
-        try container.encodeIfPresent(category, forKey: .category)
+    func toCollection() -> RecipeCollection { RecipeCollection(id: id, name: name, createdAt: createdAt) }
+}
+
+/// Encodable payload for inserting into `collections`. `user_id` is deliberately omitted —
+/// `Migrations/034_recreate_collections.sql` defaults that column to `auth.uid()`, so Postgres
+/// fills it in from the request's own JWT rather than trusting a client-supplied value.
+private struct CollectionInsert: Encodable {
+    let name: String
+}
+
+/// Decodable row for `collection_recipes`.
+private struct CollectionRecipeRow: Decodable {
+    let collectionId: UUID
+    let recipeId: UUID
+
+    enum CodingKeys: String, CodingKey {
+        case collectionId = "collection_id"
+        case recipeId = "recipe_id"
+    }
+}
+
+/// Encodable payload for inserting into `collection_recipes`. `user_id` is omitted for the same
+/// reason as `CollectionInsert` — it defaults to `auth.uid()` on the table.
+private struct CollectionRecipeInsert: Encodable {
+    let collectionId: UUID
+    let recipeId: UUID
+
+    enum CodingKeys: String, CodingKey {
+        case collectionId = "collection_id"
+        case recipeId = "recipe_id"
     }
 }
 
@@ -330,7 +363,13 @@ final class SavedRecipesStore: ObservableObject {
     @Published private(set) var sharedRecipes: [Recipe]
     @Published private(set) var communityRecipes: [Recipe] = []
     @Published private(set) var communityReviews: [UUID: [CommunityReview]] = [:]
-    @Published private(set) var savedRecipeCategories: [UUID: String] = [:]
+    @Published private(set) var collections: [RecipeCollection] = []
+    @Published private(set) var savedRecipeCollections: [UUID: Set<UUID>] = [:]  // recipeId -> Set<collectionId>
+    /// Recipe rows for everything referenced by `collection_recipes`, fetched alongside the
+    /// membership map. `recipes(in:)` falls back to this so a collection's contents resolve from
+    /// the collection itself — without it, a perfectly valid membership row renders as nothing
+    /// whenever the recipe happens not to be loaded in `savedRecipes`/`communityRecipes`/`sharedRecipes`.
+    @Published private(set) var collectionRecipeCache: [UUID: Recipe] = [:]
     @Published private(set) var isLoading = false
     @Published var error: String?
 
@@ -366,6 +405,7 @@ final class SavedRecipesStore: ObservableObject {
             do {
                 try await persist()
             } catch {
+                print("performOptimistic failed: \(error)")
                 rollback()
                 self.error = error.localizedDescription
             }
@@ -379,7 +419,9 @@ final class SavedRecipesStore: ObservableObject {
         sharedRecipes = []
         communityRecipes = []
         communityReviews = [:]
-        savedRecipeCategories = [:]
+        collections = []
+        savedRecipeCollections = [:]
+        collectionRecipeCache = [:]
         lastFetchedAt = nil
         error = nil
     }
@@ -390,6 +432,11 @@ final class SavedRecipesStore: ObservableObject {
     private struct NicknameRow: Decodable {
         let id: UUID
         let nickname: String?
+    }
+
+    /// Minimal row for `returning`-style upserts where only "was anything actually inserted?" matters.
+    private struct RecipeIDRow: Decodable {
+        let id: UUID
     }
 
     /// Fetch nicknames for a set of user UUIDs, returning a map of UUID string → nickname.
@@ -460,14 +507,20 @@ final class SavedRecipesStore: ObservableObject {
 
             let (communityRows, bookmarkRows) = try await (communityRowsTask, bookmarkRowsTask)
 
-            // Build category map from bookmarks
-            var categoryMap: [UUID: String] = [:]
-            for row in bookmarkRows {
-                if let cat = row.category {
-                    categoryMap[row.recipeId] = cat
-                }
+            // Collections is a secondary feature layered on top of the recipe list. Fetch it
+            // separately so a failure here (RLS hiccup, schema-cache lag, etc.) can't take down
+            // the primary recipe list, which is load-bearing for the whole Recipes screen. A miss
+            // here doesn't stay missed, though — `fetchCollections()` runs this same fetch,
+            // unthrottled, every time the Collections tab or the save-to-collection picker
+            // appears, so it self-heals the next time the user actually looks at collections.
+            do {
+                let (fetchedCollections, membership, memberRecipes) = try await fetchCollectionsAndMembership(userId: userId)
+                collections = fetchedCollections
+                savedRecipeCollections = membership
+                collectionRecipeCache = memberRecipes
+            } catch {
+                print("[Collections] fetchRecipes: embedded collections fetch failed - \(error)")
             }
-            savedRecipeCategories = categoryMap
 
             // Fetch saved recipes by ID
             let savedRecipeIds = bookmarkRows.map { $0.recipeId }
@@ -748,7 +801,7 @@ final class SavedRecipesStore: ObservableObject {
             if !isUserShared {
                 try await client
                     .from("saved_recipes")
-                    .insert(SavedRecipeInsert(userId: userId, recipeId: recipeId, category: nil))
+                    .insert(SavedRecipeInsert(userId: userId, recipeId: recipeId))
                     .execute()
             }
 
@@ -793,25 +846,18 @@ final class SavedRecipesStore: ObservableObject {
         savedRecipes.contains(where: { $0.id == recipe.id })
     }
 
-    func saveRecipe(_ recipe: Recipe, category: String? = nil) {
+    func saveRecipe(_ recipe: Recipe) {
         guard !isSaved(recipe) else { return }
 
         performOptimistic(
-            apply: {
-                savedRecipes.insert(recipe, at: 0)
-                if let category { savedRecipeCategories[recipe.id] = category }
-            },
-            rollback: {
-                self.savedRecipes.removeAll { $0.id == recipe.id }
-                self.savedRecipeCategories.removeValue(forKey: recipe.id)
-            }
+            apply: { savedRecipes.insert(recipe, at: 0) },
+            rollback: { self.savedRecipes.removeAll { $0.id == recipe.id } }
         ) {
             guard let userId = self.getUserId() else {
                 self.savedRecipes.removeAll { $0.id == recipe.id }
-                self.savedRecipeCategories.removeValue(forKey: recipe.id)
                 return
             }
-            let insert = SavedRecipeInsert(userId: userId, recipeId: recipe.id, category: category)
+            let insert = SavedRecipeInsert(userId: userId, recipeId: recipe.id)
             try await self.client
                 .from("saved_recipes")
                 .insert(insert)
@@ -845,7 +891,7 @@ final class SavedRecipesStore: ObservableObject {
             }
 
             try await self.client.from("saved_recipes")
-                .insert(SavedRecipeInsert(userId: userId, recipeId: recipe.id, category: nil))
+                .insert(SavedRecipeInsert(userId: userId, recipeId: recipe.id))
                 .execute()
         }
     }
@@ -853,21 +899,21 @@ final class SavedRecipesStore: ObservableObject {
     func unsaveRecipe(_ recipe: Recipe) {
         guard let index = savedRecipes.firstIndex(where: { $0.id == recipe.id }) else { return }
         let removed = savedRecipes[index]
-        let removedCategory = savedRecipeCategories[recipe.id]
+        let removedCollections = savedRecipeCollections[recipe.id] ?? []
 
         performOptimistic(
             apply: {
                 savedRecipes.remove(at: index)
-                savedRecipeCategories.removeValue(forKey: recipe.id)
+                savedRecipeCollections.removeValue(forKey: recipe.id)
             },
             rollback: {
                 self.savedRecipes.insert(removed, at: min(index, self.savedRecipes.count))
-                if let removedCategory { self.savedRecipeCategories[recipe.id] = removedCategory }
+                if !removedCollections.isEmpty { self.savedRecipeCollections[recipe.id] = removedCollections }
             }
         ) {
             guard let userId = self.getUserId() else {
                 self.savedRecipes.insert(removed, at: min(index, self.savedRecipes.count))
-                if let removedCategory { self.savedRecipeCategories[recipe.id] = removedCategory }
+                if !removedCollections.isEmpty { self.savedRecipeCollections[recipe.id] = removedCollections }
                 return
             }
             try await self.client
@@ -876,27 +922,276 @@ final class SavedRecipesStore: ObservableObject {
                 .eq("user_id", value: userId.uuidString)
                 .eq("recipe_id", value: recipe.id.uuidString)
                 .execute()
+
+            // Best-effort cleanup — a recipe's saved_recipes row is separate from its
+            // collection_recipes rows (which reference the shared `recipes` row, not the
+            // bookmark). Without this, unsaving then re-saving later would silently resurrect the
+            // recipe into its old collections. Isolated in its own catch so a failure here can't
+            // roll back the unsave itself, which already succeeded above.
+            do {
+                try await self.client
+                    .from("collection_recipes")
+                    .delete()
+                    .eq("user_id", value: userId.uuidString)
+                    .eq("recipe_id", value: recipe.id.uuidString)
+                    .execute()
+            } catch {
+                print("unsaveRecipe: collection_recipes cleanup failed - \(error)")
+            }
         }
+    }
+
+    // MARK: - Collections
+
+    /// Shared query logic for collections, their recipe membership, and the recipe rows those
+    /// memberships point at — used by both `fetchCollections()` and `fetchRecipes()`'s best-effort
+    /// embedded refresh. Fetching the member recipes here (rather than relying on them happening to
+    /// be present in `savedRecipes`/`communityRecipes`/`sharedRecipes`) is what makes a collection's
+    /// contents resolvable from the collection itself.
+    // MARK: - Collections
+
+    /// Shared query logic for collections, their recipe membership, and the recipe rows those
+    /// memberships point at — used by both `fetchCollections()` and `fetchRecipes()`'s best-effort
+    /// embedded refresh. Fetching the member recipes here (rather than relying on them happening to
+    /// be present in `savedRecipes`/`communityRecipes`/`sharedRecipes`) is what makes a collection's
+    /// contents resolvable from the collection itself.
+    private func fetchCollectionsAndMembership(userId: UUID) async throws -> (collections: [RecipeCollection], membership: [UUID: Set<UUID>], recipes: [UUID: Recipe]) {
+        async let collectionRowsTask: [CollectionRow] = client
+            .from("collections")
+            .select()
+            .eq("user_id", value: userId.uuidString)
+            .order("created_at", ascending: true)
+            .execute()
+            .value
+        async let collectionRecipeRowsTask: [CollectionRecipeRow] = client
+            .from("collection_recipes")
+            .select("collection_id, recipe_id")
+            .eq("user_id", value: userId.uuidString)
+            .execute()
+            .value
+
+        let (collectionRows, collectionRecipeRows) = try await (collectionRowsTask, collectionRecipeRowsTask)
+        var collMap: [UUID: Set<UUID>] = [:]
+        for row in collectionRecipeRows {
+            collMap[row.recipeId, default: []].insert(row.collectionId)
+        }
+
+        var recipeMap: [UUID: Recipe] = [:]
+        let memberRecipeIds = Set(collectionRecipeRows.map { $0.recipeId })
+        if !memberRecipeIds.isEmpty {
+            let memberRows: [RecipeRowWithRelations] = try await client
+                .from("recipes")
+                .select("*, recipe_ingredients(*), source_links(*)")
+                .in("id", values: memberRecipeIds.map { $0.uuidString })
+                .execute()
+                .value
+            let nicknameMap = await fetchNicknames(for: Set(memberRows.map { $0.createdBy }))
+            for row in memberRows {
+                let recipe = row.toRecipe(nicknameMap: nicknameMap)
+                recipeMap[recipe.id] = recipe
+            }
+        }
+
+        return (collectionRows.map { $0.toCollection() }, collMap, recipeMap)
+    }
+
+    /// Force-refresh collections *and* their membership outside the 60s `fetchRecipes()` throttle —
+    /// the authoritative, retriable entry point. `fetchRecipes()`'s own embedded collections fetch
+    /// is best-effort and swallows failures; this method is called, unthrottled, every time the
+    /// Collections tab or the save-to-collection picker appears, so it self-heals that gap.
+    func fetchCollections() async {
+        guard let userId = getUserId() else { return }
+        do {
+            let (fetchedCollections, membership, memberRecipes) = try await fetchCollectionsAndMembership(userId: userId)
+            collections = fetchedCollections
+            savedRecipeCollections = membership
+            collectionRecipeCache = memberRecipes
+        } catch {
+            print("[Collections] fetchCollections failed: \(error)")
+            self.error = error.localizedDescription
+        }
+    }
+
+    @discardableResult
+    func createCollection(name: String) async throws -> RecipeCollection {
+        guard getUserId() != nil else {
+            throw NSError(domain: "SavedRecipesStore", code: 0, userInfo: [NSLocalizedDescriptionKey: "Not signed in."])
+        }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw NSError(domain: "SavedRecipesStore", code: 3, userInfo: [NSLocalizedDescriptionKey: "Collection name can't be empty."])
+        }
+        do {
+            let insertedRows: [CollectionRow] = try await client
+                .from("collections")
+                .insert(CollectionInsert(name: trimmed))
+                .select()
+                .execute()
+                .value
+            guard let row = insertedRows.first else {
+                throw NSError(domain: "SavedRecipesStore", code: 1, userInfo: [NSLocalizedDescriptionKey: "Insert succeeded but returned no row."])
+            }
+            let collection = row.toCollection()
+            collections.append(collection)
+            print("[Collections] created '\(collection.name)' (\(collection.id))")
+            return collection
+        } catch {
+            print("[Collections] createCollection failed: \(error)")
+            throw error
+        }
+    }
+
+    func deleteCollection(_ collection: RecipeCollection) {
+        let removedIndex = collections.firstIndex(where: { $0.id == collection.id })
+        let removed = removedIndex.map { collections[$0] }
+        let affectedRecipeIds = savedRecipeCollections.filter { $0.value.contains(collection.id) }.map(\.key)
+
+        performOptimistic(
+            apply: {
+                if let idx = removedIndex { collections.remove(at: idx) }
+                for recipeId in affectedRecipeIds { savedRecipeCollections[recipeId]?.remove(collection.id) }
+            },
+            rollback: {
+                if let removed, let idx = removedIndex { self.collections.insert(removed, at: min(idx, self.collections.count)) }
+                for recipeId in affectedRecipeIds { self.savedRecipeCollections[recipeId, default: []].insert(collection.id) }
+            }
+        ) {
+            try await self.client.from("collections").delete().eq("id", value: collection.id.uuidString).execute()
+        }
+    }
+
+    /// Saves `recipe` first if it isn't already saved, then adds it to `collectionIds` — awaited in
+    /// strict order (recipe row, then collection membership) instead of as two independent,
+    /// unordered persists. All writes are idempotent upserts rather than plain inserts, so a retry
+    /// after a partial failure always re-attempts instead of silently no-op-ing.
+    func saveAndAddToCollections(_ recipe: Recipe, toCollections collectionIds: Set<UUID>) async throws {
+        guard let userId = getUserId() else {
+            throw NSError(domain: "SavedRecipesStore", code: -1, userInfo: [NSLocalizedDescriptionKey: "You need to be signed in to save."])
+        }
+
+        let wasSavedLocally = isSaved(recipe)
+        let previousCollections = savedRecipeCollections[recipe.id] ?? []
+
+        if !wasSavedLocally { savedRecipes.insert(recipe, at: 0) }
+        if !collectionIds.isEmpty {
+            savedRecipeCollections[recipe.id, default: []].formUnion(collectionIds)
+            collectionRecipeCache[recipe.id] = recipe
+        }
+
+        do {
+            if recipe.isAIGenerated {
+                // ON CONFLICT DO NOTHING + returning: only a genuinely new row comes back, so the
+                // ingredient rows (which have generated ids and would otherwise duplicate) are
+                // written exactly once even if this recipe was saved, unsaved, and saved again.
+                let insertedRecipes: [RecipeIDRow] = try await client.from("recipes")
+                    .upsert(AIRecipeInsert(recipe: recipe, createdBy: userId), onConflict: "id", ignoreDuplicates: true)
+                    .select("id")
+                    .execute()
+                    .value
+                if !insertedRecipes.isEmpty {
+                    let ingredientInserts =
+                        recipe.ingredientsUsed.map { RecipeIngredientInsert(recipeId: recipe.id, kind: "used", name: $0.name, quantity: $0.quantity) } +
+                        recipe.missingIngredients.map { RecipeIngredientInsert(recipeId: recipe.id, kind: "missing", name: $0.name, quantity: $0.quantity) }
+                    if !ingredientInserts.isEmpty {
+                        try await client.from("recipe_ingredients").insert(ingredientInserts).execute()
+                    }
+                }
+            }
+
+            // Upsert rather than insert, and unconditionally rather than gated on `isSaved`: local
+            // state can believe a recipe isn't saved while the row exists in the DB (the recipe is
+            // only in `savedRecipes` if it survived the RLS read), and a plain insert would then
+            // fail the (user_id, recipe_id) primary key and abort before the collection write below.
+            try await client.from("saved_recipes")
+                .upsert(SavedRecipeInsert(userId: userId, recipeId: recipe.id), onConflict: "user_id,recipe_id", ignoreDuplicates: true)
+                .execute()
+
+            if !collectionIds.isEmpty {
+                // Always write the full selection instead of only the ids missing from local state,
+                // so a retry can always repair a membership that never actually persisted;
+                // (collection_id, recipe_id) is the primary key, so re-writing an existing pair is
+                // harmless.
+                let inserts = collectionIds.map { CollectionRecipeInsert(collectionId: $0, recipeId: recipe.id) }
+                try await client.from("collection_recipes")
+                    .upsert(inserts, onConflict: "collection_id,recipe_id", ignoreDuplicates: true)
+                    .execute()
+                print("[Collections] added recipe \(recipe.id) to \(collectionIds.count) collection(s)")
+            }
+        } catch {
+            print("[Collections] saveAndAddToCollections failed: \(error)")
+            if !wasSavedLocally { savedRecipes.removeAll { $0.id == recipe.id } }
+            savedRecipeCollections[recipe.id] = previousCollections
+            throw error
+        }
+    }
+
+    func removeRecipe(_ recipe: Recipe, from collectionId: UUID) {
+        guard let userId = getUserId() else { return }
+        let previous = savedRecipeCollections[recipe.id] ?? []
+
+        performOptimistic(
+            apply: { savedRecipeCollections[recipe.id]?.remove(collectionId) },
+            rollback: { self.savedRecipeCollections[recipe.id] = previous }
+        ) {
+            try await self.client
+                .from("collection_recipes")
+                .delete()
+                .eq("collection_id", value: collectionId.uuidString)
+                .eq("recipe_id", value: recipe.id.uuidString)
+                .eq("user_id", value: userId.uuidString)
+                .execute()
+        }
+    }
+
+    /// Driven by the membership map, not by whatever happens to be loaded elsewhere: every recipe
+    /// the collection contains is resolved from the live arrays first (so in-session edits and
+    /// ratings are reflected), falling back to `collectionRecipeCache`. A valid membership row
+    /// renders regardless of what else happens to be loaded in `savedRecipes`/`communityRecipes`/
+    /// `sharedRecipes`.
+    func recipes(in collectionId: UUID) -> [Recipe] {
+        let memberIds = Set(savedRecipeCollections.compactMap { $0.value.contains(collectionId) ? $0.key : nil })
+        guard !memberIds.isEmpty else { return [] }
+
+        var seen = Set<UUID>()
+        var result: [Recipe] = []
+        // Live copies first, in the existing display order, so in-session edits and ratings show.
+        for recipe in savedRecipes + communityRecipes + sharedRecipes where memberIds.contains(recipe.id) {
+            if seen.insert(recipe.id).inserted { result.append(recipe) }
+        }
+        // Then members only the cache can resolve. Sorted, since dictionary order isn't stable and
+        // the list would otherwise reshuffle between renders.
+        for id in memberIds.subtracting(seen).sorted(by: { $0.uuidString < $1.uuidString }) {
+            if let recipe = collectionRecipeCache[id] { result.append(recipe) }
+        }
+        return result
+    }
+
+    /// Pure query helper for a collage cover — the first `limit` recipes in `recipes(in:)`'s
+    /// existing order (both `savedRecipes` and `communityRecipes` are fetched newest-first, so this
+    /// is stable: same 3 covers, same order, every call — no reshuffling on re-render, on
+    /// navigating back from a collection's detail view, or across app relaunches.
+    func collectionCoverRecipes(for collectionId: UUID, limit: Int = 3) -> [Recipe] {
+        Array(recipes(in: collectionId).prefix(limit))
     }
 
     func deleteRecipe(_ recipe: Recipe) {
         let savedIdx = savedRecipes.firstIndex(where: { $0.id == recipe.id })
         let sharedIdx = sharedRecipes.firstIndex(where: { $0.id == recipe.id })
         let communityIdx = communityRecipes.firstIndex(where: { $0.id == recipe.id })
-        let savedCategory = savedRecipeCategories[recipe.id]
+        let savedCollections = savedRecipeCollections[recipe.id] ?? []
 
         performOptimistic(
             apply: {
                 if let idx = savedIdx { savedRecipes.remove(at: idx) }
                 if let idx = sharedIdx { sharedRecipes.remove(at: idx) }
                 if let idx = communityIdx { communityRecipes.remove(at: idx) }
-                savedRecipeCategories.removeValue(forKey: recipe.id)
+                savedRecipeCollections.removeValue(forKey: recipe.id)
             },
             rollback: {
                 if let idx = savedIdx { self.savedRecipes.insert(recipe, at: min(idx, self.savedRecipes.count)) }
                 if let idx = sharedIdx { self.sharedRecipes.insert(recipe, at: min(idx, self.sharedRecipes.count)) }
                 if let idx = communityIdx { self.communityRecipes.insert(recipe, at: min(idx, self.communityRecipes.count)) }
-                if let cat = savedCategory { self.savedRecipeCategories[recipe.id] = cat }
+                if !savedCollections.isEmpty { self.savedRecipeCollections[recipe.id] = savedCollections }
             }
         ) {
             try await self.client
@@ -1070,6 +1365,46 @@ final class SavedRecipesStore: ObservableObject {
             .execute()
         lastFetchedAt = nil
         await fetchRecipes()
+    }
+
+    // MARK: - Data Export
+
+    /// Every recipe authored by the current user — private (cookbook/AI-generated) and shared
+    /// alike. Unlike `communityRecipes`/`sharedRecipes` (which only cover `is_user_shared == true`),
+    /// this queries `recipes` directly by `created_by` so private recipes are included too.
+    func fetchOwnRecipes() async -> [Recipe] {
+        guard let userId = getUserId() else { return [] }
+        do {
+            let rows: [RecipeRowWithRelations] = try await client
+                .from("recipes")
+                .select("*, recipe_ingredients(*), source_links(*)")
+                .eq("created_by", value: userId.uuidString)
+                .order("created_at", ascending: false)
+                .execute()
+                .value
+            let nicknameMap = await fetchNicknames(for: Set(rows.map { $0.createdBy }))
+            return rows.map { $0.toRecipe(nicknameMap: nicknameMap) }
+        } catch {
+            return []
+        }
+    }
+
+    /// Every rating/review the current user has ever left, independent of which recipes happen to
+    /// be loaded in memory — unlike `fetchUserRatings(for:userId:)`, which only covers recipe IDs
+    /// already loaded elsewhere.
+    func fetchAllUserRatings() async -> [(recipeId: UUID, rating: Double, review: String?)] {
+        guard let userId = getUserId() else { return [] }
+        do {
+            let rows: [UserRatingRow] = try await client
+                .from("recipe_ratings")
+                .select("recipe_id, rating, review")
+                .eq("user_id", value: userId.uuidString)
+                .execute()
+                .value
+            return rows.map { (recipeId: $0.recipeId, rating: $0.rating, review: $0.review) }
+        } catch {
+            return []
+        }
     }
 
     func fetchBlockedUsers() async -> [BlockedUser] {

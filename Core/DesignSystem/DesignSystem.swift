@@ -402,6 +402,34 @@ struct FlowLayout: Layout {
     }
 }
 
+// MARK: - Top-nav icon buttons
+
+extension Sourdough.Colors {
+    /// Warm grey circular chip behind top-nav icon buttons (notification bell, pantry search).
+    /// Stays clearly distinct from the canvas in both modes (light `sunken`; a lifted grey in
+    /// dark, where `sunken`'s 0.6α is too faint to read as a circle).
+    static var navChip: Color { Sourdough.dynamic(light: 0xF2EDE4, dark: 0x35302C) }
+}
+
+/// A 32pt grey circular icon button for a screen's top nav — matches `NotificationBellButton`'s
+/// geometry exactly (that one renders its own chip because it also carries a badge overlay).
+struct NavChipButton: View {
+    let icon: Image
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            icon
+                .frame(width: 17, height: 17)
+                .foregroundStyle(Sourdough.Colors.ink)
+                .frame(width: 32, height: 32)
+                .background(Sourdough.Colors.navChip)
+                .clipShape(Circle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 // MARK: - Notification Bell Button
 
 struct NotificationBellButton: View {
@@ -410,8 +438,10 @@ struct NotificationBellButton: View {
 
     private var alertItems: [Ingredient] {
         pantryStore.expiringAlertCandidates()
-            .filter { pantryStore.notifReadTimestamps["expiring_\($0.id)"] == nil }
+            .filter { $0.notifReadAt == nil }
     }
+
+    private var chipFill: Color { Sourdough.Colors.navChip }
 
     var body: some View {
         Button {
@@ -419,8 +449,11 @@ struct NotificationBellButton: View {
         } label: {
             ZStack(alignment: .topTrailing) {
                 (alertItems.isEmpty ? Ph.bell.regular : Ph.bell.fill)
-                    .frame(width: 20, height: 20)
-                    .foregroundStyle(alertItems.isEmpty ? DS.ColorToken.textTertiary : DS.ColorToken.textSecondary)
+                    .frame(width: 17, height: 17)
+                    .foregroundStyle(Sourdough.Colors.ink)
+                    .frame(width: 32, height: 32)
+                    .background(chipFill)
+                    .clipShape(Circle())
 
                 if !alertItems.isEmpty {
                     Text("\(alertItems.count)")
@@ -429,7 +462,7 @@ struct NotificationBellButton: View {
                         .frame(minWidth: 16, minHeight: 16)
                         .background(DS.ColorToken.error)
                         .clipShape(Circle())
-                        .offset(x: 6, y: -4)
+                        .offset(x: 5, y: -5)
                 }
             }
         }
@@ -441,11 +474,10 @@ struct NotificationBellButton: View {
 
 struct ProfileNavButton: View {
     @EnvironmentObject private var session: AppSession
-    @State private var showProfile = false
 
     var body: some View {
         Button {
-            showProfile = true
+            session.showProfile = true
         } label: {
             if let data = session.profileImageData,
                let uiImage = UIImage(data: data) {
@@ -461,10 +493,5 @@ struct ProfileNavButton: View {
             }
         }
         .buttonStyle(.plain)
-        .sheet(isPresented: $showProfile) {
-            NavigationStack {
-                AccountSettingsView()
-            }
-        }
     }
 }

@@ -12,7 +12,7 @@ struct StarRatingView: View {
             ForEach(1...5, id: \.self) { index in
                 starImage(for: index)
                     .frame(width: size, height: size)
-                    .foregroundStyle(index <= Int(rating.rounded(.up)) && rating > 0 ? DS.ColorToken.warning : DS.ColorToken.bgTertiary)
+                    .foregroundStyle(index <= Int(rating.rounded(.up)) && rating > 0 ? DS.ColorToken.warning : DS.ColorToken.textTertiary)
                     .onTapGesture {
                         if interactive {
                             onRate?(index)

@@ -9,6 +9,10 @@ import PhosphorSwift
     }
 }
 
+private enum SharePickerField: Hashable {
+    case cuisine, diet, restrictions
+}
+
 struct ShareRecipeSheet: View {
     var sheetTitle: String
     var prefill: RecipeImportData?
@@ -28,14 +32,17 @@ struct ShareRecipeSheet: View {
     @State private var cuisine: Cuisine?
     @State private var dietType: GenerationOptions.DietType
     @State private var dietaryRestrictions: Set<GenerationOptions.DietaryRestriction>
+    @State private var openPicker: SharePickerField?
     @State private var timeMinutes: String
-    @State private var servings: String
+    @State private var servings: Int
     @State private var ingredients: [(name: String, quantity: String, unit: String)]
     @State private var steps: [String]
+    @State private var macrosOpen: Bool
     @State private var calories: String
     @State private var protein: String
     @State private var carbs: String
     @State private var fat: String
+    @State private var sourcesOpen: Bool
     @State private var sources: [(title: String, url: String)]
     @State private var isSaving: Bool
     @State private var saveError: String?
@@ -55,18 +62,21 @@ struct ShareRecipeSheet: View {
         _cuisine = State(initialValue: prefill?.cuisine)
         _dietType = State(initialValue: .any)
         _dietaryRestrictions = State(initialValue: [])
+        _openPicker = State(initialValue: nil)
         _timeMinutes = State(initialValue: prefill?.timeMinutes ?? "")
-        _servings = State(initialValue: prefill?.servings ?? "")
+        _servings = State(initialValue: Int(prefill?.servings ?? "") ?? 1)
         _ingredients = State(initialValue: prefill?.ingredients.isEmpty == false
             ? prefill!.ingredients
             : [(name: "", quantity: "", unit: "")])
         _steps = State(initialValue: prefill?.steps.isEmpty == false
             ? prefill!.steps
             : [""])
+        _macrosOpen = State(initialValue: false)
         _calories = State(initialValue: prefill?.calories ?? "")
         _protein = State(initialValue: prefill?.protein ?? "")
         _carbs = State(initialValue: prefill?.carbs ?? "")
         _fat = State(initialValue: prefill?.fat ?? "")
+        _sourcesOpen = State(initialValue: false)
         _sources = State(initialValue: {
             if let p = prefill, !p.sourceURL.isEmpty {
                 return [(title: p.sourceTitle, url: p.sourceURL)]
@@ -78,11 +88,37 @@ struct ShareRecipeSheet: View {
     }
 
     private let ingredientUnits = ["tsp", "tbsp", "cup", "oz", "fl oz", "lb", "g", "kg", "ml", "L", "pcs", "pinch", "can", "bunch", "cloves"]
+    private let expandSpring = Animation.spring(response: 0.35, dampingFraction: 0.75)
+
+    /// Ordered so the sticky footer's "Still needed: …" helper line reads in a sensible sequence.
+    /// Diet type isn't gated (it always has the `.any` default) and dietary restrictions aren't
+    /// gated (an empty set correctly means "no restrictions," not "undecided") — see plan Deviation 3.
+    private var validationChecks: [(label: String, ok: Bool)] {
+        let trimmedName = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedDesc = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasIngredient = ingredients.contains { !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let hasStep = steps.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        return [
+            (label: "a recipe name", ok: !trimmedName.isEmpty),
+            (label: "a description (20+ characters)", ok: trimmedDesc.count >= 20),
+            (label: "a cuisine", ok: cuisine != nil),
+            (label: "a time", ok: (Int(timeMinutes) ?? 0) > 0),
+            (label: "servings", ok: servings > 0),
+            (label: "at least one ingredient", ok: hasIngredient),
+            (label: "at least one step", ok: hasStep)
+        ]
+    }
 
     private var canSave: Bool {
-        !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        && cuisine != nil
-        && ingredients.contains { !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        validationChecks.allSatisfy(\.ok)
+    }
+
+    private var missingFieldsHelp: String {
+        "Still needed: " + validationChecks.filter { !$0.ok }.map(\.label).joined(separator: ", ")
+    }
+
+    private var macroFilledCount: Int {
+        [calories, protein, carbs, fat].filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count
     }
 
     var body: some View {
@@ -111,187 +147,182 @@ struct ShareRecipeSheet: View {
                     }
 
                     // Photo picker
-                    formField("Photo (optional)") {
-                        if let imageData, let uiImage = UIImage(data: imageData) {
-                            ZStack(alignment: .topTrailing) {
-                                Image(uiImage: uiImage)
-                                    .resizable()
-                                    .scaledToFill()
-                                    .frame(height: 180)
-                                    .frame(maxWidth: .infinity)
-                                    .clipped()
-                                    .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
-
-                                Button {
-                                    self.imageData = nil
-                                    self.selectedPhoto = nil
-                                } label: {
-                                    Ph.xCircle.fill
-                                        .frame(width: 24, height: 24)
-                                        .foregroundStyle(Sourdough.Colors.onAction)
-                                        .shadow(radius: 2)
+                    photoField
+                        .onChange(of: selectedPhoto) { _, newItem in
+                            Task {
+                                if let data = try? await newItem?.loadTransferable(type: Data.self) {
+                                    imageData = data
                                 }
-                                .buttonStyle(.plain)
-                                .padding(Sourdough.Spacing.insideChip)
                             }
-                        } else {
-                            Button {
-                                showingImageSourcePicker = true
-                            } label: {
-                                VStack(spacing: Sourdough.Spacing.insideChip) {
-                                    Ph.camera.regular
-                                        .frame(width: 24, height: 24)
-                                        .foregroundStyle(Sourdough.Colors.faintInk)
-                                    Text("Add Photo")
-                                        .foregroundStyle(Sourdough.Colors.faintInk)
-                                        .sourdoughTextStyle(.subhead)
+                        }
+                        .confirmationDialog("Add Photo", isPresented: $showingImageSourcePicker) {
+                            Button("Take Photo") {
+                                requestCameraAccess()
+                            }
+                            Button("Choose from Library") {
+                                showingPhotoPicker = true
+                            }
+                            Button("Cancel", role: .cancel) {}
+                        }
+                        .photosPicker(isPresented: $showingPhotoPicker, selection: $selectedPhoto, matching: .images)
+                        .fullScreenCover(isPresented: $showingCamera) {
+                            CameraImagePicker(imageData: $imageData)
+                                .ignoresSafeArea()
+                        }
+                        .alert("Camera Access", isPresented: $showingCameraDeniedAlert) {
+                            Button("Open Settings") {
+                                if let url = URL(string: UIApplication.openSettingsURLString) {
+                                    UIApplication.shared.open(url)
                                 }
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 120)
-                                .background(Sourdough.Colors.sunken)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous)
-                                        .stroke(Sourdough.Colors.interactiveBorder, style: StrokeStyle(lineWidth: 1, dash: [6]))
-                                )
-                                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
                             }
-                            .buttonStyle(.plain)
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("UseUp needs camera access to take photos of your recipes. You can enable this in Settings.")
                         }
-                    }
-                    .onChange(of: selectedPhoto) { _, newItem in
-                        Task {
-                            if let data = try? await newItem?.loadTransferable(type: Data.self) {
-                                imageData = data
-                            }
-                        }
-                    }
-                    .confirmationDialog("Add Photo", isPresented: $showingImageSourcePicker) {
-                        Button("Take Photo") {
-                            requestCameraAccess()
-                        }
-                        Button("Choose from Library") {
-                            showingPhotoPicker = true
-                        }
-                        Button("Cancel", role: .cancel) {}
-                    }
-                    .photosPicker(isPresented: $showingPhotoPicker, selection: $selectedPhoto, matching: .images)
-                    .fullScreenCover(isPresented: $showingCamera) {
-                        CameraImagePicker(imageData: $imageData)
-                            .ignoresSafeArea()
-                    }
-                    .alert("Camera Access", isPresented: $showingCameraDeniedAlert) {
-                        Button("Open Settings") {
-                            if let url = URL(string: UIApplication.openSettingsURLString) {
-                                UIApplication.shared.open(url)
-                            }
-                        }
-                        Button("Cancel", role: .cancel) {}
-                    } message: {
-                        Text("UseUp needs camera access to take photos of your recipes. You can enable this in Settings.")
+
+                    // Recipe name
+                    sectionCard(label: "Recipe name") {
+                        TextField("Spinach & yogurt flatbreads", text: $title)
+                            .autocorrectionDisabled()
+                            .foregroundStyle(Sourdough.Colors.ink)
+                            .sourdoughTextStyle(.rowTitle)
                     }
 
-                    // Title field
-                    formField("Title") {
-                        formTextField("e.g. Grandma's Pasta", text: $title)
-                    }
-
-                    // Summary field
-                    formField("Summary") {
-                        formTextField("Brief description", text: $summary)
+                    // Description
+                    sectionCard(label: "Description", count: "\(summary.trimmingCharacters(in: .whitespacesAndNewlines).count) / 20") {
+                        ZStack(alignment: .topLeading) {
+                            if summary.isEmpty {
+                                Text("What it tastes like, and what it saves from the fridge.")
+                                    .foregroundStyle(Sourdough.Colors.faintInk)
+                                    .sourdoughTextStyle(.body)
+                                    .padding(.top, 8)
+                                    .padding(.leading, 5)
+                                    .allowsHitTesting(false)
+                            }
+                            TextEditor(text: $summary)
+                                .scrollContentBackground(.hidden)
+                                .frame(minHeight: 66)
+                                .foregroundStyle(Sourdough.Colors.ink)
+                                .sourdoughTextStyle(.body)
+                        }
                     }
 
                     // Cuisine
-                    formField("Cuisine") {
-                        menuField(
-                            options: Cuisine.allCases,
-                            label: { $0.rawValue },
-                            isSelected: { $0 == cuisine },
-                            currentLabel: cuisine?.rawValue ?? "Select cuisine",
-                            isPlaceholder: cuisine == nil
-                        ) { option in
-                            cuisine = cuisine == option ? nil : option
-                        }
+                    inlinePickerRow(
+                        label: "Cuisine",
+                        options: Cuisine.allCases,
+                        optionLabel: { $0.rawValue },
+                        isSelected: { $0 == cuisine },
+                        valueText: cuisine?.rawValue ?? "Choose one",
+                        isPlaceholder: cuisine == nil,
+                        isOpen: openPicker == .cuisine
+                    ) {
+                        withAnimation(expandSpring) { openPicker = openPicker == .cuisine ? nil : .cuisine }
+                    } onPick: { option in
+                        cuisine = cuisine == option ? nil : option
+                        withAnimation(expandSpring) { openPicker = nil }
                     }
 
                     // Diet Type
-                    formField("Diet Type") {
-                        menuField(
-                            options: GenerationOptions.DietType.allCases,
-                            label: { $0.rawValue },
-                            isSelected: { $0 == dietType },
-                            currentLabel: dietType.rawValue,
-                            isPlaceholder: false
-                        ) { option in
-                            dietType = option
-                        }
+                    inlinePickerRow(
+                        label: "Diet Type",
+                        options: GenerationOptions.DietType.allCases,
+                        optionLabel: { $0.rawValue },
+                        isSelected: { $0 == dietType },
+                        valueText: dietType.rawValue,
+                        isPlaceholder: false,
+                        isOpen: openPicker == .diet
+                    ) {
+                        withAnimation(expandSpring) { openPicker = openPicker == .diet ? nil : .diet }
+                    } onPick: { option in
+                        dietType = option
+                        withAnimation(expandSpring) { openPicker = nil }
                     }
 
                     // Dietary Restrictions
-                    formField("Dietary Restrictions (optional)") {
-                        Menu {
-                            ForEach(GenerationOptions.DietaryRestriction.allCases) { option in
-                                Button {
-                                    if dietaryRestrictions.contains(option) {
-                                        dietaryRestrictions.remove(option)
-                                    } else {
-                                        dietaryRestrictions.insert(option)
-                                    }
-                                } label: {
-                                    HStack {
-                                        Text(option.rawValue)
-                                        if dietaryRestrictions.contains(option) {
-                                            Ph.check.regular.frame(width: 16, height: 16)
-                                        }
-                                    }
-                                }
-                            }
-                        } label: {
-                            HStack {
-                                Text(dietaryRestrictions.isEmpty
-                                     ? "None"
-                                     : dietaryRestrictions.map(\.rawValue).joined(separator: ", "))
-                                    .foregroundStyle(dietaryRestrictions.isEmpty ? Sourdough.Colors.faintInk : Sourdough.Colors.ink)
-                                    .sourdoughTextStyle(.body)
-                                    .lineLimit(1)
-                                Spacer()
-                                Ph.caretDown.regular
-                                    .frame(width: 12, height: 12)
-                                    .foregroundStyle(Sourdough.Colors.faintInk)
-                            }
-                            .padding(.horizontal, Sourdough.Spacing.rowInternals)
-                            .frame(height: 48)
-                            .background(Sourdough.Colors.sunken)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous)
-                                    .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+                    inlinePickerRow(
+                        label: "Dietary Restrictions",
+                        options: GenerationOptions.DietaryRestriction.allCases,
+                        optionLabel: { $0.rawValue },
+                        isSelected: { dietaryRestrictions.contains($0) },
+                        valueText: dietaryRestrictions.isEmpty ? "None" : dietaryRestrictions.map(\.rawValue).joined(separator: ", "),
+                        isPlaceholder: dietaryRestrictions.isEmpty,
+                        isOpen: openPicker == .restrictions
+                    ) {
+                        withAnimation(expandSpring) { openPicker = openPicker == .restrictions ? nil : .restrictions }
+                    } onPick: { option in
+                        if dietaryRestrictions.contains(option) {
+                            dietaryRestrictions.remove(option)
+                        } else {
+                            dietaryRestrictions.insert(option)
                         }
                     }
 
                     // Time & Servings
                     HStack(spacing: Sourdough.Spacing.rowInternals) {
-                        formField("Time (min)") {
-                            formTextField("e.g. 30", text: $timeMinutes)
-                                .keyboardType(.numberPad)
+                        sectionCard(label: "Time") {
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                TextField("20", text: $timeMinutes)
+                                    .keyboardType(.numberPad)
+                                    .foregroundStyle(Sourdough.Colors.ink)
+                                    .sourdoughTextStyle(.title2)
+                                Text("min")
+                                    .foregroundStyle(Sourdough.Colors.mutedInk)
+                                    .sourdoughTextStyle(.subhead)
+                            }
                         }
-                        formField("Servings") {
-                            formTextField("e.g. 4", text: $servings)
-                                .keyboardType(.numberPad)
+                        .frame(maxWidth: .infinity)
+
+                        sectionCard(label: "Servings") {
+                            HStack {
+                                Button {
+                                    servings = max(1, servings - 1)
+                                } label: {
+                                    Text("−")
+                                        .foregroundStyle(servings > 1 ? Sourdough.Colors.ink : Sourdough.Colors.faintInk)
+                                        .sourdoughTextStyle(.rowTitle)
+                                        .frame(width: 32, height: 32)
+                                        .background(Sourdough.Colors.sunken)
+                                        .clipShape(Circle())
+                                }
+                                .buttonStyle(.plain)
+
+                                Spacer()
+                                Text("\(servings)")
+                                    .foregroundStyle(Sourdough.Colors.ink)
+                                    .sourdoughTextStyle(.title2)
+                                Spacer()
+
+                                Button {
+                                    servings = min(24, servings + 1)
+                                } label: {
+                                    Text("+")
+                                        .foregroundStyle(Sourdough.Colors.actionInk)
+                                        .sourdoughTextStyle(.rowTitle)
+                                        .frame(width: 32, height: 32)
+                                        .background(Sourdough.Ramp.terracotta100)
+                                        .clipShape(Circle())
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
+                        .frame(width: 168)
                     }
 
                     // Ingredients
-                    formField("Ingredients") {
-                        ForEach(ingredients.indices, id: \.self) { index in
-                            VStack(spacing: Sourdough.Spacing.insideChip) {
+                    sectionCard(
+                        label: "Ingredients",
+                        count: "\(ingredients.filter { !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count) of \(ingredients.count) complete"
+                    ) {
+                        VStack(spacing: Sourdough.Spacing.insideChip) {
+                            ForEach(ingredients.indices, id: \.self) { index in
                                 HStack(spacing: Sourdough.Spacing.insideChip) {
-                                    formTextField("Qty", text: Binding(
+                                    nestedTextField("1", text: Binding(
                                         get: { ingredients[index].quantity },
                                         set: { ingredients[index].quantity = $0 }
-                                    ))
+                                    ), style: .title2, alignment: .center)
                                     .keyboardType(.decimalPad)
-                                    .frame(width: 64)
+                                    .frame(width: 56)
 
                                     Menu {
                                         Button("none") { ingredients[index].unit = "" }
@@ -308,20 +339,20 @@ struct ShareRecipeSheet: View {
                                                 .foregroundStyle(Sourdough.Colors.faintInk)
                                         }
                                         .padding(.horizontal, Sourdough.Spacing.rowInternals)
-                                        .frame(height: 48)
+                                        .frame(height: 44)
                                         .frame(minWidth: 72)
                                         .background(Sourdough.Colors.sunken)
                                         .overlay(
-                                            RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous)
-                                                .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
+                                            RoundedRectangle(cornerRadius: Sourdough.Radius.input, style: .continuous)
+                                                .stroke(Sourdough.Colors.hairline, lineWidth: 1)
                                         )
-                                        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+                                        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.input, style: .continuous))
                                     }
 
-                                    formTextField("Ingredient", text: Binding(
+                                    nestedTextField("Baby spinach", text: Binding(
                                         get: { ingredients[index].name },
                                         set: { ingredients[index].name = $0 }
-                                    ))
+                                    ), style: .body, alignment: .leading)
 
                                     if ingredients.count > 1 {
                                         Button {
@@ -335,62 +366,80 @@ struct ShareRecipeSheet: View {
                                     }
                                 }
                             }
-                        }
 
-                        Button {
-                            ingredients.append((name: "", quantity: "", unit: ""))
-                        } label: {
-                            HStack(spacing: Sourdough.Spacing.iconToLabel) {
-                                Ph.plusCircle.fill
-                                    .frame(width: 14, height: 14)
-                                Text("Add Ingredient")
-                                    .sourdoughTextStyle(.subhead)
+                            addRowButton("Add Ingredient") {
+                                ingredients.append((name: "", quantity: "", unit: ""))
                             }
-                            .foregroundStyle(Sourdough.Colors.actionInk)
                         }
-                        .buttonStyle(.plain)
                     }
 
                     // Steps
-                    formField("Steps") {
-                        ForEach(steps.indices, id: \.self) { index in
-                            HStack(spacing: Sourdough.Spacing.insideChip) {
-                                Text("\(index + 1).")
-                                    .foregroundStyle(Sourdough.Colors.faintInk)
-                                    .sourdoughTextStyle(.subhead)
-                                    .frame(width: 20)
+                    sectionCard(
+                        label: "Method",
+                        count: "\(steps.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count) of \(steps.count) written"
+                    ) {
+                        VStack(spacing: Sourdough.Spacing.insideChip) {
+                            ForEach(steps.indices, id: \.self) { index in
+                                HStack(alignment: .top, spacing: Sourdough.Spacing.insideChip) {
+                                    Text("\(index + 1)")
+                                        .foregroundStyle(Sourdough.Ramp.sage600)
+                                        .sourdoughTextStyle(.caption)
+                                        .frame(width: 26, height: 26)
+                                        .background(Sourdough.Ramp.sage100)
+                                        .clipShape(Circle())
+                                        .padding(.top, 7)
 
-                                formTextField("Step \(index + 1)", text: $steps[index])
-
-                                if steps.count > 1 {
-                                    Button {
-                                        steps.remove(at: index)
-                                    } label: {
-                                        Ph.minusCircle.fill
-                                            .frame(width: 16, height: 16)
-                                            .foregroundStyle(Sourdough.Colors.destructive)
+                                    ZStack(alignment: .topLeading) {
+                                        if steps[index].isEmpty {
+                                            Text("Warm the flatbreads dry in a pan.")
+                                                .foregroundStyle(Sourdough.Colors.faintInk)
+                                                .sourdoughTextStyle(.body)
+                                                .padding(.top, 8)
+                                                .padding(.leading, 5)
+                                                .allowsHitTesting(false)
+                                        }
+                                        TextEditor(text: $steps[index])
+                                            .scrollContentBackground(.hidden)
+                                            .frame(minHeight: 44)
+                                            .foregroundStyle(Sourdough.Colors.ink)
+                                            .sourdoughTextStyle(.body)
                                     }
-                                    .buttonStyle(.plain)
+                                    .padding(.horizontal, 4)
+                                    .background(Sourdough.Colors.canvas)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: Sourdough.Radius.input, style: .continuous)
+                                            .stroke(Sourdough.Colors.hairline, lineWidth: 1)
+                                    )
+                                    .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.input, style: .continuous))
+
+                                    if steps.count > 1 {
+                                        Button {
+                                            steps.remove(at: index)
+                                        } label: {
+                                            Ph.minusCircle.fill
+                                                .frame(width: 16, height: 16)
+                                                .foregroundStyle(Sourdough.Colors.destructive)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .padding(.top, 10)
+                                    }
                                 }
                             }
-                        }
 
-                        Button {
-                            steps.append("")
-                        } label: {
-                            HStack(spacing: Sourdough.Spacing.iconToLabel) {
-                                Ph.plusCircle.fill
-                                    .frame(width: 14, height: 14)
-                                Text("Add Step")
-                                    .sourdoughTextStyle(.subhead)
+                            addRowButton("Add Step") {
+                                steps.append("")
                             }
-                            .foregroundStyle(Sourdough.Colors.actionInk)
                         }
-                        .buttonStyle(.plain)
                     }
 
-                    // Macros
-                    formField("Macros (optional)") {
+                    // Macros (collapsible)
+                    collapsibleCard(
+                        title: "Macros",
+                        summary: macroFilledCount > 0 ? "\(macroFilledCount) of 4 filled · per serving" : "Optional · per serving",
+                        isOpen: macrosOpen
+                    ) {
+                        withAnimation(expandSpring) { macrosOpen.toggle() }
+                    } content: {
                         LazyVGrid(columns: [
                             GridItem(.flexible(), spacing: Sourdough.Spacing.insideChip),
                             GridItem(.flexible(), spacing: Sourdough.Spacing.insideChip)
@@ -400,18 +449,25 @@ struct ShareRecipeSheet: View {
                             macroField("Carbs (g)", text: $carbs)
                             macroField("Fat (g)", text: $fat)
                         }
-
                     }
 
-                    // Sources
-                    formField("Sources (optional)") {
-                        ForEach(sources.indices, id: \.self) { index in
-                            VStack(spacing: Sourdough.Spacing.insideChip) {
+                    // Sources (collapsible)
+                    collapsibleCard(
+                        title: "Sources",
+                        summary: sources.isEmpty ? "Optional · credit where it came from" : "\(sources.count) link\(sources.count > 1 ? "s" : "")",
+                        isOpen: sourcesOpen
+                    ) {
+                        withAnimation(expandSpring) { sourcesOpen.toggle() }
+                    } content: {
+                        VStack(spacing: Sourdough.Spacing.insideChip) {
+                            ForEach(sources.indices, id: \.self) { index in
                                 HStack(spacing: Sourdough.Spacing.insideChip) {
-                                    formTextField("Source title", text: Binding(
-                                        get: { sources[index].title },
-                                        set: { sources[index].title = $0 }
-                                    ))
+                                    nestedTextField("https:// or a cookbook page", text: Binding(
+                                        get: { sources[index].url },
+                                        set: { sources[index].url = $0 }
+                                    ), style: .body, alignment: .leading)
+                                    .keyboardType(.URL)
+                                    .textInputAutocapitalization(.never)
 
                                     Button {
                                         sources.remove(at: index)
@@ -422,58 +478,50 @@ struct ShareRecipeSheet: View {
                                     }
                                     .buttonStyle(.plain)
                                 }
+                            }
 
-                                formTextField("https://...", text: Binding(
-                                    get: { sources[index].url },
-                                    set: { sources[index].url = $0 }
-                                ))
-                                .keyboardType(.URL)
-                                .textInputAutocapitalization(.never)
+                            addRowButton("Add Link") {
+                                sources.append((title: "", url: ""))
                             }
                         }
-
-                        Button {
-                            sources.append((title: "", url: ""))
-                        } label: {
-                            HStack(spacing: Sourdough.Spacing.iconToLabel) {
-                                Ph.plusCircle.fill
-                                    .frame(width: 14, height: 14)
-                                Text("Add Source")
-                                    .sourdoughTextStyle(.subhead)
-                            }
-                            .foregroundStyle(Sourdough.Colors.actionInk)
-                        }
-                        .buttonStyle(.plain)
                     }
                 }
                 .padding(.horizontal, Sourdough.Spacing.screenMargin)
             }
 
             // Save button
-            Button(action: saveRecipe) {
-                Group {
-                    if isSaving {
-                        ProgressView().tint(.white)
-                    } else {
-                        Text(sheetTitle)
-                            .foregroundStyle(Sourdough.Colors.onAction)
-                            .sourdoughTextStyle(.rowTitle)
+            VStack(spacing: Sourdough.Spacing.iconToLabel) {
+                Button(action: saveRecipe) {
+                    Group {
+                        if isSaving {
+                            ProgressView().tint(.white)
+                        } else {
+                            Text(sheetTitle)
+                                .foregroundStyle(Sourdough.Colors.onAction)
+                                .sourdoughTextStyle(.rowTitle)
+                        }
                     }
-                }
-                .frame(maxWidth: .infinity)
-                .frame(height: 52)
-                .background(
-                    LinearGradient(
-                        colors: [Sourdough.Colors.action, Sourdough.Colors.actionInk],
-                        startPoint: .topTrailing,
-                        endPoint: .bottomLeading
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 52)
+                    .background(
+                        LinearGradient(
+                            colors: [Sourdough.Colors.action, Sourdough.Colors.actionInk],
+                            startPoint: .topTrailing,
+                            endPoint: .bottomLeading
+                        )
+                        .opacity(canSave && !isSaving ? 1 : 0.4)
                     )
-                    .opacity(canSave && !isSaving ? 1 : 0.4)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSave || isSaving)
+
+                Text(canSave ? "Shared with the community once submitted" : missingFieldsHelp)
+                    .foregroundStyle(Sourdough.Colors.mutedInk)
+                    .sourdoughTextStyle(.caption)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
             }
-            .buttonStyle(.plain)
-            .disabled(!canSave || isSaving)
             .padding(.horizontal, Sourdough.Spacing.screenMargin)
             .padding(.top, Sourdough.Spacing.rowInternals)
             .padding(.bottom, Sourdough.Spacing.screenMargin)
@@ -486,6 +534,65 @@ struct ShareRecipeSheet: View {
             Button("OK", role: .cancel) { saveError = nil }
         } message: {
             Text(saveError ?? "")
+        }
+    }
+
+    // MARK: - Photo field
+
+    @ViewBuilder
+    private var photoField: some View {
+        if let imageData, let uiImage = UIImage(data: imageData) {
+            ZStack(alignment: .topTrailing) {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(height: 180)
+                    .frame(maxWidth: .infinity)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
+
+                Button {
+                    self.imageData = nil
+                    self.selectedPhoto = nil
+                } label: {
+                    Ph.xCircle.fill
+                        .frame(width: 24, height: 24)
+                        .foregroundStyle(Sourdough.Colors.onAction)
+                        .shadow(radius: 2)
+                }
+                .buttonStyle(.plain)
+                .padding(Sourdough.Spacing.insideChip)
+            }
+        } else {
+            Button {
+                showingImageSourcePicker = true
+            } label: {
+                VStack(spacing: Sourdough.Spacing.insideChip) {
+                    Circle()
+                        .fill(Sourdough.Ramp.terracotta100)
+                        .frame(width: 44, height: 44)
+                        .overlay(
+                            Ph.camera.regular
+                                .frame(width: 21, height: 21)
+                                .foregroundStyle(Sourdough.Colors.actionInk)
+                        )
+                    Text("Add a Photo")
+                        .foregroundStyle(Sourdough.Colors.ink)
+                        .sourdoughTextStyle(.subhead)
+                    Text("Camera or library · optional but recommended")
+                        .foregroundStyle(Sourdough.Colors.faintInk)
+                        .sourdoughTextStyle(.caption)
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 168)
+                .background(Sourdough.Colors.sunken)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous)
+                        .stroke(Sourdough.Colors.interactiveBorder, style: StrokeStyle(lineWidth: 1, dash: [6]))
+                )
+                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -524,13 +631,17 @@ struct ShareRecipeSheet: View {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
 
+        // Source rows only collect a URL now; when no explicit title was ever set (the common
+        // case), derive one from the URL's host rather than dropping the source — the original
+        // `title`-required filter would otherwise silently discard every row.
         let sourceLinks: [SourceLink] = sources.compactMap { source in
-            let trimmedTitle = source.title.trimmingCharacters(in: .whitespacesAndNewlines)
             let trimmedURL = source.url.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmedTitle.isEmpty, let url = URL(string: trimmedURL), !trimmedURL.isEmpty else {
-                return nil
-            }
-            return SourceLink(title: trimmedTitle, url: url)
+            guard !trimmedURL.isEmpty, let url = URL(string: trimmedURL) else { return nil }
+            let trimmedTitle = source.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let derivedTitle = trimmedTitle.isEmpty
+                ? (url.host?.replacingOccurrences(of: "www.", with: "") ?? trimmedURL)
+                : trimmedTitle
+            return SourceLink(title: derivedTitle, url: url)
         }
 
         isSaving = true
@@ -542,7 +653,7 @@ struct ShareRecipeSheet: View {
                     title: title.trimmingCharacters(in: .whitespacesAndNewlines),
                     summary: summary.trimmingCharacters(in: .whitespacesAndNewlines),
                     timeMinutes: Int(timeMinutes) ?? 0,
-                    servings: Int(servings) ?? 1,
+                    servings: servings,
                     ingredients: filteredIngredients,
                     steps: filteredSteps,
                     macros: Macros(
@@ -569,75 +680,177 @@ struct ShareRecipeSheet: View {
 
     // MARK: - Reusable Components
 
-    private func formField<Content: View>(
-        _ label: String,
+    /// Bordered card used for simple single-content fields (name, description, ingredients,
+    /// steps, time, servings) — label caption, optional right-aligned count, then content.
+    private func sectionCard<Content: View>(
+        label: String,
+        count: String? = nil,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
-            Text(label)
-                .foregroundStyle(Sourdough.Colors.mutedInk)
-                .sourdoughTextStyle(.caption)
-            content()
-        }
-    }
-
-    private func formTextField(_ placeholder: String, text: Binding<String>) -> some View {
-        TextField(placeholder, text: text)
-            .autocorrectionDisabled()
-            .foregroundStyle(Sourdough.Colors.ink)
-            .sourdoughTextStyle(.body)
-            .padding(.horizontal, Sourdough.Spacing.rowInternals)
-            .frame(height: 48)
-            .background(Sourdough.Colors.sunken)
-            .overlay(
-                RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous)
-                    .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
-    }
-
-    /// Single-select dropdown row shared by the Cuisine and Diet Type fields — same menu/label
-    /// chrome, differing only in the option list and what "selected" means for the caller.
-    private func menuField<T: Hashable>(
-        options: [T],
-        label: @escaping (T) -> String,
-        isSelected: @escaping (T) -> Bool,
-        currentLabel: String,
-        isPlaceholder: Bool,
-        onSelect: @escaping (T) -> Void
-    ) -> some View {
-        Menu {
-            ForEach(options, id: \.self) { option in
-                Button {
-                    onSelect(option)
-                } label: {
-                    HStack {
-                        Text(label(option))
-                        if isSelected(option) {
-                            Ph.check.regular.frame(width: 16, height: 16)
-                        }
-                    }
+            HStack(alignment: .firstTextBaseline) {
+                Text(label)
+                    .foregroundStyle(Sourdough.Colors.mutedInk)
+                    .sourdoughTextStyle(.caption)
+                Spacer()
+                if let count {
+                    Text(count)
+                        .foregroundStyle(Sourdough.Colors.faintInk)
+                        .sourdoughTextStyle(.caption)
                 }
             }
-        } label: {
-            HStack {
-                Text(currentLabel)
-                    .foregroundStyle(isPlaceholder ? Sourdough.Colors.faintInk : Sourdough.Colors.ink)
-                    .sourdoughTextStyle(.body)
-                Spacer()
-                Ph.caretDown.regular
-                    .frame(width: 12, height: 12)
-                    .foregroundStyle(Sourdough.Colors.faintInk)
-            }
-            .padding(.horizontal, Sourdough.Spacing.rowInternals)
-            .frame(height: 48)
-            .background(Sourdough.Colors.sunken)
-            .overlay(
-                RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous)
-                    .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+            content()
         }
+        .padding(Sourdough.Spacing.rowInternals)
+        .background(Sourdough.Colors.card)
+        .overlay(
+            RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous)
+                .stroke(Sourdough.Colors.hairline, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
+    }
+
+    /// Single- or multi-select row that expands an inline wrapped chip grid on tap, instead of a
+    /// native `Menu` popover — mirrors the emoji icon picker's spring/transition in
+    /// `PantryView.swift`'s `IngredientFormContent`.
+    private func inlinePickerRow<T: Hashable>(
+        label: String,
+        options: [T],
+        optionLabel: @escaping (T) -> String,
+        isSelected: @escaping (T) -> Bool,
+        valueText: String,
+        isPlaceholder: Bool,
+        isOpen: Bool,
+        onToggle: @escaping () -> Void,
+        onPick: @escaping (T) -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button(action: onToggle) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(label)
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                            .sourdoughTextStyle(.caption)
+                        Text(valueText)
+                            .foregroundStyle(isPlaceholder ? Sourdough.Colors.faintInk : Sourdough.Colors.ink)
+                            .sourdoughTextStyle(.body)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Ph.caretDown.regular
+                        .frame(width: 12, height: 12)
+                        .foregroundStyle(Sourdough.Colors.faintInk)
+                        .rotationEffect(.degrees(isOpen ? 180 : 0))
+                }
+                .padding(Sourdough.Spacing.rowInternals)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isOpen {
+                FlowLayout(spacing: 7) {
+                    ForEach(options, id: \.self) { option in
+                        Button {
+                            onPick(option)
+                        } label: {
+                            Text(optionLabel(option))
+                                .foregroundStyle(isSelected(option) ? Sourdough.Colors.onAction : Sourdough.Colors.ink)
+                                .sourdoughTextStyle(.subhead)
+                                .padding(.horizontal, Sourdough.Spacing.rowInternals)
+                                .frame(height: 36)
+                                .background(isSelected(option) ? Sourdough.Ramp.sage600 : Sourdough.Colors.sunken)
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, Sourdough.Spacing.rowInternals)
+                .padding(.bottom, Sourdough.Spacing.rowInternals)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .background(Sourdough.Colors.card)
+        .overlay(
+            RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous)
+                .stroke(Sourdough.Colors.hairline, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
+    }
+
+    /// Toggle-header card used by Macros and Sources — title + summary + caret, expanding to
+    /// reveal `content` inline. Same card chrome as `inlinePickerRow`.
+    private func collapsibleCard<Content: View>(
+        title: String,
+        summary: String,
+        isOpen: Bool,
+        onToggle: @escaping () -> Void,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button(action: onToggle) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title)
+                            .foregroundStyle(Sourdough.Colors.ink)
+                            .sourdoughTextStyle(.rowTitle)
+                        Text(summary)
+                            .foregroundStyle(Sourdough.Colors.faintInk)
+                            .sourdoughTextStyle(.caption)
+                    }
+                    Spacer()
+                    Ph.caretDown.regular
+                        .frame(width: 12, height: 12)
+                        .foregroundStyle(Sourdough.Colors.faintInk)
+                        .rotationEffect(.degrees(isOpen ? 180 : 0))
+                }
+                .padding(Sourdough.Spacing.rowInternals)
+            }
+            .buttonStyle(.plain)
+
+            if isOpen {
+                content()
+                    .padding(.horizontal, Sourdough.Spacing.rowInternals)
+                    .padding(.bottom, Sourdough.Spacing.rowInternals)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .background(Sourdough.Colors.card)
+        .overlay(
+            RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous)
+                .stroke(Sourdough.Colors.hairline, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
+    }
+
+    /// Lighter-fill field nested inside a `sectionCard` (ingredient qty/name, step, source-url
+    /// rows) — one step lighter than the card itself, matching the design's card-within-card look.
+    private func nestedTextField(_ placeholder: String, text: Binding<String>, style: Sourdough.Typography.Style, alignment: TextAlignment) -> some View {
+        TextField(placeholder, text: text)
+            .autocorrectionDisabled()
+            .multilineTextAlignment(alignment)
+            .foregroundStyle(Sourdough.Colors.ink)
+            .sourdoughTextStyle(style)
+            .padding(.horizontal, Sourdough.Spacing.insideChip)
+            .frame(height: 44)
+            .background(Sourdough.Colors.canvas)
+            .overlay(
+                RoundedRectangle(cornerRadius: Sourdough.Radius.input, style: .continuous)
+                    .stroke(Sourdough.Colors.hairline, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.input, style: .continuous))
+    }
+
+    private func addRowButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: Sourdough.Spacing.iconToLabel) {
+                Ph.plusCircle.fill
+                    .frame(width: 14, height: 14)
+                Text(title)
+                    .sourdoughTextStyle(.subhead)
+            }
+            .foregroundStyle(Sourdough.Colors.actionInk)
+        }
+        .buttonStyle(.plain)
     }
 
     private func macroField(_ label: String, text: Binding<String>) -> some View {
@@ -651,13 +864,13 @@ struct ShareRecipeSheet: View {
                 .foregroundStyle(Sourdough.Colors.ink)
                 .sourdoughTextStyle(.body)
                 .padding(.horizontal, Sourdough.Spacing.rowInternals)
-                .frame(height: 48)
-                .background(Sourdough.Colors.sunken)
+                .frame(height: 44)
+                .background(Sourdough.Colors.canvas)
                 .overlay(
-                    RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous)
-                        .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
+                    RoundedRectangle(cornerRadius: Sourdough.Radius.input, style: .continuous)
+                        .stroke(Sourdough.Colors.hairline, lineWidth: 1)
                 )
-                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.input, style: .continuous))
         }
     }
 }

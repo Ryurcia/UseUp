@@ -9,6 +9,8 @@ struct CategoryRecipesView: View {
     @State private var navigateToRecipe: Recipe?
     @State private var recipeToReport: Recipe?
     @State private var ratingsRecipe: Recipe?
+    @State private var recipePendingSaveFlow: Recipe?
+    @State private var recipePendingCollectionPick: Recipe?
 
     private let gridColumns = [
         GridItem(.flexible(), spacing: DS.Spacing.space4),
@@ -23,7 +25,8 @@ struct CategoryRecipesView: View {
                         recipe: recipe,
                         savedRecipesStore: savedRecipesStore,
                         reportRecipe: { recipeToReport = $0 },
-                        rateRecipe: { ratingsRecipe = $0 }
+                        rateRecipe: { ratingsRecipe = $0 },
+                        presentSaveFlow: { recipePendingSaveFlow = $0 }
                     )
                     Button {
                         selectedRecipe = recipe
@@ -51,6 +54,25 @@ struct CategoryRecipesView: View {
                 selectedRecipe = nil
                 navigateToRecipe = recipe
             }
+        }
+        .sheet(item: $recipePendingSaveFlow) { recipe in
+            SaveChoiceSheet(
+                onSaveToCollection: {
+                    recipePendingSaveFlow = nil
+                    recipePendingCollectionPick = recipe
+                },
+                onJustSave: {
+                    savedRecipesStore.saveRecipe(recipe)
+                    recipePendingSaveFlow = nil
+                }
+            )
+            .presentationDetents([.height(220)])
+        }
+        .sheet(item: $recipePendingCollectionPick) { recipe in
+            CollectionPickerSheet(recipe: recipe) {
+                recipePendingCollectionPick = nil
+            }
+            .presentationDetents([.medium, .large])
         }
         .sheet(item: $recipeToReport) { recipe in
             ReportContentSheet(subject: .recipe(name: recipe.title)) { category, description in

@@ -1,5 +1,4 @@
 import SwiftUI
-import Lottie
 import PhosphorSwift
 
 struct GenerateView: View {
@@ -27,19 +26,10 @@ struct GenerateView: View {
     @State private var selectedAllergies: Set<AllergyType> = []
     @State private var customAllergy: String = ""
     @State private var showAllergyOtherField = false
-    @State private var showingSettings = false
     @State private var showPaywall = false
+    @State private var showSnapChef = false
     @State private var goForward = true
     @State private var caloriesEnabled: Bool = false
-    @State private var loadingPhraseIndex: Int = 0
-
-    private static let loadingPhrases: [String] = [
-        "Let me cook...",
-        "Checking your pantry...",
-        "Crafting the perfect dishes...",
-        "Balancing the flavors...",
-        "Almost ready...",
-    ]
 
     private var isInOptionsFlow: Bool {
         switch step {
@@ -55,10 +45,7 @@ struct GenerateView: View {
     }
 
     private var isLimitExhausted: Bool {
-        if session.isPremium {
-            return activityStore.generationsToday >= 5
-        }
-        return activityStore.generationsThisWeek >= 3
+        activityStore.generationsToday >= 5
     }
 
     // Cached filter result — recomputed via recomputeFilteredIngredients() on relevant changes,
@@ -82,19 +69,8 @@ struct GenerateView: View {
             }
     }
 
-    private var freeCuisines: Set<Cuisine> {
-        [.american, .asian, .caribbean, .french, .greek, .indian, .italian, .mediterranean, .middleEastern, .spanish]
-    }
-
     private var sortedCuisines: [Cuisine] {
-        Cuisine.allCases.filter { $0 != .other }.sorted { lhs, rhs in
-            if !session.isPremium {
-                let lhsFree = freeCuisines.contains(lhs)
-                let rhsFree = freeCuisines.contains(rhs)
-                if lhsFree != rhsFree { return lhsFree }
-            }
-            return false
-        }
+        Cuisine.allCases.filter { $0 != .other }
     }
 
     var body: some View {
@@ -107,12 +83,6 @@ struct GenerateView: View {
 
                     Spacer()
 
-                    Button { showingSettings = true } label: {
-                        Ph.gear.regular
-                            .frame(width: 22, height: 22)
-                            .foregroundStyle(Sourdough.Colors.mutedInk)
-                    }
-                    .buttonStyle(.plain)
                     NotificationBellButton()
                     ProfileNavButton()
                 }
@@ -148,13 +118,6 @@ struct GenerateView: View {
             Color.clear.frame(height: isInOptionsFlow ? 0 : 80)
         }
         .toolbar(.hidden, for: .navigationBar)
-        .sheet(isPresented: $showingSettings) {
-            NavigationStack { SettingsView() }
-                .preferredColorScheme(session.preferredColorScheme)
-        }
-        .sheet(isPresented: $showPaywall) {
-            UseUpPaywallView { showPaywall = false }
-        }
         .sheet(isPresented: $showingFilterSheet) {
             GenFilterSheet(
                 selectedStorageFilters: $selectedStorageFilters,
@@ -162,18 +125,20 @@ struct GenerateView: View {
             )
             .presentationDetents([.large])
         }
+        .sheet(isPresented: $showPaywall) {
+            UseUpPaywallView { showPaywall = false }
+        }
+        .fullScreenCover(isPresented: $showSnapChef) {
+            SnapChefFlow(recipeGenerator: recipeGenerator, onFinished: {
+                showSnapChef = false
+                Task { await activityStore.fetchGenerationsToday() }
+            })
+        }
         .task {
-            await activityStore.fetchGenerationsThisWeek()
             await activityStore.fetchGenerationsToday()
         }
         .onAppear {
-            options.dietType = session.currentUserDietaryPreference
-            options.dietaryRestrictions = session.currentUserDietaryRestrictions
-            options.skillLevel = session.currentUserCookingSkillLevel
-            hasNoRestrictions = options.dietaryRestrictions.isEmpty
-            selectedAllergies = session.currentUserAllergies
-            customAllergy = session.currentUserCustomAllergy
-            showAllergyOtherField = !session.currentUserCustomAllergy.isEmpty
+            seedOptionsFromProfile()
             recomputeFilteredIngredients()
         }
         .onChange(of: pantryStore.ingredients) { _, _ in
@@ -193,6 +158,23 @@ struct GenerateView: View {
             session.requestedIngredientID = nil
             guard let ingredient = pantryStore.ingredients.first(where: { $0.id == id }), !ingredient.isExpired else { return }
             selectedIngredientIDs = [id]
+        }
+        .onChange(of: session.requestedQuickGenerateIngredientID) { _, id in
+            guard let id else { return }
+            session.requestedQuickGenerateIngredientID = nil
+            guard let ingredient = pantryStore.ingredients.first(where: { $0.id == id }), !ingredient.isExpired else { return }
+
+            guard !isLimitExhausted else { return }
+
+            // Quick Generation always starts from the baseline defaults — not whatever the user
+            // last left `options` at in a manual session — then layers on saved profile prefs,
+            // same as a fresh visit to this tab would.
+            options = GenerationOptions()
+            seedOptionsFromProfile()
+            selectedIngredientIDs = [id]
+
+            generationTask?.cancel()
+            generationTask = Task { await runGeneration() }
         }
         .onChange(of: searchText) { _, newValue in
             searchDebounceTask?.cancel()
@@ -216,6 +198,20 @@ struct GenerateView: View {
         withAnimation(.easeInOut(duration: 0.3)) {
             step = newStep
         }
+    }
+
+    /// Applies the user's saved dietary preference/restrictions/skill level/allergies onto
+    /// `options` (and the allergy-editing local state that `runGeneration()` folds back in) —
+    /// shared by the normal `.onAppear` seed and the Quick Generation shortcut, so both paths stay
+    /// identical in what profile data they apply.
+    private func seedOptionsFromProfile() {
+        options.dietType = session.currentUserDietaryPreference
+        options.dietaryRestrictions = session.currentUserDietaryRestrictions
+        options.skillLevel = session.currentUserCookingSkillLevel
+        hasNoRestrictions = options.dietaryRestrictions.isEmpty
+        selectedAllergies = session.currentUserAllergies
+        customAllergy = session.currentUserCustomAllergy
+        showAllergyOtherField = !session.currentUserCustomAllergy.isEmpty
     }
 
     // MARK: - Step 1: Ingredient Selection
@@ -251,20 +247,7 @@ struct GenerateView: View {
     }
 
     private func categoryChip(label: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(label)
-                .foregroundStyle(isSelected ? Sourdough.Colors.onAction : Sourdough.Colors.mutedInk)
-                .sourdoughTextStyle(.caption)
-                .padding(.horizontal, Sourdough.Spacing.screenMargin)
-                .padding(.vertical, Sourdough.Spacing.insideChip)
-                .background(isSelected ? Sourdough.Ramp.sage500 : Sourdough.Colors.sunken)
-                .overlay(
-                    Capsule()
-                        .stroke(isSelected ? Color.clear : Sourdough.Colors.interactiveBorder, lineWidth: 1)
-                )
-                .clipShape(Capsule())
-        }
-        .buttonStyle(.plain)
+        SelectableChip(label: label, isSelected: isSelected, size: .medium, action: action)
     }
 
     private var ingredientSelectionView: some View {
@@ -371,53 +354,43 @@ struct GenerateView: View {
                     .frame(height: 48)
                     .allowsHitTesting(false)
                 }
-                .overlay {
-                    if isLimitExhausted && !session.isPremium {
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .onTapGesture { showPaywall = true }
-                    }
-                }
             }
 
             if isLimitExhausted {
-                if session.isPremium {
-                    proResetTimerView
-                        .padding(.horizontal, Sourdough.Spacing.screenMargin)
-                        .padding(.bottom, Sourdough.Spacing.rowInternals)
-                } else {
-                    Button { showPaywall = true } label: {
-                        HStack(spacing: Sourdough.Spacing.insideChip) {
-                            Ph.sparkle.regular
-                                .frame(width: 14, height: 14)
-                            Text("Upgrade to Pro for more generations")
-                                .foregroundStyle(Sourdough.Colors.onAction)
-                                .sourdoughTextStyle(.rowTitle)
-                        }
-                        .foregroundStyle(Sourdough.Colors.onAction)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 52)
-                        .background(
-                            LinearGradient(
-                                colors: [Sourdough.Colors.action, Sourdough.Ramp.terracotta400],
-                                startPoint: .topTrailing,
-                                endPoint: .bottomLeading
-                            )
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
+                proResetTimerView
                     .padding(.horizontal, Sourdough.Spacing.screenMargin)
                     .padding(.bottom, Sourdough.Spacing.rowInternals)
-                }
             } else {
-                stepButton(label: "Continue with \(selectedIngredientIDs.count) ingredient\(selectedIngredientIDs.count == 1 ? "" : "s")", disabled: selectedIngredientIDs.isEmpty) {
-                    goToStep(.options)
+                VStack(spacing: Sourdough.Spacing.insideChip) {
+                    stepButton(label: "Continue with \(selectedIngredientIDs.count) ingredient\(selectedIngredientIDs.count == 1 ? "" : "s")", disabled: selectedIngredientIDs.isEmpty) {
+                        goToStep(.options)
+                    }
+                    snapChefButton
                 }
                 .padding(.horizontal, Sourdough.Spacing.screenMargin)
                 .padding(.bottom, Sourdough.Spacing.rowInternals)
             }
         }
+    }
+
+    private var snapChefButton: some View {
+        Button { showSnapChef = true } label: {
+            HStack(spacing: Sourdough.Spacing.insideChip) {
+                Ph.camera.bold.frame(width: 18, height: 18)
+                Text("Snap Chef")
+            }
+            .foregroundStyle(Sourdough.Colors.action)
+            .sourdoughTextStyle(.rowTitle)
+            .frame(maxWidth: .infinity)
+            .frame(height: 52)
+            .background(Sourdough.Colors.card)
+            .overlay(
+                RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous)
+                    .stroke(Sourdough.Colors.action, lineWidth: 1.5)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+        }
+        .buttonStyle(.plain)
     }
 
     private func ingredientSelectRow(_ item: Ingredient) -> some View {
@@ -522,11 +495,10 @@ struct GenerateView: View {
                     }
                     .buttonStyle(.plain)
 
-                    Button { if session.isPremium { goToStep(.selectCookTime) } } label: {
+                    Button { goToStep(.selectCookTime) } label: {
                         OptionsRow(
                             label: "Cook Time",
-                            value: session.isPremium ? (options.maxTimeMinutes >= 60 ? "60+ min" : "\(options.maxTimeMinutes) min") : "",
-                            isPro: !session.isPremium
+                            value: options.maxTimeMinutes >= 60 ? "60+ min" : "\(options.maxTimeMinutes) min"
                         )
                     }
                     .buttonStyle(.plain)
@@ -544,31 +516,7 @@ struct GenerateView: View {
 
             VStack(spacing: Sourdough.Spacing.rowInternals) {
                 if isLimitExhausted {
-                    if session.isPremium {
-                        proResetTimerView
-                    } else {
-                        Button { showPaywall = true } label: {
-                            HStack(spacing: Sourdough.Spacing.insideChip) {
-                                Ph.sparkle.regular
-                                    .frame(width: 14, height: 14)
-                                Text("Upgrade to Pro")
-                                    .foregroundStyle(Sourdough.Colors.onAction)
-                                    .sourdoughTextStyle(.rowTitle)
-                            }
-                            .foregroundStyle(Sourdough.Colors.onAction)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 52)
-                            .background(
-                                LinearGradient(
-                                    colors: [Sourdough.Colors.action, Sourdough.Ramp.terracotta400],
-                                    startPoint: .topTrailing,
-                                    endPoint: .bottomLeading
-                                )
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                    }
+                    proResetTimerView
                 } else {
                     stepButton(label: "Generate Recipes", disabled: false) {
                         generationTask?.cancel()
@@ -674,11 +622,9 @@ struct GenerateView: View {
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 0) {
                     ForEach(Array(GenerationOptions.DietType.allCases.enumerated()), id: \.element.id) { index, diet in
-                        let isLocked = !session.isPremium && diet != .any && diet != session.currentUserDietaryPreference
                         selectionRow(
                             label: diet.rawValue,
-                            isSelected: options.dietType == diet,
-                            isLocked: isLocked
+                            isSelected: options.dietType == diet
                         ) {
                             options.dietType = diet
                             goToStep(.options, forward: false)
@@ -710,8 +656,7 @@ struct GenerateView: View {
 
                     ForEach(Array(GenerationOptions.DietaryRestriction.allCases.enumerated()), id: \.element.id) { index, restriction in
                         let isSelected = options.dietaryRestrictions.contains(restriction)
-                        let isLocked = !session.isPremium && !session.currentUserDietaryRestrictions.contains(restriction)
-                        selectionRow(label: restriction.rawValue, isSelected: isSelected, isLocked: isLocked) {
+                        selectionRow(label: restriction.rawValue, isSelected: isSelected) {
                             if isSelected {
                                 options.dietaryRestrictions.remove(restriction)
                                 if options.dietaryRestrictions.isEmpty { hasNoRestrictions = true }
@@ -783,6 +728,22 @@ struct GenerateView: View {
 
     // MARK: - Cook Time Select
 
+    /// Strictest `minimumSafeCookMinutes` across currently-selected, non-expired ingredients —
+    /// computed unconditionally (not just when the current time violates it) so it can both drive
+    /// the auto-correcting clamp and explain an active floor even when the dial already satisfies it.
+    private var safeMinimumMinutes: Int? {
+        pantryStore.ingredients
+            .filter { selectedIngredientIDs.contains($0.id) && !$0.isExpired }
+            .compactMap(\.category.minimumSafeCookMinutes)
+            .max()
+    }
+
+    private func clampCookTimeToSafeMinimum() {
+        if let safeMinimumMinutes, options.maxTimeMinutes < safeMinimumMinutes {
+            options.maxTimeMinutes = safeMinimumMinutes
+        }
+    }
+
     private var cookTimeSelectView: some View {
         VStack(spacing: 0) {
             selectionPageHeader(title: "Cook Time")
@@ -791,6 +752,16 @@ struct GenerateView: View {
 
             CircularTimeDial(minutes: $options.maxTimeMinutes)
                 .frame(width: 260, height: 260)
+                .onChange(of: options.maxTimeMinutes) { _, _ in clampCookTimeToSafeMinimum() }
+
+            if let safeMinimumMinutes {
+                Text("Minimum \(safeMinimumMinutes) min with raw meat, poultry, or seafood selected")
+                    .foregroundStyle(Sourdough.Colors.mutedInk)
+                    .sourdoughTextStyle(.caption)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 280)
+                    .padding(.top, Sourdough.Spacing.rowInternals)
+            }
 
             Spacer()
 
@@ -800,6 +771,7 @@ struct GenerateView: View {
             .padding(.horizontal, Sourdough.Spacing.screenMargin)
             .padding(.bottom, Sourdough.Spacing.rowInternals)
         }
+        .onAppear(perform: clampCookTimeToSafeMinimum)
     }
 
     // MARK: - Calories Toggle Row
@@ -812,21 +784,6 @@ struct GenerateView: View {
                         .foregroundStyle(Sourdough.Colors.ink)
                         .sourdoughTextStyle(.body)
                     Spacer()
-                    if !session.isPremium {
-                        Text("PRO")
-                            .foregroundStyle(Sourdough.Colors.onAction)
-                            .sourdoughTextStyle(.caption)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(
-                                LinearGradient(
-                                    colors: [Sourdough.Colors.action, Sourdough.Ramp.terracotta400],
-                                    startPoint: .topTrailing,
-                                    endPoint: .bottomLeading
-                                )
-                            )
-                            .clipShape(Capsule())
-                    }
                     Toggle("", isOn: Binding(
                         get: { caloriesEnabled },
                         set: { enabled in
@@ -837,12 +794,11 @@ struct GenerateView: View {
                         }
                     ))
                     .labelsHidden()
-                    .disabled(!session.isPremium)
                 }
                 .padding(.horizontal, Sourdough.Spacing.screenMargin)
                 .frame(height: 52)
 
-                if caloriesEnabled && session.isPremium {
+                if caloriesEnabled {
                     Divider()
                         .padding(.horizontal, Sourdough.Spacing.screenMargin)
 
@@ -903,14 +859,11 @@ struct GenerateView: View {
                         goToStep(.options, forward: false)
                     }
 
-                    ForEach(Array(sortedCuisines.enumerated()), id: \.element.id) { index, cuisine in
-                        let isLocked = !session.isPremium && !freeCuisines.contains(cuisine)
+                    ForEach(sortedCuisines) { cuisine in
                         Divider().padding(.leading, Sourdough.Spacing.screenMargin)
                         Button {
-                            if !isLocked {
-                                options.cuisine = cuisine
-                                goToStep(.options, forward: false)
-                            }
+                            options.cuisine = cuisine
+                            goToStep(.options, forward: false)
                         } label: {
                             HStack(spacing: Sourdough.Spacing.rowInternals) {
                                 Group {
@@ -931,30 +884,12 @@ struct GenerateView: View {
                                     .sourdoughTextStyle(.body)
 
                                 Spacer()
-
-                                if isLocked {
-                                    Text("PRO")
-                                        .foregroundStyle(Sourdough.Colors.onAction)
-                                        .sourdoughTextStyle(.caption)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(
-                                            LinearGradient(
-                                                colors: [Sourdough.Colors.action, Sourdough.Ramp.terracotta400],
-                                                startPoint: .topTrailing,
-                                                endPoint: .bottomLeading
-                                            )
-                                        )
-                                        .clipShape(Capsule())
-                                }
                             }
                             .padding(.horizontal, Sourdough.Spacing.screenMargin)
                             .frame(maxWidth: .infinity, minHeight: 60)
                             .contentShape(Rectangle())
-                            .opacity(isLocked ? 0.4 : 1)
                         }
                         .buttonStyle(.plain)
-                        .disabled(isLocked)
                     }
                 }
                 .padding(.top, Sourdough.Spacing.insideChip)
@@ -992,41 +927,7 @@ struct GenerateView: View {
 
     // MARK: - Loading
 
-    private var generatingView: some View {
-        VStack(spacing: Sourdough.Spacing.rowInternals) {
-            Spacer()
-
-            LottieView(animation: .named("LOADING_ANIMATION"))
-                .playing(loopMode: .loop)
-                .frame(width: 300, height: 300)
-                .padding(.bottom, -60)
-
-            Text(Self.loadingPhrases[loadingPhraseIndex])
-                .foregroundStyle(Sourdough.Colors.ink)
-                .sourdoughTextStyle(.title2)
-                .id(loadingPhraseIndex)
-                .transition(.opacity)
-
-            Text("Finding the best dishes from your ingredients")
-                .foregroundStyle(Sourdough.Colors.mutedInk)
-                .sourdoughTextStyle(.body)
-                .multilineTextAlignment(.center)
-
-            Spacer()
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, Sourdough.Spacing.screenMargin)
-        .task {
-            loadingPhraseIndex = 0
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(2))
-                guard !Task.isCancelled else { break }
-                withAnimation(.easeInOut(duration: 0.4)) {
-                    loadingPhraseIndex = (loadingPhraseIndex + 1) % Self.loadingPhrases.count
-                }
-            }
-        }
-    }
+    private var generatingView: some View { RecipeGenerationLoadingView() }
 
     // MARK: - Results
 
@@ -1172,6 +1073,7 @@ struct GenerateView: View {
                         }
                     }
                 }
+                .padding(.bottom, Sourdough.Spacing.iconToLabel)
             }
         }
         .overlay(alignment: .topLeading) {
@@ -1357,23 +1259,20 @@ struct GenerateView: View {
     // MARK: - Generation Count Row
 
     private var generationCountRow: some View {
-        let usedCount = session.isPremium ? activityStore.generationsToday : activityStore.generationsThisWeek
-        let limit = session.isPremium ? 5 : 3
-        let remaining = max(0, limit - usedCount)
-        let period = session.isPremium ? "day" : "week"
-        let label = "\(remaining) Generation\(remaining == 1 ? "" : "s") left for the \(period)"
+        let remaining = max(0, 5 - activityStore.generationsToday)
+        let label = "\(remaining) Generation\(remaining == 1 ? "" : "s") left for the day"
 
         return HStack(spacing: Sourdough.Spacing.insideChip) {
             HStack(spacing: 4) {
                 Ph.lightning.fill
-                    .frame(width: 11, height: 11)
+                    .frame(width: 13, height: 13)
                 Text(label)
                     .foregroundStyle(Sourdough.Colors.onAction)
-                    .sourdoughTextStyle(.caption)
+                    .sourdoughTextStyle(.subhead)
             }
             .foregroundStyle(Sourdough.Colors.onAction)
             .padding(.horizontal, Sourdough.Spacing.rowInternals)
-            .padding(.vertical, 6)
+            .padding(.vertical, 8)
             .background(
                 LinearGradient(
                     colors: [Sourdough.Ramp.sage600, Sourdough.Ramp.sage500],
@@ -1382,15 +1281,6 @@ struct GenerateView: View {
                 )
             )
             .clipShape(Capsule())
-
-            if !session.isPremium {
-                Button { showPaywall = true } label: {
-                    Text("Upgrade for more")
-                        .foregroundStyle(Sourdough.Colors.actionInk)
-                        .sourdoughTextStyle(.caption)
-                }
-                .buttonStyle(.plain)
-            }
 
             Spacer()
         }
@@ -1496,14 +1386,23 @@ struct GenerateView: View {
 
     @MainActor
     private func runGeneration() async {
+        guard session.isPremium else {
+            showPaywall = true
+            return
+        }
+
         generationError = nil
 
         goToStep(.loading)
 
+        // Safety net for `options.maxTimeMinutes` in case the user never revisited the Cook Time
+        // step after changing ingredient selection — see `clampCookTimeToSafeMinimum()`.
+        clampCookTimeToSafeMinimum()
+
         let names: [String] = pantryStore.ingredients
             .filter { selectedIngredientIDs.contains($0.id) && !$0.isExpired }
             .map { ingredient in
-                if let amount = ingredient.amount, !amount.isEmpty {
+                if let amount = ingredient.totalAmount, !amount.isEmpty {
                     return "\(ingredient.name) (\(amount))"
                 }
                 return ingredient.name
@@ -1519,16 +1418,21 @@ struct GenerateView: View {
             .filter { selectedIngredientIDs.contains($0.id) && !$0.isExpired && $0.isExpiringSoon }
             .map { $0.name }
 
-        options.diversifyIngredients = session.isPremium
+        options.diversifyIngredients = true
 
         do {
             recipes = try await recipeGenerator.generateRecipes(
                 for: names,
-                options: options,
-                recipeCount: session.isPremium ? 5 : 2
+                options: options
             )
-            activityStore.logEvent(type: .recipeGenerated)
+            // The edge function records the `recipe_generated` row server-side; just reconcile.
+            activityStore.noteRecipeGeneratedRemotely()
             goToStep(.results)
+        } catch RecipeGenerationError.limitExhausted {
+            recipes = []
+            // Server rejected on quota — resync the counter so the UI reflects the real limit state.
+            await activityStore.fetchGenerationsToday()
+            goToStep(.selectIngredients, forward: false)
         } catch {
             recipes = []
             generationError = error
@@ -1556,7 +1460,6 @@ private enum GenerateStep {
 private struct OptionsRow: View {
     let label: String
     let value: String
-    var isPro: Bool = false
 
     var body: some View {
         HStack(spacing: Sourdough.Spacing.rowInternals) {
@@ -1564,26 +1467,10 @@ private struct OptionsRow: View {
                 .foregroundStyle(Sourdough.Colors.ink)
                 .sourdoughTextStyle(.body)
             Spacer()
-            if isPro {
-                Text("PRO")
-                    .foregroundStyle(Sourdough.Colors.onAction)
-                    .sourdoughTextStyle(.caption)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(
-                        LinearGradient(
-                            colors: [Sourdough.Colors.action, Sourdough.Ramp.terracotta400],
-                            startPoint: .topTrailing,
-                            endPoint: .bottomLeading
-                        )
-                    )
-                    .clipShape(Capsule())
-            } else {
-                Text(value)
-                    .foregroundStyle(Sourdough.Colors.mutedInk)
-                    .sourdoughTextStyle(.subhead)
-                    .lineLimit(1)
-            }
+            Text(value)
+                .foregroundStyle(Sourdough.Colors.mutedInk)
+                .sourdoughTextStyle(.subhead)
+                .lineLimit(1)
             Ph.caretRight.regular
                 .frame(width: 12, height: 12)
                 .foregroundStyle(Sourdough.Colors.faintInk)

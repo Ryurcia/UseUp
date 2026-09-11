@@ -10,6 +10,11 @@ protocol AuthServicing {
     func signUp(email: String, password: String) async throws -> AppUser
     func signIn(email: String, password: String) async throws -> AppUser
     func verifyEmailOTP(email: String, token: String) async throws -> AppUser
+    func requestPasswordReset(email: String) async throws
+    func verifyPasswordResetOTP(email: String, token: String) async throws -> AppUser
+    func updatePassword(_ newPassword: String) async throws
+    func updateEmail(_ newEmail: String) async throws
+    func verifyEmailChangeOTP(newEmail: String, token: String) async throws -> AppUser
     func signOut()
     func deleteAccount() async throws
 }

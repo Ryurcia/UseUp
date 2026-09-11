@@ -135,7 +135,7 @@ private struct RatingRowView: View {
                         .font(.custom("Satoshi Variable", size: 15).weight(.semibold))
                         .foregroundStyle(DS.ColorToken.textPrimary)
                     Spacer()
-                    StarRatingView(rating: review.rating, size: 14)
+                    StarRatingView(rating: review.rating, size: 16)
                     if !isOwnReview {
                         Button {
                             showReportSheet = true

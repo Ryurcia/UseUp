@@ -63,6 +63,28 @@ final class RecipeImageCache {
     }
 }
 
+// MARK: - Recipe Image Placeholder
+
+/// The branded stand-in for a recipe image — shown while `CachedRecipeImage` loads, on load
+/// failure, and for recipes that have no image at all. Dark gradient + a centered fork-knife
+/// sized proportionally so it reads at any scale (row thumbnail through full hero).
+struct RecipeImagePlaceholder: View {
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                LinearGradient(
+                    colors: [Sourdough.Ramp.darkCard, Sourdough.Ramp.darkCanvas],
+                    startPoint: .topLeading, endPoint: .bottomTrailing
+                )
+                let side = min(max(min(proxy.size.width, proxy.size.height) * 0.30, 16), 56)
+                Ph.forkKnife.regular
+                    .frame(width: side, height: side)
+                    .foregroundStyle(Sourdough.Colors.heroTitleOnDark.opacity(0.85))
+            }
+        }
+    }
+}
+
 // MARK: - Cached Recipe Image
 
 struct CachedRecipeImage: View {
@@ -79,28 +101,14 @@ struct CachedRecipeImage: View {
         self.thumbnail = thumbnail
     }
 
-    private static let placeholder: UIImage? = {
-        guard let path = Bundle.main.path(forResource: "food", ofType: "jpg") else { return nil }
-        return UIImage(contentsOfFile: path)
-    }()
-
     var body: some View {
         Group {
             if let uiImage {
                 Image(uiImage: uiImage)
                     .resizable()
                     .scaledToFill()
-            } else if let placeholder = Self.placeholder {
-                Image(uiImage: placeholder)
-                    .resizable()
-                    .scaledToFill()
             } else {
-                ZStack {
-                    Sourdough.Colors.sunken
-                    Ph.image.regular
-                        .frame(width: 24, height: 24)
-                        .foregroundStyle(Sourdough.Colors.faintInk)
-                }
+                RecipeImagePlaceholder()
             }
         }
         .task(id: recipeID) {
@@ -194,15 +202,18 @@ struct RecipeCardActions {
         recipe: Recipe,
         savedRecipesStore: SavedRecipesStore,
         reportRecipe: @escaping (Recipe) -> Void,
-        rateRecipe: @escaping (Recipe) -> Void
+        rateRecipe: @escaping (Recipe) -> Void,
+        presentSaveFlow: @escaping (Recipe) -> Void
     ) {
         onReport = (recipe.isUserShared && recipe.createdBy != savedRecipesStore.userId?.uuidString)
             ? { reportRecipe(recipe) } : nil
         onRate = recipe.rating > 0 ? { rateRecipe(recipe) } : nil
         onSave = {
-            savedRecipesStore.isSaved(recipe)
-                ? savedRecipesStore.unsaveRecipe(recipe)
-                : savedRecipesStore.saveRecipe(recipe)
+            if savedRecipesStore.isSaved(recipe) {
+                savedRecipesStore.unsaveRecipe(recipe)
+            } else {
+                presentSaveFlow(recipe)
+            }
         }
     }
 }
@@ -245,10 +256,8 @@ struct RecipeCard: View, Equatable {
             Color.clear
                 .aspectRatio(4/3, contentMode: .fit)
                 .overlay {
-                    if recipe.isAIGenerated && recipe.imageData == nil && recipe.imagePath == nil {
-                        Image("AI_GEN")
-                            .resizable()
-                            .scaledToFill()
+                    if recipe.imageData == nil && recipe.imagePath == nil {
+                        RecipeImagePlaceholder()
                     } else {
                         CachedRecipeImage(recipeID: recipe.id, imageData: recipe.imageData, imagePath: recipe.imagePath, thumbnail: true)
                     }
@@ -353,7 +362,6 @@ struct RecipesView: View {
     @State private var searchText = ""
     @State private var debouncedSearch = ""
     @State private var searchDebounceTask: Task<Void, Never>?
-    @State private var showingSettings = false
     @State private var showingShareSheet = false
     @State private var selectedRecipe: Recipe?
     @State private var recipeToReport: Recipe?
@@ -362,6 +370,8 @@ struct RecipesView: View {
     @State private var allergenPendingRecipe: Recipe?
     @State private var allergenWarningDetected: [String] = []
     @State private var ratingsRecipe: Recipe?
+    @State private var recipePendingSaveFlow: Recipe?
+    @State private var recipePendingCollectionPick: Recipe?
     @State private var showingFilterSheet = false
     @State private var selectedCuisine: Cuisine?
     @State private var maxPrepTime: Int?
@@ -496,10 +506,6 @@ struct RecipesView: View {
         }
         .background(Sourdough.Colors.canvas)
         .toolbar(.hidden, for: .navigationBar)
-        .sheet(isPresented: $showingSettings) {
-            NavigationStack { SettingsView() }
-                .preferredColorScheme(session.preferredColorScheme)
-        }
         .sheet(isPresented: $showingShareSheet) {
             ShareRecipeSheet()
         }
@@ -528,6 +534,25 @@ struct RecipesView: View {
                     allergenPendingRecipe = recipe
                 }
             }
+        }
+        .sheet(item: $recipePendingSaveFlow) { recipe in
+            SaveChoiceSheet(
+                onSaveToCollection: {
+                    recipePendingSaveFlow = nil
+                    recipePendingCollectionPick = recipe
+                },
+                onJustSave: {
+                    savedRecipesStore.saveRecipe(recipe)
+                    recipePendingSaveFlow = nil
+                }
+            )
+            .presentationDetents([.height(220)])
+        }
+        .sheet(item: $recipePendingCollectionPick) { recipe in
+            CollectionPickerSheet(recipe: recipe) {
+                recipePendingCollectionPick = nil
+            }
+            .presentationDetents([.medium, .large])
         }
         .sheet(item: $recipeToReport) { recipe in
             ReportContentSheet(subject: .recipe(name: recipe.title)) { category, description in
@@ -599,26 +624,20 @@ struct RecipesView: View {
                 showingShareSheet = true
             } label: {
                 HStack(spacing: Sourdough.Spacing.iconToLabel) {
-                    Ph.plus.regular
-                        .frame(width: 14, height: 14)
+                    Ph.plus.bold
+                        .frame(width: 16, height: 16)
                     Text("Share")
                         .foregroundStyle(Sourdough.Colors.onAction)
-                        .sourdoughTextStyle(.caption)
+                        .sourdoughTextStyle(.numeric)
                 }
                 .foregroundStyle(Sourdough.Colors.onAction)
-                .padding(.horizontal, Sourdough.Spacing.rowInternals)
-                .frame(height: 34)
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                .frame(height: 40)
                 .background(Sourdough.Colors.action)
                 .clipShape(Capsule())
             }
             .buttonStyle(.plain)
 
-            Button { showingSettings = true } label: {
-                Ph.gear.regular
-                    .frame(width: 22, height: 22)
-                    .foregroundStyle(Sourdough.Colors.mutedInk)
-            }
-            .buttonStyle(.plain)
             NotificationBellButton()
             ProfileNavButton()
         }
@@ -680,24 +699,9 @@ struct RecipesView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Sourdough.Spacing.insideChip) {
                 ForEach(QuickFilter.allCases, id: \.self) { filter in
-                    Button {
+                    SelectableChip(label: filter.rawValue, isSelected: quickFilter == filter, size: .medium) {
                         withAnimation(.easeInOut(duration: 0.2)) { quickFilter = filter }
-                    } label: {
-                        Text(filter.rawValue)
-                            .foregroundStyle(quickFilter == filter ? Sourdough.Colors.onAction : Sourdough.Colors.mutedInk)
-                            .sourdoughTextStyle(.caption)
-                            .padding(.horizontal, Sourdough.Spacing.rowInternals)
-                            .frame(height: 34)
-                            .background(quickFilter == filter ? Sourdough.Ramp.sage500 : Sourdough.Colors.sunken)
-                            .overlay(
-                                Capsule().stroke(
-                                    quickFilter == filter ? Color.clear : Sourdough.Colors.interactiveBorder,
-                                    lineWidth: 1
-                                )
-                            )
-                            .clipShape(Capsule())
                     }
-                    .buttonStyle(.plain)
                 }
             }
         }
@@ -780,7 +784,7 @@ struct RecipesView: View {
                         CachedRecipeImage(recipeID: recipe.id, imageData: recipe.imageData, imagePath: recipe.imagePath, thumbnail: false)
                             .scaledToFill()
                     } else {
-                        LinearGradient(colors: [Sourdough.Ramp.darkCard, Sourdough.Ramp.darkCanvas], startPoint: .topLeading, endPoint: .bottomTrailing)
+                        RecipeImagePlaceholder()
                     }
                 }
                 .frame(maxWidth: .infinity, minHeight: 220, maxHeight: 220)
@@ -813,7 +817,7 @@ struct RecipesView: View {
 
                         Button {
                             if isSaved { savedRecipesStore.unsaveRecipe(recipe) }
-                            else { savedRecipesStore.saveRecipe(recipe) }
+                            else { recipePendingSaveFlow = recipe }
                         } label: {
                             (isSaved ? Ph.bookmark.fill : Ph.bookmark.regular)
                                 .frame(width: 15, height: 15)
@@ -915,7 +919,8 @@ struct RecipesView: View {
                             recipe: recipe,
                             savedRecipesStore: savedRecipesStore,
                             reportRecipe: { recipeToReport = $0 },
-                            rateRecipe: { ratingsRecipe = $0 }
+                            rateRecipe: { ratingsRecipe = $0 },
+                            presentSaveFlow: { recipePendingSaveFlow = $0 }
                         )
                         Button { selectedRecipe = recipe } label: {
                             RecipeCard(
@@ -960,12 +965,8 @@ struct RecipesView: View {
                     .sourdoughTextStyle(.title2)
                 Spacer()
                 if category.recipes.count > 5 {
-                    Button { navigateToCategory = category } label: {
-                        Text("See More")
-                            .foregroundStyle(Sourdough.Colors.actionInk)
-                            .sourdoughTextStyle(.caption)
-                    }
-                    .buttonStyle(.plain)
+                    NavChipButton(icon: Ph.arrowRight.bold) { navigateToCategory = category }
+                        .accessibilityLabel("See more \(category.title) recipes")
                 }
             }
             .padding(.horizontal, Sourdough.Spacing.screenMargin)
@@ -977,7 +978,8 @@ struct RecipesView: View {
                             recipe: recipe,
                             savedRecipesStore: savedRecipesStore,
                             reportRecipe: { recipeToReport = $0 },
-                            rateRecipe: { ratingsRecipe = $0 }
+                            rateRecipe: { ratingsRecipe = $0 },
+                            presentSaveFlow: { recipePendingSaveFlow = $0 }
                         )
                         Button { selectedRecipe = recipe } label: {
                             RecipeCard(
@@ -1064,6 +1066,9 @@ struct RecipePreviewSheet: View {
 
     @State private var showReportSheet = false
     @State private var reportError: String?
+    @State private var showSaveChoiceSheet = false
+    @State private var showCollectionPicker = false
+    @State private var pendingSaveSheetWork: DispatchWorkItem?
 
     private var pantryMatchCount: Int {
         let pantryNames = Set(pantryStore.ingredients.map { $0.name.lowercased() })
@@ -1095,19 +1100,21 @@ struct RecipePreviewSheet: View {
                             Spacer()
                             Button {
                                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                                savedRecipesStore.isSaved(recipe)
-                                    ? savedRecipesStore.unsaveRecipe(recipe)
-                                    : savedRecipesStore.saveRecipe(recipe)
+                                if savedRecipesStore.isSaved(recipe) {
+                                    savedRecipesStore.unsaveRecipe(recipe)
+                                } else {
+                                    showSaveChoiceSheet = true
+                                }
                             } label: {
                                 (savedRecipesStore.isSaved(recipe) ? Ph.bookmark.fill : Ph.bookmark.regular)
-                                    .frame(width: 18, height: 18)
+                                    .frame(width: 22, height: 22)
                                     .foregroundStyle(savedRecipesStore.isSaved(recipe) ? Sourdough.Ramp.sage500 : Sourdough.Colors.faintInk)
                             }
                             .buttonStyle(.plain)
                             if recipe.isUserShared && recipe.createdBy != savedRecipesStore.userId?.uuidString {
                                 Button { showReportSheet = true } label: {
                                     Ph.flag.regular
-                                        .frame(width: 18, height: 18)
+                                        .frame(width: 22, height: 22)
                                         .foregroundStyle(Sourdough.Colors.faintInk)
                                 }
                                 .buttonStyle(.plain)
@@ -1151,9 +1158,9 @@ struct RecipePreviewSheet: View {
                             }
                         }
 
-                        if recipe.rating > 0 {
-                            HStack(spacing: Sourdough.Spacing.insideChip) {
-                                StarRatingView(rating: recipe.rating, size: 14)
+                        HStack(spacing: Sourdough.Spacing.insideChip) {
+                            StarRatingView(rating: recipe.rating, size: 16)
+                            if recipe.rating > 0 {
                                 Text(recipe.rating.truncatingRemainder(dividingBy: 1) == 0
                                      ? String(format: "%.0f", recipe.rating)
                                      : String(format: "%.1f", recipe.rating))
@@ -1248,6 +1255,28 @@ struct RecipePreviewSheet: View {
             }
             .presentationDetents([.medium])
             .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $showSaveChoiceSheet) {
+            SaveChoiceSheet(
+                onSaveToCollection: {
+                    showSaveChoiceSheet = false
+                    pendingSaveSheetWork?.cancel()
+                    let work = DispatchWorkItem { showCollectionPicker = true }
+                    pendingSaveSheetWork = work
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: work)
+                },
+                onJustSave: {
+                    savedRecipesStore.saveRecipe(recipe)
+                    showSaveChoiceSheet = false
+                }
+            )
+            .presentationDetents([.height(220)])
+        }
+        .sheet(isPresented: $showCollectionPicker) {
+            CollectionPickerSheet(recipe: recipe) {
+                showCollectionPicker = false
+            }
+            .presentationDetents([.medium, .large])
         }
         .reportErrorAlert($reportError)
     }

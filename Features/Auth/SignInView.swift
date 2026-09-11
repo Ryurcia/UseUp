@@ -10,6 +10,7 @@ struct SignInView: View {
     @State private var isPasswordVisible = false
     @State private var isLoading = false
     @State private var showOTPVerification = false
+    @State private var showForgotPassword = false
     @FocusState private var focusedField: SignInField?
 
     private enum SignInField { case email, password }
@@ -154,6 +155,16 @@ struct SignInView: View {
                             .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
                         }
 
+                        Button {
+                            showForgotPassword = true
+                        } label: {
+                            Text("Forgot password?")
+                                .foregroundStyle(Sourdough.Colors.action)
+                                .sourdoughTextStyle(.subhead)
+                        }
+                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+
                         // General error banner
                         if let error = session.authError {
                             AuthErrorBanner(message: error)
@@ -216,6 +227,10 @@ struct SignInView: View {
         .toolbar(.hidden, for: .navigationBar)
         .fullScreenCover(isPresented: $showOTPVerification) {
             OTPVerificationView(email: email.trimmingCharacters(in: .whitespacesAndNewlines))
+                .environmentObject(session)
+        }
+        .fullScreenCover(isPresented: $showForgotPassword) {
+            ForgotPasswordView(email: email.trimmingCharacters(in: .whitespacesAndNewlines))
                 .environmentObject(session)
         }
     }

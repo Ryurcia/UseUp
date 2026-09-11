@@ -27,8 +27,6 @@ final class UserActivityStore: ObservableObject {
     @Published var itemsSaved: Int = 0
     @Published var recipesCooked: Int = 0
     @Published var itemsWasted: Int = 0
-    @Published var generationsThisWeek: Int = 0
-    @Published var nextGenerationResetDate: Date? = nil
     @Published var generationsToday: Int = 0
     @Published var nextDailyResetDate: Date? = nil
 
@@ -41,17 +39,6 @@ final class UserActivityStore: ObservableObject {
         f.formatOptions = [.withInternetDateTime]
         return f
     }()
-    private static let iso8601Fractional: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
-    private static let weekdayFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "EEEE, MMM d"
-        return f
-    }()
-
     func logEvent(type: ActivityEventType) {
         guard let userId else { return }
 
@@ -61,7 +48,6 @@ final class UserActivityStore: ObservableObject {
         case .recipeCooked: recipesCooked += 1
         case .itemWasted: itemsWasted += 1
         case .recipeGenerated:
-            generationsThisWeek += 1
             generationsToday += 1
         }
 
@@ -81,11 +67,18 @@ final class UserActivityStore: ObservableObject {
                 case .recipeCooked: recipesCooked = max(0, recipesCooked - 1)
                 case .itemWasted: itemsWasted = max(0, itemsWasted - 1)
                 case .recipeGenerated:
-                    generationsThisWeek = max(0, generationsThisWeek - 1)
                     generationsToday = max(0, generationsToday - 1)
                 }
             }
         }
+    }
+
+    /// The `recipe_generated` row is written server-side by the `generate-recipes` edge function,
+    /// so the client doesn't `logEvent` for it. Bump the counter optimistically for instant UI,
+    /// then reconcile against the table.
+    func noteRecipeGeneratedRemotely() {
+        generationsToday += 1
+        Task { await fetchGenerationsToday() }
     }
 
     func fetchStats(since date: Date) async {
@@ -121,42 +114,6 @@ final class UserActivityStore: ObservableObject {
         }
     }
 
-    func fetchGenerationsThisWeek() async {
-        guard let userId else { return }
-
-        let weekAgo = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
-        let dateString = Self.iso8601.string(from: weekAgo)
-
-        do {
-            let rows: [ActivityRow] = try await client
-                .from("user_activity")
-                .select("event_type, created_at")
-                .eq("user_id", value: userId.uuidString)
-                .eq("event_type", value: ActivityEventType.recipeGenerated.rawValue)
-                .gte("created_at", value: dateString)
-                .order("created_at", ascending: true)
-                .limit(3)
-                .execute()
-                .value
-
-            generationsThisWeek = rows.count
-
-            // Compute when the oldest generation in the window will age out (rolling 7-day reset).
-            // Supabase returns timestamps with fractional seconds, so try both formatters.
-            if let oldest = rows.first, let createdAt = oldest.createdAt {
-                let oldestDate = Self.iso8601Fractional.date(from: createdAt)
-                    ?? Self.iso8601.date(from: createdAt)
-                nextGenerationResetDate = oldestDate.map {
-                    Calendar.current.date(byAdding: .day, value: 7, to: $0)
-                } ?? nil
-            } else {
-                nextGenerationResetDate = nil
-            }
-        } catch {
-            // Keep current value on error
-        }
-    }
-
     func fetchGenerationsToday() async {
         guard let userId else { return }
 
@@ -181,16 +138,22 @@ final class UserActivityStore: ObservableObject {
         }
     }
 
-    /// Human-readable label for when the rolling 7-day generation limit resets.
-    /// Returns "tomorrow", "in X days", or the weekday + date for further-out dates.
-    func resetLabel(for date: Date) -> String {
-        let cal = Calendar.current
-        let days = cal.dateComponents([.day], from: cal.startOfDay(for: Date()), to: cal.startOfDay(for: date)).day ?? 0
-        switch days {
-        case 0: return "later today"
-        case 1: return "tomorrow"
-        default:
-            return "on \(Self.weekdayFormatter.string(from: date))"
+    /// Every activity row for the current user, unfiltered by date/type/limit — used for data
+    /// export. `fetchStats(since:)` and `fetchGenerationsToday()` are windowed for their specific
+    /// dashboard purpose; neither returns the complete history.
+    func fetchAllActivity() async -> [(eventType: String, createdAt: String?)] {
+        guard let userId else { return [] }
+        do {
+            let rows: [ActivityRow] = try await client
+                .from("user_activity")
+                .select("event_type, created_at")
+                .eq("user_id", value: userId.uuidString)
+                .order("created_at", ascending: false)
+                .execute()
+                .value
+            return rows.map { (eventType: $0.eventType, createdAt: $0.createdAt) }
+        } catch {
+            return []
         }
     }
 
@@ -198,8 +161,8 @@ final class UserActivityStore: ObservableObject {
         itemsSaved = 0
         recipesCooked = 0
         itemsWasted = 0
-        generationsThisWeek = 0
-        nextGenerationResetDate = nil
+        generationsToday = 0
+        nextDailyResetDate = nil
         userId = nil
     }
 }

@@ -8,7 +8,7 @@ struct OTPVerificationView: View {
     var onboardingAnswers: OnboardingAnswers? = nil
     @State private var otpDigits: [String] = Array(repeating: "", count: 6)
     @State private var isLoading = false
-    @State private var showNicknameOnboarding = false
+    @State private var showRetryFinish = false
     @State private var showRetrySave = false
     @FocusState private var focusedIndex: Int?
 
@@ -39,12 +39,8 @@ struct OTPVerificationView: View {
                     .multilineTextAlignment(.center)
             }
 
-            HStack(spacing: Sourdough.Spacing.insideChip) {
-                ForEach(0..<6, id: \.self) { index in
-                    otpField(index: index)
-                }
-            }
-            .padding(.vertical, Sourdough.Spacing.insideChip)
+            OTPCodeGrid(digits: $otpDigits, focusedIndex: $focusedIndex)
+                .padding(.vertical, Sourdough.Spacing.insideChip)
 
             if let error = session.authError {
                 AuthErrorBanner(message: error)
@@ -62,14 +58,30 @@ struct OTPVerificationView: View {
                             let saved = await session.saveOnboardingAnswers(onboardingAnswers)
                             showRetrySave = !saved
                         }
-                        isLoading = false
                         if !showRetrySave {
-                            if session.requiresNicknameOnboarding {
-                                showNicknameOnboarding = true
-                            } else if session.isAuthenticated {
-                                dismiss()
-                            }
+                            await finishAccountSetupIfNeeded()
                         }
+                        isLoading = false
+                    }
+                } label: {
+                    HStack(spacing: Sourdough.Spacing.insideChip) {
+                        if isLoading { ProgressView().tint(.white) }
+                        Text("Retry")
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(Sourdough.PrimaryButtonStyle(fullWidth: true, isDisabled: isLoading))
+                .disabled(isLoading)
+            } else if showRetryFinish {
+                if let error = session.nicknameError {
+                    AuthErrorBanner(message: error)
+                }
+
+                Button {
+                    Task {
+                        isLoading = true
+                        await finishAccountSetupIfNeeded()
+                        isLoading = false
                     }
                 } label: {
                     HStack(spacing: Sourdough.Spacing.insideChip) {
@@ -89,14 +101,10 @@ struct OTPVerificationView: View {
                             let saved = await session.saveOnboardingAnswers(onboardingAnswers)
                             showRetrySave = !saved
                         }
-                        isLoading = false
                         if !showRetrySave {
-                            if session.requiresNicknameOnboarding {
-                                showNicknameOnboarding = true
-                            } else if session.isAuthenticated {
-                                dismiss()
-                            }
+                            await finishAccountSetupIfNeeded()
                         }
+                        isLoading = false
                     }
                 } label: {
                     HStack(spacing: Sourdough.Spacing.insideChip) {
@@ -117,58 +125,19 @@ struct OTPVerificationView: View {
         .background(Sourdough.Colors.canvas)
         .toolbar(.hidden, for: .navigationBar)
         .onAppear { focusedIndex = 0 }
-        .fullScreenCover(isPresented: $showNicknameOnboarding) {
-            NavigationStack {
-                NicknameSetupView()
-                    .environmentObject(session)
-            }
-        }
     }
 
-    private func otpField(index: Int) -> some View {
-        TextField("", text: $otpDigits[index])
-            .keyboardType(.numberPad)
-            .textContentType(.oneTimeCode)
-            .multilineTextAlignment(.center)
-            .font(Font(Sourdough.SDFont.uiFont(family: .figtree, size: 24, weight: 700) as CTFont))
-            .monospacedDigit()
-            .foregroundStyle(Sourdough.Colors.ink)
-            .frame(width: 48, height: 56)
-            .background(Sourdough.Colors.sunken)
-            .overlay(
-                RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous)
-                    .stroke(
-                        focusedIndex == index ? Sourdough.Colors.action : Sourdough.Colors.interactiveBorder,
-                        lineWidth: focusedIndex == index ? 2 : 1
-                    )
-            )
-            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
-            .focused($focusedIndex, equals: index)
-            .onChange(of: otpDigits[index]) { _, newValue in
-                let filtered = newValue.filter(\.isNumber)
-                if filtered != newValue {
-                    otpDigits[index] = filtered
-                    return
-                }
-                if filtered.count > 1 {
-                    distributePastedCode(filtered, startingAt: index)
-                    return
-                }
-                if !filtered.isEmpty && index < 5 {
-                    focusedIndex = index + 1
-                }
-                if filtered.isEmpty && index > 0 {
-                    focusedIndex = index - 1
-                }
-            }
-    }
-
-    private func distributePastedCode(_ code: String, startingAt: Int) {
-        let digits = Array(code.prefix(6 - startingAt))
-        for (offset, digit) in digits.enumerated() {
-            let targetIndex = startingAt + offset
-            if targetIndex < 6 { otpDigits[targetIndex] = String(digit) }
+    /// If the profile still needs a username/display-name finalized (e.g. a pre-existing account
+    /// with no `nickname`, reached via sign-in rather than fresh onboarding), auto-generates a
+    /// `chef_[id]` username and applies a display-name fallback chain — no manual entry screen.
+    private func finishAccountSetupIfNeeded() async {
+        if session.requiresNicknameOnboarding {
+            await session.finalizeAccountSetup(displayName: onboardingAnswers?.preferredName ?? "")
         }
-        focusedIndex = min(startingAt + digits.count, 5)
+        if session.isAuthenticated {
+            dismiss()
+        } else if session.nicknameError != nil {
+            showRetryFinish = true
+        }
     }
 }

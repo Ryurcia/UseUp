@@ -201,9 +201,12 @@ extension Sourdough {
             tint: Sourdough.dynamic(light: 0xC4643F, dark: 0x4A2A1D),
             label: Sourdough.dynamic(light: 0xFFF6F1, dark: 0xFFB894)
         )
+        /// Most severe state — solid destructive-red fill (escalating past `urgent`'s terracotta),
+        /// not the muted grey it used to be. Both values are opaque, so `FreshnessChip` renders it
+        /// with no extra branching, same as `urgent`.
         static let expired = FreshnessStyle(
-            tint: Sourdough.dynamic(light: 0xF2EDE4, dark: 0x3D3833),
-            label: Sourdough.dynamic(light: 0x6B6259, dark: 0xA79E92)
+            tint: destructive,
+            label: onDestructive
         )
 
         // MARK: On-dark hero card (§5/§6)

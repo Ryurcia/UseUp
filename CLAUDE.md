@@ -10,8 +10,9 @@ This is an iOS 17+ SwiftUI app using XcodeGen for project generation.
 # Regenerate Xcode project after adding/removing files
 xcodegen generate
 
-# Build from command line
-xcodebuild -project UseUp.xcodeproj -scheme UseUp -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 16' build
+# Build from command line (device-agnostic — does not depend on which
+# simulators happen to be installed)
+xcodebuild -project UseUp.xcodeproj -scheme UseUp -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' build
 
 # No test targets are configured
 ```
@@ -76,3 +77,27 @@ Each feature is a directory with its views:
 ## Dependencies
 
 - **Supabase Swift SDK** (v2.5.1+) — Auth, database, storage
+- **RevenueCat**, **SwiftSoup**, **Lottie** — remote SPM packages
+- **PhosphorSwift** — icons. **Vendored locally at `Vendor/PhosphorSwift`, not fetched from GitHub.**
+
+### PhosphorSwift is vendored on purpose — do not point it back at the remote
+
+Upstream ships all ~1,500 icons × 6 weights as a single asset catalog: 9,108 imagesets,
+18,217 files, 71 MB of SVG. Xcode compiles that with one `actool` invocation — a single,
+silent, single-threaded build task that runs for many minutes and makes the build appear
+frozen at a fixed task count (this was the "stuck at 669/781" bug). It re-runs on every
+clean build, DerivedData wipe, or destination change.
+
+`Vendor/PhosphorSwift` is a trimmed copy: 104 icons × 3 weights (`regular`/`fill`/`bold`)
+= 312 imagesets, 2.5 MB. The module name and `Ph.foo.regular` API are unchanged, so call
+sites are identical to upstream.
+
+**Adding a new icon:** write the `Ph.<icon>` reference, then re-run
+`./Scripts/prune_phosphor_icons.sh` and `xcodegen generate`. The script re-derives the
+keep-list from source. Because `Icons.swift` is trimmed to the kept cases, an
+icon that isn't bundled fails to compile (`type 'Ph' has no member 'x'`) rather than
+silently rendering blank — so the build tells you when you need to re-run it.
+
+Only `regular`/`fill`/`bold` are exposed; `thin`/`light`/`duotone` are deliberately
+removed. To use one, add it to `WEIGHTS` in the script and restore its accessor in
+`Vendor/PhosphorSwift/Sources/PhosphorSwift/PhosphorSwift.swift`.

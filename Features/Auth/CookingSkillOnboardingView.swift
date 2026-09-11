@@ -3,7 +3,6 @@ import PhosphorSwift
 
 struct CookingSkillOnboardingView: View {
     @EnvironmentObject private var onboardingAnswers: OnboardingAnswers
-    var onBack: () -> Void
     var onContinue: () -> Void
 
     @State private var selectedLevel: Int? = nil
@@ -81,25 +80,15 @@ struct CookingSkillOnboardingView: View {
                 .padding(.horizontal, Sourdough.Spacing.screenMargin)
             }
 
-            VStack(spacing: Sourdough.Spacing.insideChip) {
-                Button {
-                    onBack()
-                } label: {
-                    Text("Back")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(Sourdough.SecondaryButtonStyle(fullWidth: true))
-
-                Button {
-                    onboardingAnswers.cookingSkillLevel = selectedLevel ?? 1
-                    onContinue()
-                } label: {
-                    Text("Continue")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(Sourdough.PrimaryButtonStyle(fullWidth: true, isDisabled: selectedLevel == nil))
-                .disabled(selectedLevel == nil)
+            Button {
+                onboardingAnswers.cookingSkillLevel = selectedLevel ?? 1
+                onContinue()
+            } label: {
+                Text("Continue")
+                    .frame(maxWidth: .infinity)
             }
+            .buttonStyle(Sourdough.PrimaryButtonStyle(fullWidth: true, isDisabled: selectedLevel == nil))
+            .disabled(selectedLevel == nil)
             .padding(.horizontal, Sourdough.Spacing.screenMargin)
             .padding(.bottom, Sourdough.Spacing.screenMargin)
         }

@@ -2,6 +2,10 @@ import Foundation
 
 struct AIRecipeResponse: Codable {
     let recipes: [AIRecipe]
+    /// Snap Chef only — how many free re-rolls remain for the current recipe, and whether this
+    /// call consumed a daily generation. Absent (nil) for standard generation.
+    let freeRegensRemaining: Int?
+    let countedAgainstDailyLimit: Bool?
 }
 
 struct AIRecipe: Codable {

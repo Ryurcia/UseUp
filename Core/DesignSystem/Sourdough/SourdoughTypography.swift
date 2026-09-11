@@ -12,9 +12,11 @@ extension Sourdough {
     }
 
     enum Typography {
-        /// The 9 fixed block styles. "Newsreader Italic" (inline quantities-in-prose only) is
+        /// The fixed block styles. "Newsreader Italic" (inline quantities-in-prose only) is
         /// intentionally not a case here — it's an inline helper, see `SDFont.italic(_:size:)`.
         enum Style: CaseIterable {
+            case heroXL       // Reveal-screen big number (SpendReveal, WasteReveal only)
+            case hero         // Reveal/pitch dollar figures — onboarding "gut check" screens only
             case display      // Onboarding, empty states
             case title1       // Screen titles, recipe names
             case title2       // Card headers, sheet titles
@@ -38,6 +40,10 @@ extension Sourdough {
 
         static func attributes(for style: Style) -> Attributes {
             switch style {
+            case .heroXL:
+                return Attributes(family: .newsreader, size: 72, lineHeight: 76, weight: 500, tracking: -0.02, uppercase: false, dynamicTypeStyle: .largeTitle)
+            case .hero:
+                return Attributes(family: .newsreader, size: 56, lineHeight: 60, weight: 500, tracking: -0.02, uppercase: false, dynamicTypeStyle: .largeTitle)
             case .display:
                 return Attributes(family: .newsreader, size: 40, lineHeight: 42, weight: 400, tracking: -0.02, uppercase: false, dynamicTypeStyle: .largeTitle)
             case .title1:
@@ -180,8 +186,24 @@ extension Sourdough {
 
 extension View {
     /// Applies a named Sourdough text style — size, line height, tracking, case, and default ink
-    /// color are all baked in per §3; override color afterward with `.foregroundStyle(_:)` if needed.
+    /// color are all baked in per §3. For a color other than the default, use the
+    /// `sourdoughTextStyle(_:color:)` overload below instead of chaining a separate
+    /// `.foregroundStyle(_:)` after this — this modifier already applies its own `.foregroundStyle`
+    /// internally, so a second one chained afterward has no guaranteed precedence over it.
     func sourdoughTextStyle(_ style: Sourdough.Typography.Style) -> some View {
         modifier(Sourdough.TextStyleModifier(style: style))
+    }
+
+    /// Same as `sourdoughTextStyle(_:)` but with an explicit override color instead of the
+    /// style's default ink/mutedInk — use this whenever a call site needs a color other than
+    /// the style's default, rather than chaining a separate `.foregroundStyle()` afterward.
+    func sourdoughTextStyle(_ style: Sourdough.Typography.Style, color: Color) -> some View {
+        let attrs = Sourdough.Typography.attributes(for: style)
+        return self
+            .font(Sourdough.SDFont.font(for: style))
+            .tracking(attrs.tracking * attrs.size)
+            .lineSpacing(max(0, attrs.lineHeight - attrs.size))
+            .textCase(attrs.uppercase ? .uppercase : nil)
+            .foregroundStyle(color)
     }
 }

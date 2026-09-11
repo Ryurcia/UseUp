@@ -34,6 +34,19 @@ extension Sourdough {
             case .urgent, .expired: return nil
             }
         }
+
+        /// Ink-safe accent per state, for text sitting directly on the plain canvas/card —
+        /// distinct from `style.label`, which assumes it's drawn on top of the matching chip fill
+        /// (e.g. `.urgent`'s label is near-white, correct on a solid terracotta chip but
+        /// unreadable on a plain background).
+        var inkSafeLabel: Color {
+            switch self {
+            case .expired: return Sourdough.Colors.destructive
+            case .urgent: return Sourdough.Colors.actionInk
+            case .soon: return Sourdough.Ramp.honey700
+            case .fresh: return Sourdough.Ramp.sage600
+            }
+        }
     }
 }
 
@@ -250,22 +263,50 @@ extension OnDarkHeroCard where Footer == EmptyView {
 /// Toggleable capsule chip — sage fill when selected, sunken/bordered when not. The same shape
 /// was hand-rolled at every multi-select filter/preference row (diet type, dietary restrictions,
 /// allergies) instead of being reused.
+enum SelectableChipSize {
+    case compact
+    case medium
+    case large
+}
+
 struct SelectableChip: View {
     let label: String
     let isSelected: Bool
+    var fullWidth: Bool = false
+    var size: SelectableChipSize = .compact
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Text(label)
                 .foregroundStyle(isSelected ? Sourdough.Colors.onAction : Sourdough.Colors.mutedInk)
-                .sourdoughTextStyle(.caption)
-                .padding(.horizontal, Sourdough.Spacing.rowInternals)
-                .padding(.vertical, Sourdough.Spacing.insideChip)
+                .sourdoughTextStyle(size == .large ? .body : size == .medium ? .subhead : .caption)
+                .frame(maxWidth: fullWidth ? .infinity : nil)
+                .padding(.horizontal, size == .large ? Sourdough.Spacing.screenMargin : size == .medium ? 14 : Sourdough.Spacing.rowInternals)
+                .padding(.vertical, size == .large ? Sourdough.Spacing.rowInternals : size == .medium ? 10 : Sourdough.Spacing.insideChip)
                 .background(isSelected ? Sourdough.Ramp.sage500 : Sourdough.Colors.sunken)
                 .overlay(Capsule().stroke(isSelected ? Color.clear : Sourdough.Colors.interactiveBorder, lineWidth: 1))
                 .clipShape(Capsule())
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Pantry dashboard card
+
+extension View {
+    /// Shared chrome for `PantryView`'s dashboard card — hero-radius surface, hairline stroke,
+    /// lifted elevation. Hugs its content.
+    func pantryDashboardCard() -> some View {
+        self
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(Sourdough.Spacing.screenMargin)
+            .background(Sourdough.Colors.card)
+            .overlay(
+                RoundedRectangle(cornerRadius: Sourdough.Radius.hero, style: .continuous)
+                    .stroke(Sourdough.Colors.hairline, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.hero, style: .continuous))
+            .sourdoughElevation(.lifted, cornerRadius: Sourdough.Radius.hero)
     }
 }

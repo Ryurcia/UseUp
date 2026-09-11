@@ -3,7 +3,7 @@ import SwiftUI
 import UserNotifications
 
 enum ColorSchemePreference: String {
-    case system, light, dark
+    case light, dark
 }
 
 @MainActor
@@ -20,17 +20,23 @@ final class AppSession: ObservableObject {
     @Published var passwordError: String?
     @Published var requiresOTPVerification = false
     @Published var requiresNicknameOnboarding = false
+    @Published var passwordResetEmailSent = false
+    @Published var requiresNewPassword = false
+    @Published var emailChangeCodeSent = false
+    @Published var pendingNewEmail: String?
     @Published var hasCompletedFeatureOnboarding = false
     @AppStorage("hasSeenOnboardingPaywall") var hasSeenOnboardingPaywall = false
-    @AppStorage("colorSchemePreference") var colorSchemePreference: ColorSchemePreference = .system
     @AppStorage("recipeSuggestionsEnabled") var recipeSuggestionsEnabled: Bool = true
 
-    var preferredColorScheme: ColorScheme? {
-        switch colorSchemePreference {
-        case .system: return nil
-        case .light:  return .light
-        case .dark:   return .dark
-        }
+    /// Device-local light/dark choice. Not `@AppStorage` — that wrapper only publishes changes
+    /// when it lives inside a `View`, so on this class it would never trigger a re-render. Manual
+    /// `UserDefaults` persistence in `didSet` keeps the same key.
+    @Published var colorSchemePreference: ColorSchemePreference {
+        didSet { UserDefaults.standard.set(colorSchemePreference.rawValue, forKey: "colorSchemePreference") }
+    }
+
+    var preferredColorScheme: ColorScheme {
+        colorSchemePreference == .dark ? .dark : .light
     }
     @Published var profileImageData: Data?
     @Published var nicknameError: String?
@@ -43,10 +49,12 @@ final class AppSession: ObservableObject {
     @Published var currentUserCustomAllergy: String = ""
     @Published var currentUserCookingSkillLevel: Int = 1
     @Published var isPremium: Bool = false
-    @Published var requiresBiometricAuth: Bool = false
     @Published var showNotifications: Bool = false
+    @Published var showProfile: Bool = false
     @Published var requestedTab: Tab? = nil
     @Published var requestedIngredientID: UUID? = nil
+    @Published var requestedQuickGenerateIngredientID: UUID? = nil
+    @Published var requestedShowAddIngredient: Bool = false
     @Published var dietaryUpdatedAt: Date?
     @Published private(set) var currentAvatarPath: String?
 
@@ -56,10 +64,30 @@ final class AppSession: ObservableObject {
     init(authService: AuthServicing, profileService: ProfileServicing = SupabaseProfileService()) {
         self.authService = authService
         self.profileService = profileService
+
+        // Migrate the legacy `@AppStorage("colorSchemePreference")` value (which could be "system").
+        switch UserDefaults.standard.string(forKey: "colorSchemePreference") {
+        case "dark":  colorSchemePreference = .dark
+        case "light": colorSchemePreference = .light
+        default:      colorSchemePreference = UITraitCollection.current.userInterfaceStyle == .dark ? .dark : .light
+        }
     }
 
     func completeGetStarted() {
         hasSeenGetStarted = true
+    }
+
+    private static let hasLaunchedBeforeKey = "hasLaunchedBefore"
+
+    /// Keychain survives app deletion (unlike UserDefaults, which is wiped on uninstall), so a
+    /// fresh install can still have a previous install's session sitting in Keychain and silently
+    /// auto-restore a stale account. `hasLaunchedBeforeKey` is guaranteed absent on a genuine
+    /// fresh install; its absence is what triggers clearing whatever Supabase has cached, once,
+    /// before `restoreSession()` gets a chance to read it.
+    func clearSessionIfFreshInstall() async {
+        guard !UserDefaults.standard.bool(forKey: Self.hasLaunchedBeforeKey) else { return }
+        try? await SupabaseManager.client.auth.signOut()
+        UserDefaults.standard.set(true, forKey: Self.hasLaunchedBeforeKey)
     }
 
     func restoreSession() async {
@@ -72,17 +100,10 @@ final class AppSession: ObservableObject {
             if let profile = try? await profileService.fetchProfile(userId: user.id),
                let nickname = profile.nickname, !nickname.isEmpty {
                 await applyProfile(profile)
-                if UserDefaults.standard.bool(forKey: "biometricLoginEnabled") {
-                    requiresBiometricAuth = true
-                }
             }
         } catch {
             // No valid session — user stays logged out
         }
-    }
-
-    func completeBiometricAuth() {
-        requiresBiometricAuth = false
     }
 
     // MARK: - Email + Password Auth
@@ -104,7 +125,8 @@ final class AppSession: ObservableObject {
             case .invalidEmail:
                 emailError = "Please enter a valid email address."
             case .emailNotConfirmed:
-                authError = "Please check your email to confirm your account, then log in."
+                currentUserEmail = email
+                requiresOTPVerification = true
             default:
                 authError = error.errorDescription
             }
@@ -154,6 +176,103 @@ final class AppSession: ObservableObject {
         }
     }
 
+    // MARK: - Forgot Password
+
+    func requestPasswordReset(email: String) async {
+        authError = nil
+        do {
+            try await authService.requestPasswordReset(email: email)
+            currentUserEmail = email
+            passwordResetEmailSent = true
+        } catch let error as AuthServiceError {
+            authError = error.errorDescription
+        } catch {
+            authError = error.localizedDescription
+        }
+    }
+
+    func verifyPasswordResetOTP(email: String, token: String) async {
+        authError = nil
+        do {
+            let user = try await authService.verifyPasswordResetOTP(email: email, token: token)
+            currentUserId = user.id
+            requiresNewPassword = true
+        } catch let error as AuthServiceError {
+            authError = error.errorDescription
+        } catch {
+            authError = error.localizedDescription
+        }
+    }
+
+    func resetPassword(newPassword: String) async {
+        authError = nil
+        do {
+            try await authService.updatePassword(newPassword)
+            requiresNewPassword = false
+            // verifyOTP(type: .recovery) already established a real session — finish exactly
+            // like any other successful auth, straight into the app, instead of bouncing back
+            // to Sign In.
+            if let userId = currentUserId {
+                await handleSuccessfulAuth(user: AppUser(id: userId, email: currentUserEmail, phone: nil))
+            }
+        } catch let error as AuthServiceError {
+            authError = error.errorDescription
+        } catch {
+            authError = error.localizedDescription
+        }
+    }
+
+    // MARK: - Change Password / Email
+
+    /// Verifies `currentPassword` via a live sign-in (Supabase's update-user call doesn't require
+    /// the current password itself, so this is how re-entry is actually enforced) before applying
+    /// the new one.
+    func changePassword(currentPassword: String, newPassword: String) async {
+        authError = nil
+        guard let email = currentUserEmail else { return }
+        do {
+            _ = try await authService.signIn(email: email, password: currentPassword)
+        } catch {
+            authError = "Current password is incorrect."
+            return
+        }
+        do {
+            try await authService.updatePassword(newPassword)
+        } catch let error as AuthServiceError {
+            authError = error.errorDescription
+        } catch {
+            authError = error.localizedDescription
+        }
+    }
+
+    func requestEmailChange(newEmail: String) async {
+        authError = nil
+        do {
+            try await authService.updateEmail(newEmail)
+            pendingNewEmail = newEmail
+            emailChangeCodeSent = true
+        } catch let error as AuthServiceError {
+            authError = error.errorDescription
+        } catch {
+            authError = error.localizedDescription
+        }
+    }
+
+    func verifyEmailChangeOTP(token: String) async {
+        authError = nil
+        guard let newEmail = pendingNewEmail else { return }
+        do {
+            let user = try await authService.verifyEmailChangeOTP(newEmail: newEmail, token: token)
+            currentUserEmail = user.email ?? newEmail
+            emailChangeCodeSent = false
+            pendingNewEmail = nil
+        } catch let error as AuthServiceError {
+            authError = error.errorDescription
+        } catch {
+            authError = error.localizedDescription
+        }
+    }
+
     private func handleSuccessfulAuth(user: AppUser) async {
         currentUserId = user.id
         currentUserEmail = user.email
@@ -169,7 +288,7 @@ final class AppSession: ObservableObject {
     private func applyProfile(_ profile: Profile) async {
         currentUserNickname = profile.nickname
         currentUserDisplayName = profile.displayName
-        nicknameUpdatedAt = profile.updatedAt
+        nicknameUpdatedAt = profile.nicknameUpdatedAt
         loadDietaryPreference(from: profile)
         isPremium = profile.subscriptionType == "premium"
         hasSeenGetStarted = true
@@ -190,27 +309,28 @@ final class AppSession: ObservableObject {
 
     // MARK: - Profile
 
-    func completeNicknameOnboarding(nickname: String, displayName: String) async {
-        let cleanedNickname = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cleanedDisplayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanedNickname.isEmpty, !cleanedDisplayName.isEmpty, let userId = currentUserId else { return }
+    func finalizeAccountSetup(displayName: String) async {
+        let cleaned = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallbackDisplayName = cleaned.isEmpty
+            ? (currentUserDisplayName ?? currentUserEmail?.split(separator: "@").first.map(String.init) ?? "Chef")
+            : cleaned
+        guard let userId = currentUserId else { return }
 
         nicknameError = nil
-        var candidate = cleanedNickname
 
         for attempt in 0..<5 {
+            let candidate = generateChefUsername()
             do {
-                let profile = try await profileService.createProfile(nickname: candidate, displayName: cleanedDisplayName, userId: userId)
+                let profile = try await profileService.createProfile(nickname: candidate, displayName: fallbackDisplayName, userId: userId)
                 currentUserNickname = profile.nickname
                 currentUserDisplayName = profile.displayName
-                nicknameUpdatedAt = profile.updatedAt
+                nicknameUpdatedAt = profile.nicknameUpdatedAt
                 requiresNicknameOnboarding = false
                 hasSeenGetStarted = true
                 hasCompletedFeatureOnboarding = false
                 isAuthenticated = true
                 return
             } catch ProfileError.nicknameTaken {
-                candidate = "\(cleanedNickname)\(Int.random(in: 100...999))"
                 if attempt == 4 { nicknameError = "Failed to finish setting up your account. Please try again." }
             } catch {
                 nicknameError = error.localizedDescription
@@ -233,7 +353,7 @@ final class AppSession: ObservableObject {
         do {
             let profile = try await profileService.updateNickname(cleaned, userId: userId)
             currentUserNickname = profile.nickname
-            nicknameUpdatedAt = profile.updatedAt
+            nicknameUpdatedAt = profile.nicknameUpdatedAt
         } catch {
             nicknameError = error.localizedDescription
         }
@@ -420,8 +540,11 @@ final class AppSession: ObservableObject {
         currentUserCookingSkillLevel = 1
         isPremium = false
         dietaryUpdatedAt = nil
-        requiresBiometricAuth = false
         requiresOTPVerification = false
+        passwordResetEmailSent = false
+        requiresNewPassword = false
+        emailChangeCodeSent = false
+        pendingNewEmail = nil
         hasSeenOnboardingPaywall = false
         isAuthenticated = false
         AvatarCache.clear()

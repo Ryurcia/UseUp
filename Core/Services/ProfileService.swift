@@ -13,6 +13,7 @@ struct Profile: Codable {
     var cookingSkillLevel: Int?
     var subscriptionType: String?
     var dietaryUpdatedAt: Date?
+    var nicknameUpdatedAt: Date?
     var createdAt: Date?
     var updatedAt: Date?
 
@@ -27,6 +28,7 @@ struct Profile: Codable {
         case cookingSkillLevel = "cooking_skill_level"
         case subscriptionType = "subscription_type"
         case dietaryUpdatedAt = "dietary_updated_at"
+        case nicknameUpdatedAt = "nickname_updated_at"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
@@ -103,21 +105,25 @@ final class SupabaseProfileService: ProfileServicing {
             throw ProfileError.nicknameTaken
         }
 
-        let rows: [Profile] = try await client
-            .from("profiles")
-            .update([
-                "nickname": nickname,
-                "display_name": displayName,
-            ])
-            .eq("id", value: userId.uuidString)
-            .select()
-            .execute()
-            .value
+        do {
+            let rows: [Profile] = try await client
+                .from("profiles")
+                .update([
+                    "nickname": nickname,
+                    "display_name": displayName,
+                ])
+                .eq("id", value: userId.uuidString)
+                .select()
+                .execute()
+                .value
 
-        guard let created = rows.first else {
-            throw ProfileError.unknown("Failed to create profile. Please try again.")
+            guard let created = rows.first else {
+                throw ProfileError.unknown("Failed to create profile. Please try again.")
+            }
+            return created
+        } catch let error as PostgrestError where error.code == "23505" {
+            throw ProfileError.nicknameTaken
         }
-        return created
     }
 
     func updateNickname(_ nickname: String, userId: UUID) async throws -> Profile {
@@ -127,18 +133,23 @@ final class SupabaseProfileService: ProfileServicing {
             throw ProfileError.nicknameTaken
         }
 
-        let rows: [Profile] = try await client
-            .from("profiles")
-            .update(["nickname": nickname])
-            .eq("id", value: userId.uuidString)
-            .select()
-            .execute()
-            .value
+        let now = Self.iso8601.string(from: Date())
+        do {
+            let rows: [Profile] = try await client
+                .from("profiles")
+                .update(["nickname": nickname, "nickname_updated_at": now])
+                .eq("id", value: userId.uuidString)
+                .select()
+                .execute()
+                .value
 
-        guard let updated = rows.first else {
-            throw ProfileError.unknown("Failed to save nickname. Please try again.")
+            guard let updated = rows.first else {
+                throw ProfileError.unknown("Failed to save nickname. Please try again.")
+            }
+            return updated
+        } catch let error as PostgrestError where error.code == "23505" {
+            throw ProfileError.nicknameTaken
         }
-        return updated
     }
 
     func uploadAvatar(imageData: Data, userId: UUID) async throws -> String {
@@ -271,7 +282,7 @@ final class MockProfileService: ProfileServicing {
     }
 
     func updateNickname(_ nickname: String, userId: UUID) async throws -> Profile {
-        Profile(id: userId, nickname: nickname, updatedAt: Date())
+        Profile(id: userId, nickname: nickname, nicknameUpdatedAt: Date(), updatedAt: Date())
     }
 
     func uploadAvatar(imageData: Data, userId: UUID) async throws -> String {
