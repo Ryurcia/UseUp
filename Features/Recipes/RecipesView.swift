@@ -194,19 +194,24 @@ struct CachedRecipeImage: View {
 /// same `recipe`/`savedRecipesStore` pair — only the report/rate target state differs per caller.
 @MainActor
 struct RecipeCardActions {
-    let onReport: (() -> Void)?
+    let onReportRecipe: (() -> Void)?
+    let onReportUser: (() -> Void)?
     let onRate: (() -> Void)?
     let onSave: () -> Void
 
     init(
         recipe: Recipe,
         savedRecipesStore: SavedRecipesStore,
-        reportRecipe: @escaping (Recipe) -> Void,
+        reportTarget: @escaping (ReportTarget) -> Void,
         rateRecipe: @escaping (Recipe) -> Void,
         presentSaveFlow: @escaping (Recipe) -> Void
     ) {
-        onReport = (recipe.isUserShared && recipe.createdBy != savedRecipesStore.userId?.uuidString)
-            ? { reportRecipe(recipe) } : nil
+        let canReport = recipe.isUserShared && recipe.createdBy != savedRecipesStore.userId?.uuidString
+        onReportRecipe = canReport ? { reportTarget(.recipe(recipe)) } : nil
+        onReportUser = canReport ? {
+            guard let creatorIdString = recipe.createdBy, let creatorId = UUID(uuidString: creatorIdString) else { return }
+            reportTarget(.user(id: creatorId, nickname: recipe.createdByName ?? "this user"))
+        } : nil
         onRate = recipe.rating > 0 ? { rateRecipe(recipe) } : nil
         onSave = {
             if savedRecipesStore.isSaved(recipe) {
@@ -222,7 +227,9 @@ struct RecipeCard: View, Equatable {
     let recipe: Recipe
     var showBadge: Bool = true
     var isSaved: Bool = false
-    var onReport: (() -> Void)? = nil
+    var imageAspectRatio: CGFloat = 4 / 3
+    var onReportRecipe: (() -> Void)? = nil
+    var onReportUser: (() -> Void)? = nil
     var onRate: (() -> Void)? = nil
     var onSave: (() -> Void)? = nil
 
@@ -254,7 +261,7 @@ struct RecipeCard: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Color.clear
-                .aspectRatio(4/3, contentMode: .fit)
+                .aspectRatio(imageAspectRatio, contentMode: .fit)
                 .overlay {
                     if recipe.imageData == nil && recipe.imagePath == nil {
                         RecipeImagePlaceholder()
@@ -295,8 +302,19 @@ struct RecipeCard: View, Equatable {
                                 ratingPill
                             }
                         }
-                        if let onReport {
-                            Button(action: onReport) {
+                        if onReportRecipe != nil || onReportUser != nil {
+                            Menu {
+                                if let onReportRecipe {
+                                    Button(action: onReportRecipe) {
+                                        Label("Report Recipe", systemImage: "flag")
+                                    }
+                                }
+                                if let onReportUser {
+                                    Button(action: onReportUser) {
+                                        Label("Report User", systemImage: "person.fill.xmark")
+                                    }
+                                }
+                            } label: {
                                 Ph.flag.regular
                                     .frame(width: 11, height: 11)
                                     .foregroundStyle(Sourdough.Colors.heroTitleOnDark)
@@ -304,7 +322,6 @@ struct RecipeCard: View, Equatable {
                                     .background(Color.black.opacity(0.45))
                                     .clipShape(Circle())
                             }
-                            .buttonStyle(.plain)
                         }
                         if recipe.isAIGenerated {
                             AIGeneratedBadge()
@@ -319,35 +336,42 @@ struct RecipeCard: View, Equatable {
                 Text(recipe.title)
                     .foregroundStyle(Sourdough.Colors.ink)
                     .sourdoughTextStyle(.rowTitle)
-                    .lineLimit(2)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text(recipe.summary)
+                    .foregroundStyle(Sourdough.Colors.mutedInk)
+                    .sourdoughTextStyle(.subhead)
+                    .lineLimit(2, reservesSpace: true)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 let tags = cardTags
-                if !tags.isEmpty {
-                    let visibleTags = Array(tags.prefix(2))
-                    let overflow = tags.count - visibleTags.count
-                    HStack(spacing: 4) {
-                        ForEach(visibleTags.indices, id: \.self) { i in
-                            Text(visibleTags[i].text)
-                                .foregroundStyle(Sourdough.Colors.onAction)
-                                .sourdoughTextStyle(.caption)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(visibleTags[i].isDiet ? Sourdough.Ramp.sage500 : Sourdough.Ramp.honey600)
-                                .clipShape(Capsule())
-                        }
-                        if overflow > 0 {
-                            Text("+\(overflow) more")
-                                .foregroundStyle(Sourdough.Colors.mutedInk)
-                                .sourdoughTextStyle(.caption)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Sourdough.Colors.sunken)
-                                .clipShape(Capsule())
-                        }
+                let visibleTags = Array(tags.prefix(2))
+                let overflow = tags.count - visibleTags.count
+                HStack(spacing: 4) {
+                    ForEach(visibleTags.indices, id: \.self) { i in
+                        Text(visibleTags[i].text)
+                            .foregroundStyle(Sourdough.Colors.onAction)
+                            .sourdoughTextStyle(.caption)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(visibleTags[i].isDiet ? Sourdough.Ramp.sage500 : Sourdough.Ramp.honey600)
+                            .clipShape(Capsule())
+                    }
+                    if overflow > 0 {
+                        Text("+\(overflow) more")
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                            .sourdoughTextStyle(.caption)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Sourdough.Colors.sunken)
+                            .clipShape(Capsule())
                     }
                 }
+                .frame(height: 24, alignment: .leading)
             }
             .padding(.horizontal, 2)
         }
@@ -363,8 +387,9 @@ struct RecipesView: View {
     @State private var debouncedSearch = ""
     @State private var searchDebounceTask: Task<Void, Never>?
     @State private var showingShareSheet = false
+    @State private var showCookbook = false
     @State private var selectedRecipe: Recipe?
-    @State private var recipeToReport: Recipe?
+    @State private var reportTarget: ReportTarget?
     @State private var reportError: String?
     @State private var navigateToRecipe: Recipe?
     @State private var allergenPendingRecipe: Recipe?
@@ -377,7 +402,8 @@ struct RecipesView: View {
     @State private var maxPrepTime: Int?
     @State private var selectedIngredients: Set<String> = []
     @State private var selectedDietaryFilters: Set<String> = []
-    @State private var cachedCommunityCategories: [RecipeCategory] = []
+    @State private var cachedGeneralCategories: [RecipeCategory] = []
+    @State private var cachedCuisineCategories: [RecipeCategory] = []
     @State private var showcaseItem: (recipe: Recipe, ingredient: Ingredient)? = nil
     @State private var useUpSoonRecipes: [Recipe] = []
     @State private var navigateToCategory: RecipeCategory?
@@ -395,16 +421,31 @@ struct RecipesView: View {
         selectedCuisine != nil || maxPrepTime != nil || !selectedIngredients.isEmpty || !selectedDietaryFilters.isEmpty
     }
 
+    // Discovery sections (server-wide, via fetchDiscoverySections) give the screen a
+    // full-catalog head start on first load — a rare cuisine shows up immediately
+    // instead of waiting to coincidentally paginate into communityRecipes. They're
+    // seeded into cachedGeneralCategories/cachedCuisineCategories once (see
+    // seedCategoriesFromDiscovery, called from .task) via the same reconcile() used for
+    // pagination growth, so scrolling to load more community recipes keeps extending the
+    // same rendered categories afterward instead of writing to a separate, unread state.
+    // The general-category list itself lives in SavedRecipesStore.generalCategorySpecs —
+    // one shared definition instead of a second copy here that could drift out of sync.
+
+    private func seedCategoriesFromDiscovery() {
+        let general = SavedRecipesStore.generalCategorySpecs.compactMap { spec -> RecipeCategory? in
+            guard let recipes = savedRecipesStore.discoveryGeneralRecipes[spec.title], !recipes.isEmpty else { return nil }
+            return RecipeCategory(title: spec.title, icon: spec.icon, recipes: recipes, filter: spec.filter)
+        }
+        let cuisine = savedRecipesStore.discoveryCuisineOrder.compactMap { cuisine -> RecipeCategory? in
+            guard let recipes = savedRecipesStore.discoveryCuisineRecipes[cuisine], !recipes.isEmpty else { return nil }
+            return RecipeCategory(title: cuisine.rawValue, icon: "fork.knife", recipes: recipes, filter: .cuisine(cuisine))
+        }
+        cachedGeneralCategories = reconcile(existing: cachedGeneralCategories, updated: general)
+        cachedCuisineCategories = reconcile(existing: cachedCuisineCategories, updated: cuisine)
+    }
+
     private func applyFilters(_ recipes: [Recipe]) -> [Recipe] {
         var result = recipes
-
-        if !debouncedSearch.isEmpty {
-            let query = debouncedSearch.lowercased()
-            result = result.filter {
-                $0.title.lowercased().contains(query) ||
-                $0.summary.lowercased().contains(query)
-            }
-        }
 
         if let cuisine = selectedCuisine {
             result = result.filter { $0.cuisine == cuisine }
@@ -500,9 +541,15 @@ struct RecipesView: View {
             .padding(.top, Sourdough.Spacing.rowInternals)
             .padding(.bottom, Sourdough.Spacing.insideChip)
 
-            recipeScrollContent
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .background(Sourdough.Colors.canvas)
+            Group {
+                if debouncedSearch.isEmpty {
+                    recipeScrollContent
+                } else {
+                    searchResultsList
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(Sourdough.Colors.canvas)
         }
         .background(Sourdough.Colors.canvas)
         .toolbar(.hidden, for: .navigationBar)
@@ -554,14 +601,19 @@ struct RecipesView: View {
             }
             .presentationDetents([.medium, .large])
         }
-        .sheet(item: $recipeToReport) { recipe in
-            ReportContentSheet(subject: .recipe(name: recipe.title)) { category, description in
+        .sheet(item: $reportTarget) { target in
+            ReportContentSheet(subject: target.subject) { category, description in
                 Task {
                     do {
-                        try await savedRecipesStore.reportRecipe(recipe, category: category, description: description)
+                        switch target {
+                        case .recipe(let recipe):
+                            try await savedRecipesStore.reportRecipe(recipe, category: category, description: description)
+                        case .user(let id, _):
+                            try await savedRecipesStore.reportUser(id, category: category, description: description)
+                        }
                     } catch {
                         reportError = error.localizedDescription.contains("duplicate") || error.localizedDescription.contains("unique")
-                            ? "You've already reported this recipe."
+                            ? "You've already submitted this report."
                             : "Failed to submit report. Please try again."
                     }
                 }
@@ -584,28 +636,37 @@ struct RecipesView: View {
         .navigationDestination(item: $ratingsRecipe) { recipe in
             RecipeRatingsView(recipe: recipe)
         }
+        .navigationDestination(isPresented: $showCookbook) {
+            CookbookView()
+        }
         .onChange(of: searchText) { _, newValue in
             searchDebounceTask?.cancel()
             searchDebounceTask = Task {
                 try? await Task.sleep(for: .milliseconds(300))
                 guard !Task.isCancelled else { return }
                 debouncedSearch = newValue
+                await savedRecipesStore.searchRecipes(query: newValue)
             }
         }
         .task {
-            await savedRecipesStore.fetchRecipes()
+            async let recipesTask: Void = savedRecipesStore.fetchRecipes()
+            async let discoveryTask: Void = savedRecipesStore.fetchDiscoverySections()
+            _ = await (recipesTask, discoveryTask)
+            recomputeUseUpMatches()
+            seedCategoriesFromDiscovery()
         }
         .onAppear {
-            cachedCommunityCategories = buildCategories(from: filteredCommunityRecipes)
+            let built = buildCategories(from: filteredCommunityRecipes)
+            cachedGeneralCategories = built.general
+            cachedCuisineCategories = built.cuisine
             recomputeUseUpMatches()
         }
         .onChange(of: filteredCommunityRecipes) { _, newRecipes in
-            cachedCommunityCategories = buildCategories(from: newRecipes)
+            let built = buildCategories(from: newRecipes)
+            cachedGeneralCategories = reconcile(existing: cachedGeneralCategories, updated: built.general)
+            cachedCuisineCategories = reconcile(existing: cachedCuisineCategories, updated: built.cuisine)
         }
         .onChange(of: pantryStore.ingredients) { _, _ in
-            recomputeUseUpMatches()
-        }
-        .onChange(of: savedRecipesStore.communityRecipes) { _, _ in
             recomputeUseUpMatches()
         }
     }
@@ -635,6 +696,18 @@ struct RecipesView: View {
                 .frame(height: 40)
                 .background(Sourdough.Colors.action)
                 .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                showCookbook = true
+            } label: {
+                Ph.bookOpenText.regular
+                    .frame(width: 18, height: 18)
+                    .foregroundStyle(Sourdough.Colors.ink)
+                    .frame(width: 40, height: 40)
+                    .background(Sourdough.Colors.sunken)
+                    .clipShape(Circle())
             }
             .buttonStyle(.plain)
 
@@ -696,26 +769,13 @@ struct RecipesView: View {
     // MARK: - Quick Filter Chips
 
     private var quickFilterChips: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Sourdough.Spacing.insideChip) {
-                ForEach(QuickFilter.allCases, id: \.self) { filter in
-                    SelectableChip(label: filter.rawValue, isSelected: quickFilter == filter, size: .medium) {
-                        withAnimation(.easeInOut(duration: 0.2)) { quickFilter = filter }
-                    }
+        HStack(spacing: Sourdough.Spacing.insideChip) {
+            ForEach(QuickFilter.allCases, id: \.self) { filter in
+                SelectableChip(label: filter.rawValue, isSelected: quickFilter == filter, size: .medium) {
+                    withAnimation(.easeInOut(duration: 0.2)) { quickFilter = filter }
                 }
             }
         }
-        .mask(
-            LinearGradient(
-                stops: [
-                    .init(color: .black, location: 0),
-                    .init(color: .black, location: 0.8),
-                    .init(color: .clear, location: 1.0)
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-        )
     }
 
     // MARK: - Scroll Content
@@ -744,8 +804,43 @@ struct RecipesView: View {
                             useUpSection
                         }
 
-                        ForEach(cachedCommunityCategories) { category in
-                            categorySection(category)
+                        if !cachedGeneralCategories.isEmpty {
+                            Text("QUICK PICKS")
+                                .foregroundStyle(Sourdough.Colors.faintInk)
+                                .sourdoughTextStyle(.sectionHead)
+                                .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                            ForEach(cachedGeneralCategories) { category in
+                                categorySection(category)
+                                Divider()
+                                    .foregroundStyle(Sourdough.Colors.hairline)
+                                    .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                            }
+                        }
+
+                        if !cachedCuisineCategories.isEmpty {
+                            Text("CUISINES")
+                                .foregroundStyle(Sourdough.Colors.faintInk)
+                                .sourdoughTextStyle(.sectionHead)
+                                .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                            ForEach(cachedCuisineCategories) { category in
+                                categorySection(category)
+                                if category.id != cachedCuisineCategories.last?.id {
+                                    Divider()
+                                        .foregroundStyle(Sourdough.Colors.hairline)
+                                        .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                                }
+                            }
+                        }
+
+                        if savedRecipesStore.hasMoreCommunityRecipes {
+                            HStack {
+                                Spacer()
+                                ProgressView().padding(.vertical, Sourdough.Spacing.screenMargin)
+                                Spacer()
+                            }
+                            .onAppear {
+                                Task { await savedRecipesStore.fetchMoreCommunityRecipes() }
+                            }
                         }
                     }
                     .padding(.top, Sourdough.Spacing.rowInternals)
@@ -763,6 +858,79 @@ struct RecipesView: View {
         }
     }
 
+    // MARK: - Search Results (paginated, server-side)
+
+    private var searchResultsList: some View {
+        Group {
+            if savedRecipesStore.isSearching && savedRecipesStore.searchResults.isEmpty {
+                VStack {
+                    Spacer(minLength: Sourdough.Spacing.aboveSectionHead)
+                    ProgressView()
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if savedRecipesStore.searchResults.isEmpty {
+                VStack {
+                    Spacer(minLength: Sourdough.Spacing.aboveSectionHead)
+                    Text("No recipes match your search.")
+                        .foregroundStyle(Sourdough.Colors.mutedInk)
+                        .sourdoughTextStyle(.subhead)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 0) {
+                        LazyVGrid(
+                            columns: [
+                                GridItem(.flexible(), spacing: Sourdough.Spacing.rowInternals),
+                                GridItem(.flexible(), spacing: Sourdough.Spacing.rowInternals)
+                            ],
+                            spacing: Sourdough.Spacing.rowInternals
+                        ) {
+                            ForEach(savedRecipesStore.searchResults) { recipe in
+                                let actions = RecipeCardActions(
+                                    recipe: recipe,
+                                    savedRecipesStore: savedRecipesStore,
+                                    reportTarget: { reportTarget = $0 },
+                                    rateRecipe: { ratingsRecipe = $0 },
+                                    presentSaveFlow: { recipePendingSaveFlow = $0 }
+                                )
+                                Button { selectedRecipe = recipe } label: {
+                                    RecipeCard(
+                                        recipe: recipe,
+                                        showBadge: false,
+                                        isSaved: savedRecipesStore.isSaved(recipe),
+                                        onReportRecipe: actions.onReportRecipe,
+                                        onReportUser: actions.onReportUser,
+                                        onRate: actions.onRate,
+                                        onSave: actions.onSave
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+
+                        if savedRecipesStore.hasMoreSearchResults {
+                            HStack {
+                                Spacer()
+                                ProgressView().padding(.vertical, Sourdough.Spacing.screenMargin)
+                                Spacer()
+                            }
+                            .onAppear {
+                                Task { await savedRecipesStore.fetchMoreSearchResults(query: debouncedSearch) }
+                            }
+                        }
+                    }
+                    .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                    .padding(.top, Sourdough.Spacing.rowInternals)
+                    .padding(.bottom, Sourdough.Spacing.underTitle * 2)
+                }
+            }
+        }
+    }
+
     // MARK: - Showcase Card
     // The one dark "tonight's recipe" card that anchors the home screen (§2) — a fixed on-dark
     // surface like OnDarkHeroCard, but with its own top-badge/bookmark overlay layout that doesn't
@@ -773,7 +941,8 @@ struct RecipesView: View {
         let days = ingredient.daysUntilExpiration ?? 0
         let urgencyLabel = days == 0 ? "TODAY" : days == 1 ? "1 DAY" : "\(days) DAYS"
         let pantryNames = Set(pantryStore.ingredients.map { $0.name.lowercased() })
-        let matchCount = recipe.ingredientsUsed.filter { pantryNames.contains($0.name.lowercased()) }.count
+        let matchableIngredients = recipe.ingredientsUsed.filter { !PantryStaples.isStaple($0.name) }
+        let matchCount = matchableIngredients.filter { pantryNames.contains($0.name.lowercased()) }.count
         let isSaved = savedRecipesStore.isSaved(recipe)
 
         Button { selectedRecipe = recipe } label: {
@@ -853,7 +1022,7 @@ struct RecipesView: View {
                         if matchCount > 0 {
                             HStack(spacing: 4) {
                                 Ph.check.bold.frame(width: 9, height: 9)
-                                Text("\(matchCount)/\(recipe.ingredientsUsed.count) in pantry")
+                                Text("\(matchCount)/\(matchableIngredients.count) in pantry")
                                     .foregroundStyle(Sourdough.Ramp.sageDark)
                                     .sourdoughTextStyle(.caption)
                             }
@@ -918,7 +1087,7 @@ struct RecipesView: View {
                         let actions = RecipeCardActions(
                             recipe: recipe,
                             savedRecipesStore: savedRecipesStore,
-                            reportRecipe: { recipeToReport = $0 },
+                            reportTarget: { reportTarget = $0 },
                             rateRecipe: { ratingsRecipe = $0 },
                             presentSaveFlow: { recipePendingSaveFlow = $0 }
                         )
@@ -927,7 +1096,8 @@ struct RecipesView: View {
                                 recipe: recipe,
                                 showBadge: false,
                                 isSaved: savedRecipesStore.isSaved(recipe),
-                                onReport: actions.onReport,
+                                onReportRecipe: actions.onReportRecipe,
+                                onReportUser: actions.onReportUser,
                                 onRate: actions.onRate,
                                 onSave: actions.onSave
                             )
@@ -942,7 +1112,7 @@ struct RecipesView: View {
                 LinearGradient(
                     stops: [
                         .init(color: .black, location: 0),
-                        .init(color: .black, location: 0.8),
+                        .init(color: .black, location: 0.92),
                         .init(color: .clear, location: 1.0)
                     ],
                     startPoint: .leading,
@@ -958,11 +1128,12 @@ struct RecipesView: View {
         VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {
             HStack(spacing: Sourdough.Spacing.insideChip) {
                 Image(systemName: category.icon)
-                    .font(.system(size: 16))
+                    .font(.system(size: 20))
                     .foregroundStyle(Sourdough.Ramp.sage600)
                 Text(category.title)
                     .foregroundStyle(Sourdough.Colors.ink)
-                    .sourdoughTextStyle(.title2)
+                    .font(.custom("Figtree", size: 26))
+                    .fontWeight(.semibold)
                 Spacer()
                 if category.recipes.count > 5 {
                     NavChipButton(icon: Ph.arrowRight.bold) { navigateToCategory = category }
@@ -977,7 +1148,7 @@ struct RecipesView: View {
                         let actions = RecipeCardActions(
                             recipe: recipe,
                             savedRecipesStore: savedRecipesStore,
-                            reportRecipe: { recipeToReport = $0 },
+                            reportTarget: { reportTarget = $0 },
                             rateRecipe: { ratingsRecipe = $0 },
                             presentSaveFlow: { recipePendingSaveFlow = $0 }
                         )
@@ -986,7 +1157,8 @@ struct RecipesView: View {
                                 recipe: recipe,
                                 showBadge: false,
                                 isSaved: savedRecipesStore.isSaved(recipe),
-                                onReport: actions.onReport,
+                                onReportRecipe: actions.onReportRecipe,
+                                onReportUser: actions.onReportUser,
                                 onRate: actions.onRate,
                                 onSave: actions.onSave
                             )
@@ -1001,7 +1173,7 @@ struct RecipesView: View {
                 LinearGradient(
                     stops: [
                         .init(color: .black, location: 0),
-                        .init(color: .black, location: 0.8),
+                        .init(color: .black, location: 0.92),
                         .init(color: .clear, location: 1.0)
                     ],
                     startPoint: .leading,
@@ -1023,34 +1195,62 @@ struct RecipesView: View {
         let title: String
         let icon: String
         let recipes: [Recipe]
+        let filter: SavedRecipesStore.CategoryFilter
     }
 
-    private func buildCategories(from recipes: [Recipe]) -> [RecipeCategory] {
-        var categories: [RecipeCategory] = []
+    private func buildCategories(from recipes: [Recipe]) -> (general: [RecipeCategory], cuisine: [RecipeCategory]) {
+        var general: [RecipeCategory] = []
 
-        let lowCal = recipes.filter { $0.macros.calories <= 200 }
-        if !lowCal.isEmpty {
-            categories.append(RecipeCategory(title: "Low Calorie", icon: "flame", recipes: lowCal))
-        }
-
-        let highProtein = recipes.filter { $0.macros.proteinG >= 30 }
-        if !highProtein.isEmpty {
-            categories.append(RecipeCategory(title: "High Protein", icon: "bolt.fill", recipes: highProtein))
-        }
-
-        let quick = recipes.filter { $0.timeMinutes <= 15 }
-        if !quick.isEmpty {
-            categories.append(RecipeCategory(title: "Quick & Easy", icon: "clock", recipes: quick))
-        }
-
-        let grouped = Dictionary(grouping: recipes, by: \.cuisine)
-        for cuisine in Cuisine.allCases {
-            if let cuisineRecipes = grouped[cuisine], !cuisineRecipes.isEmpty {
-                categories.append(RecipeCategory(title: cuisine.rawValue, icon: "fork.knife", recipes: cuisineRecipes))
+        for spec in SavedRecipesStore.generalCategorySpecs {
+            let matching = recipes.filter { spec.filter.matches($0) }
+            if !matching.isEmpty {
+                general.append(RecipeCategory(title: spec.title, icon: spec.icon, recipes: matching, filter: spec.filter))
             }
         }
 
-        return categories
+        var cuisineCategories: [RecipeCategory] = []
+
+        let asianCuisines: Set<Cuisine> = [.asian, .chinese, .japanese, .korean, .thai, .vietnamese, .filipino, .indian]
+        let asianRecipes = recipes.filter { asianCuisines.contains($0.cuisine) }
+        if !asianRecipes.isEmpty {
+            cuisineCategories.append(RecipeCategory(title: "Asian", icon: "fork.knife", recipes: asianRecipes, filter: .cuisineGroup(asianCuisines)))
+        }
+
+        let middleEasternCuisines: Set<Cuisine> = [.middleEastern, .turkish]
+        let middleEasternRecipes = recipes.filter { middleEasternCuisines.contains($0.cuisine) }
+        if !middleEasternRecipes.isEmpty {
+            cuisineCategories.append(RecipeCategory(title: "Middle Eastern", icon: "fork.knife", recipes: middleEasternRecipes, filter: .cuisineGroup(middleEasternCuisines)))
+        }
+
+        let grouped = Dictionary(grouping: recipes, by: \.cuisine)
+        for cuisine in Cuisine.allCases where cuisine != .asian && cuisine != .middleEastern {
+            if let cuisineRecipes = grouped[cuisine], !cuisineRecipes.isEmpty {
+                cuisineCategories.append(RecipeCategory(title: cuisine.rawValue, icon: "fork.knife", recipes: cuisineRecipes, filter: .cuisine(cuisine)))
+            }
+        }
+
+        return (general, cuisineCategories)
+    }
+
+    // Merges a freshly-built category list into the cached one without reordering or
+    // dropping sections the user has already scrolled past — categories that still exist
+    // keep their position (and just grow their recipes), brand-new categories are only
+    // ever appended at the end. This keeps pagination from inserting a new section above
+    // content already on screen.
+    private func reconcile(existing: [RecipeCategory], updated: [RecipeCategory]) -> [RecipeCategory] {
+        let updatedByTitle = Dictionary(uniqueKeysWithValues: updated.map { ($0.title, $0) })
+        var result: [RecipeCategory] = []
+        var seen = Set<String>()
+        for category in existing {
+            if let refreshed = updatedByTitle[category.title] {
+                result.append(refreshed)
+                seen.insert(category.title)
+            }
+        }
+        for category in updated where !seen.contains(category.title) {
+            result.append(category)
+        }
+        return result
     }
 
 }
@@ -1064,15 +1264,19 @@ struct RecipePreviewSheet: View {
     let recipe: Recipe
     let onViewFull: () -> Void
 
-    @State private var showReportSheet = false
+    @State private var reportTarget: ReportTarget?
     @State private var reportError: String?
     @State private var showSaveChoiceSheet = false
     @State private var showCollectionPicker = false
     @State private var pendingSaveSheetWork: DispatchWorkItem?
 
+    private var matchableIngredients: [RecipeIngredient] {
+        recipe.ingredientsUsed.filter { !PantryStaples.isStaple($0.name) }
+    }
+
     private var pantryMatchCount: Int {
         let pantryNames = Set(pantryStore.ingredients.map { $0.name.lowercased() })
-        return recipe.ingredientsUsed.filter { pantryNames.contains($0.name.lowercased()) }.count
+        return matchableIngredients.filter { pantryNames.contains($0.name.lowercased()) }.count
     }
 
     var body: some View {
@@ -1112,12 +1316,23 @@ struct RecipePreviewSheet: View {
                             }
                             .buttonStyle(.plain)
                             if recipe.isUserShared && recipe.createdBy != savedRecipesStore.userId?.uuidString {
-                                Button { showReportSheet = true } label: {
+                                Menu {
+                                    Button {
+                                        reportTarget = .recipe(recipe)
+                                    } label: {
+                                        Label("Report Recipe", systemImage: "flag")
+                                    }
+                                    Button {
+                                        guard let creatorIdString = recipe.createdBy, let creatorId = UUID(uuidString: creatorIdString) else { return }
+                                        reportTarget = .user(id: creatorId, nickname: recipe.createdByName ?? "this user")
+                                    } label: {
+                                        Label("Report User", systemImage: "person.fill.xmark")
+                                    }
+                                } label: {
                                     Ph.flag.regular
                                         .frame(width: 22, height: 22)
                                         .foregroundStyle(Sourdough.Colors.faintInk)
                                 }
-                                .buttonStyle(.plain)
                             }
                         }
 
@@ -1212,7 +1427,7 @@ struct RecipePreviewSheet: View {
                                         Ph.sealCheck.fill
                                             .frame(width: 12, height: 12)
                                             .foregroundStyle(Sourdough.Ramp.sage600)
-                                        Text("You have \(pantryMatchCount) of \(recipe.ingredientsUsed.count) ingredients")
+                                        Text("You have \(pantryMatchCount) of \(matchableIngredients.count) ingredients")
                                             .foregroundStyle(Sourdough.Ramp.sage600)
                                             .sourdoughTextStyle(.subhead)
                                     }
@@ -1241,14 +1456,19 @@ struct RecipePreviewSheet: View {
                 .padding(.bottom, Sourdough.Spacing.rowInternals)
             }
         .background(Sourdough.Colors.canvas)
-        .sheet(isPresented: $showReportSheet) {
-            ReportContentSheet(subject: .recipe(name: recipe.title)) { category, description in
+        .sheet(item: $reportTarget) { target in
+            ReportContentSheet(subject: target.subject) { category, description in
                 Task {
                     do {
-                        try await savedRecipesStore.reportRecipe(recipe, category: category, description: description)
+                        switch target {
+                        case .recipe(let recipe):
+                            try await savedRecipesStore.reportRecipe(recipe, category: category, description: description)
+                        case .user(let id, _):
+                            try await savedRecipesStore.reportUser(id, category: category, description: description)
+                        }
                     } catch {
                         reportError = error.localizedDescription.contains("duplicate") || error.localizedDescription.contains("unique")
-                            ? "You've already reported this recipe."
+                            ? "You've already submitted this report."
                             : "Failed to submit report. Please try again."
                     }
                 }
@@ -1299,6 +1519,224 @@ struct RecipePreviewSheet: View {
 
 // MARK: - Recipe Filter Sheet
 
+private let filterPrepTimeOptions: [(label: String, value: Int?)] = [
+    ("Any", nil),
+    ("15 min", 15),
+    ("30 min", 30),
+    ("45 min", 45),
+    ("60 min", 60)
+]
+
+private let filterDietaryOptions: [String] = [
+    "Vegetarian", "Vegan", "Pescatarian", "Keto", "Paleo",
+    "Gluten-Free", "Nut-Free", "Dairy-Free", "Soy-Free", "Egg-Free", "Shellfish-Free", "Low Sodium"
+]
+
+// MARK: - Filter field container (mirrors GenerateView's OptionsRow)
+
+private struct FilterOptionsRow: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        HStack(spacing: Sourdough.Spacing.rowInternals) {
+            Text(label)
+                .foregroundStyle(Sourdough.Colors.ink)
+                .sourdoughTextStyle(.body)
+            Spacer()
+            Text(value)
+                .foregroundStyle(Sourdough.Colors.mutedInk)
+                .sourdoughTextStyle(.subhead)
+                .lineLimit(1)
+            Ph.caretRight.regular
+                .frame(width: 12, height: 12)
+                .foregroundStyle(Sourdough.Colors.faintInk)
+        }
+        .padding(.horizontal, Sourdough.Spacing.screenMargin)
+        .frame(height: 52)
+        .background(Sourdough.Colors.sunken)
+        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous)
+                .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
+        )
+    }
+}
+
+// MARK: - Filter list-screen header + row (mirrors GenerateView's selectionPageHeader/selectionRow)
+
+private func filterSelectionHeader(title: String, onBack: @escaping () -> Void) -> some View {
+    HStack {
+        Button(action: onBack) {
+            Ph.caretLeft.regular
+                .frame(width: 17, height: 17)
+                .foregroundStyle(Sourdough.Colors.ink)
+        }
+        .buttonStyle(.plain)
+        Spacer()
+        Text(title)
+            .foregroundStyle(Sourdough.Colors.ink)
+            .sourdoughTextStyle(.title2)
+        Spacer()
+        Ph.caretLeft.regular
+            .frame(width: 17, height: 17)
+            .hidden()
+    }
+    .padding(.horizontal, Sourdough.Spacing.screenMargin)
+    .padding(.vertical, Sourdough.Spacing.rowInternals)
+}
+
+private func filterSelectionRow(label: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+        HStack(spacing: Sourdough.Spacing.rowInternals) {
+            Group {
+                if isSelected { Ph.checkCircle.fill } else { Ph.circle.regular }
+            }
+            .frame(width: 20, height: 20)
+            .foregroundStyle(isSelected ? Sourdough.Ramp.sage500 : Sourdough.Colors.faintInk)
+
+            Text(label)
+                .foregroundStyle(Sourdough.Colors.ink)
+                .sourdoughTextStyle(.body)
+
+            Spacer()
+        }
+        .padding(.horizontal, Sourdough.Spacing.screenMargin)
+        .frame(maxWidth: .infinity, minHeight: 60)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+}
+
+// MARK: - Filter list screens
+
+private struct CuisineFilterListView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var selectedCuisine: Cuisine?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            filterSelectionHeader(title: "Cuisine") { dismiss() }
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 0) {
+                    filterSelectionRow(label: "Any", isSelected: selectedCuisine == nil) {
+                        selectedCuisine = nil
+                        dismiss()
+                    }
+                    Divider().padding(.leading, Sourdough.Spacing.screenMargin)
+                    ForEach(Array(Cuisine.allCases.enumerated()), id: \.element) { index, cuisine in
+                        filterSelectionRow(label: cuisine.rawValue, isSelected: selectedCuisine == cuisine) {
+                            selectedCuisine = cuisine
+                            dismiss()
+                        }
+                        if index < Cuisine.allCases.count - 1 {
+                            Divider().padding(.leading, Sourdough.Spacing.screenMargin)
+                        }
+                    }
+                }
+                .padding(.top, Sourdough.Spacing.insideChip)
+                .padding(.bottom, Sourdough.Spacing.aboveSectionHead)
+            }
+        }
+        .background(Sourdough.Colors.canvas)
+        .toolbar(.hidden, for: .navigationBar)
+    }
+}
+
+private struct PrepTimeFilterListView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var maxPrepTime: Int?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            filterSelectionHeader(title: "Max Prep Time") { dismiss() }
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 0) {
+                    ForEach(Array(filterPrepTimeOptions.enumerated()), id: \.offset) { index, option in
+                        filterSelectionRow(label: option.label, isSelected: maxPrepTime == option.value) {
+                            maxPrepTime = option.value
+                            dismiss()
+                        }
+                        if index < filterPrepTimeOptions.count - 1 {
+                            Divider().padding(.leading, Sourdough.Spacing.screenMargin)
+                        }
+                    }
+                }
+                .padding(.top, Sourdough.Spacing.insideChip)
+                .padding(.bottom, Sourdough.Spacing.aboveSectionHead)
+            }
+        }
+        .background(Sourdough.Colors.canvas)
+        .toolbar(.hidden, for: .navigationBar)
+    }
+}
+
+private struct DietaryFilterListView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var selectedDietaryFilters: Set<String>
+
+    var body: some View {
+        VStack(spacing: 0) {
+            filterSelectionHeader(title: "Dietary") { dismiss() }
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 0) {
+                    ForEach(Array(filterDietaryOptions.enumerated()), id: \.offset) { index, option in
+                        filterSelectionRow(label: option, isSelected: selectedDietaryFilters.contains(option)) {
+                            if selectedDietaryFilters.contains(option) {
+                                selectedDietaryFilters.remove(option)
+                            } else {
+                                selectedDietaryFilters.insert(option)
+                            }
+                        }
+                        if index < filterDietaryOptions.count - 1 {
+                            Divider().padding(.leading, Sourdough.Spacing.screenMargin)
+                        }
+                    }
+                }
+                .padding(.top, Sourdough.Spacing.insideChip)
+                .padding(.bottom, Sourdough.Spacing.aboveSectionHead)
+            }
+        }
+        .background(Sourdough.Colors.canvas)
+        .toolbar(.hidden, for: .navigationBar)
+    }
+}
+
+private struct IngredientFilterListView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var selectedIngredients: Set<String>
+    let allNames: [String]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            filterSelectionHeader(title: "Ingredients") { dismiss() }
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 0) {
+                    ForEach(Array(allNames.enumerated()), id: \.offset) { index, name in
+                        let key = name.lowercased()
+                        filterSelectionRow(label: name.capitalized, isSelected: selectedIngredients.contains(key)) {
+                            if selectedIngredients.contains(key) {
+                                selectedIngredients.remove(key)
+                            } else {
+                                selectedIngredients.insert(key)
+                            }
+                        }
+                        if index < allNames.count - 1 {
+                            Divider().padding(.leading, Sourdough.Spacing.screenMargin)
+                        }
+                    }
+                }
+                .padding(.top, Sourdough.Spacing.insideChip)
+                .padding(.bottom, Sourdough.Spacing.aboveSectionHead)
+            }
+        }
+        .background(Sourdough.Colors.canvas)
+        .toolbar(.hidden, for: .navigationBar)
+    }
+}
+
+// MARK: - Filter sheet
+
 private struct RecipeFilterSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Binding var selectedCuisine: Cuisine?
@@ -1316,18 +1754,17 @@ private struct RecipeFilterSheet: View {
         selectedCuisine != nil || maxPrepTime != nil || !selectedIngredients.isEmpty || !selectedDietaryFilters.isEmpty
     }
 
-    private static let prepTimeOptions: [(label: String, value: Int?)] = [
-        ("Any", nil),
-        ("15 min", 15),
-        ("30 min", 30),
-        ("45 min", 45),
-        ("60 min", 60)
-    ]
+    private var prepTimeLabel: String {
+        filterPrepTimeOptions.first { $0.value == maxPrepTime }?.label ?? "Any"
+    }
 
-    private static let dietaryOptions: [String] = [
-        "Vegetarian", "Vegan", "Pescatarian", "Keto", "Paleo",
-        "Gluten-Free", "Nut-Free", "Dairy-Free", "Soy-Free", "Egg-Free", "Shellfish-Free", "Low Sodium"
-    ]
+    private var ingredientsSummary: String {
+        selectedIngredients.isEmpty ? "Any" : selectedIngredients.map { $0.capitalized }.sorted().joined(separator: ", ")
+    }
+
+    private var dietarySummary: String {
+        selectedDietaryFilters.isEmpty ? "None" : selectedDietaryFilters.sorted().joined(separator: ", ")
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1361,88 +1798,41 @@ private struct RecipeFilterSheet: View {
             .padding(.horizontal, Sourdough.Spacing.screenMargin)
             .padding(.bottom, Sourdough.Spacing.betweenBlocks)
 
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: Sourdough.Spacing.betweenBlocks) {
-                    // Ingredients filter
-                    if !pantryIngredients.isEmpty {
-                        VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {
-                            Text("Ingredients")
-                                .foregroundStyle(Sourdough.Colors.ink)
-                                .sourdoughTextStyle(.title2)
-
-                            Text("Show recipes that use these pantry items")
-                                .foregroundStyle(Sourdough.Colors.faintInk)
-                                .sourdoughTextStyle(.subhead)
-
-                            FlowLayout(spacing: Sourdough.Spacing.insideChip) {
-                                ForEach(sortedPantryNames, id: \.self) { name in
-                                    let key = name.lowercased()
-                                    filterChip(name.capitalized, isSelected: selectedIngredients.contains(key)) {
-                                        if selectedIngredients.contains(key) {
-                                            selectedIngredients.remove(key)
-                                        } else {
-                                            selectedIngredients.insert(key)
-                                        }
-                                    }
-                                }
+            NavigationStack {
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: Sourdough.Spacing.rowInternals) {
+                        if !pantryIngredients.isEmpty {
+                            NavigationLink {
+                                IngredientFilterListView(selectedIngredients: $selectedIngredients, allNames: sortedPantryNames)
+                            } label: {
+                                FilterOptionsRow(label: "Ingredients", value: ingredientsSummary)
                             }
+                            .buttonStyle(.plain)
                         }
-                    }
 
-                    // Cuisine filter
-                    VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {
-                        Text("Cuisine")
-                            .foregroundStyle(Sourdough.Colors.ink)
-                            .sourdoughTextStyle(.title2)
-
-                        FlowLayout(spacing: Sourdough.Spacing.insideChip) {
-                            filterChip("All", isSelected: selectedCuisine == nil) {
-                                selectedCuisine = nil
-                            }
-
-                            ForEach(Cuisine.allCases) { cuisine in
-                                filterChip(cuisine.rawValue, isSelected: selectedCuisine == cuisine) {
-                                    selectedCuisine = selectedCuisine == cuisine ? nil : cuisine
-                                }
-                            }
+                        NavigationLink {
+                            CuisineFilterListView(selectedCuisine: $selectedCuisine)
+                        } label: {
+                            FilterOptionsRow(label: "Cuisine", value: selectedCuisine?.rawValue ?? "Any")
                         }
-                    }
+                        .buttonStyle(.plain)
 
-                    // Prep time filter
-                    VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {
-                        Text("Max Prep Time")
-                            .foregroundStyle(Sourdough.Colors.ink)
-                            .sourdoughTextStyle(.title2)
-
-                        FlowLayout(spacing: Sourdough.Spacing.insideChip) {
-                            ForEach(Self.prepTimeOptions, id: \.label) { option in
-                                filterChip(option.label, isSelected: maxPrepTime == option.value) {
-                                    maxPrepTime = option.value
-                                }
-                            }
+                        NavigationLink {
+                            PrepTimeFilterListView(maxPrepTime: $maxPrepTime)
+                        } label: {
+                            FilterOptionsRow(label: "Max Prep Time", value: prepTimeLabel)
                         }
-                    }
+                        .buttonStyle(.plain)
 
-                    // Dietary filter
-                    VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {
-                        Text("Dietary")
-                            .foregroundStyle(Sourdough.Colors.ink)
-                            .sourdoughTextStyle(.title2)
-
-                        FlowLayout(spacing: Sourdough.Spacing.insideChip) {
-                            ForEach(Self.dietaryOptions, id: \.self) { option in
-                                filterChip(option, isSelected: selectedDietaryFilters.contains(option)) {
-                                    if selectedDietaryFilters.contains(option) {
-                                        selectedDietaryFilters.remove(option)
-                                    } else {
-                                        selectedDietaryFilters.insert(option)
-                                    }
-                                }
-                            }
+                        NavigationLink {
+                            DietaryFilterListView(selectedDietaryFilters: $selectedDietaryFilters)
+                        } label: {
+                            FilterOptionsRow(label: "Dietary", value: dietarySummary)
                         }
+                        .buttonStyle(.plain)
                     }
+                    .padding(.horizontal, Sourdough.Spacing.screenMargin)
                 }
-                .padding(.horizontal, Sourdough.Spacing.screenMargin)
             }
 
             // Done button
@@ -1461,22 +1851,5 @@ private struct RecipeFilterSheet: View {
             .padding(.bottom, Sourdough.Spacing.rowInternals)
         }
         .background(Sourdough.Colors.canvas)
-    }
-
-    private func filterChip(_ label: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(label)
-                .foregroundStyle(isSelected ? Sourdough.Colors.onAction : Sourdough.Colors.mutedInk)
-                .sourdoughTextStyle(.caption)
-                .padding(.horizontal, Sourdough.Spacing.screenMargin)
-                .frame(height: 36)
-                .background(isSelected ? Sourdough.Ramp.sage500 : Sourdough.Colors.sunken)
-                .overlay(
-                    Capsule()
-                        .stroke(isSelected ? Color.clear : Sourdough.Colors.interactiveBorder, lineWidth: 1)
-                )
-                .clipShape(Capsule())
-        }
-        .buttonStyle(.plain)
     }
 }

@@ -14,6 +14,7 @@ struct Profile: Codable {
     var subscriptionType: String?
     var dietaryUpdatedAt: Date?
     var nicknameUpdatedAt: Date?
+    var emailVerifiedAt: Date?
     var createdAt: Date?
     var updatedAt: Date?
 
@@ -29,6 +30,7 @@ struct Profile: Codable {
         case subscriptionType = "subscription_type"
         case dietaryUpdatedAt = "dietary_updated_at"
         case nicknameUpdatedAt = "nickname_updated_at"
+        case emailVerifiedAt = "email_verified_at"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
@@ -67,6 +69,7 @@ protocol ProfileServicing {
     func updateDisplayName(_ displayName: String, userId: UUID) async throws -> Profile
     func updateCookingSkillLevel(_ level: Int, userId: UUID) async throws -> Profile
     func saveOnboardingAnswers(displayName: String, dietType: String, restrictions: String, allergies: String, cookingSkillLevel: Int, userId: UUID) async throws -> Profile
+    func markEmailVerified(userId: UUID) async throws
 }
 
 final class SupabaseProfileService: ProfileServicing {
@@ -266,6 +269,15 @@ final class SupabaseProfileService: ProfileServicing {
             errorMessage: "Failed to save your preferences. Please try again."
         )
     }
+
+    func markEmailVerified(userId: UUID) async throws {
+        let now = Self.iso8601.string(from: Date())
+        try await client
+            .from("profiles")
+            .update(["email_verified_at": now])
+            .eq("id", value: userId.uuidString)
+            .execute()
+    }
 }
 
 final class MockProfileService: ProfileServicing {
@@ -316,4 +328,6 @@ final class MockProfileService: ProfileServicing {
     func saveOnboardingAnswers(displayName: String, dietType: String, restrictions: String, allergies: String, cookingSkillLevel: Int, userId: UUID) async throws -> Profile {
         Profile(id: userId, nickname: "Chef", displayName: displayName, dietaryPreference: dietType, dietaryRestrictions: restrictions, allergies: allergies, cookingSkillLevel: cookingSkillLevel, updatedAt: Date())
     }
+
+    func markEmailVerified(userId: UUID) async throws {}
 }

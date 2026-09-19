@@ -11,7 +11,7 @@ import PhosphorSwift
 }
 
 /// Sub-screens pushed from the profile screen onto the enclosing per-tab `NavigationStack`.
-enum ProfilePush: Hashable { case settings, username, displayName, changePassword, changeEmail }
+enum ProfilePush: Hashable { case settings, username, displayName, changePassword, changeEmail, help }
 
 // MARK: - Profile screen
 
@@ -110,10 +110,14 @@ struct AccountSettingsView: View {
 
             ScrollView(showsIndicators: false) {
                 VStack(spacing: Sourdough.Spacing.betweenBlocks) {
+                    if !session.isEmailVerified {
+                        EmailVerificationBanner()
+                    }
                     StatsSection()
                     cookingGroup
                     accountGroup
                     settingsRow
+                    moreGroup
                     footerLinks
                     dangerZone
                 }
@@ -153,6 +157,7 @@ struct AccountSettingsView: View {
             case .displayName:    ProfileTextEditScreen(field: .displayName)
             case .changePassword: ChangePasswordView()
             case .changeEmail:    ChangeEmailView()
+            case .help:           GetHelpView()
             }
         }
         .sheet(item: $editingField) { field in
@@ -241,7 +246,7 @@ struct AccountSettingsView: View {
                             .clipShape(Capsule())
                     }
                     .buttonStyle(.plain)
-                    .sheet(isPresented: $showPaywall) {
+                    .fullScreenCover(isPresented: $showPaywall) {
                         UseUpPaywallView { showPaywall = false }
                     }
                 }
@@ -351,6 +356,23 @@ struct AccountSettingsView: View {
         .sourdoughElevation(.hairline, cornerRadius: Sourdough.Radius.card)
     }
 
+    private var moreGroup: some View {
+        profileGroup("More", footer: "Questions, bugs, or ideas? We're here.") {
+            settingRow(icon: Ph.question.regular, tint: Sourdough.Ramp.linen100, ink: Sourdough.Ramp.linen500,
+                       label: "Get Help", value: "", valueMuted: false, first: true) {
+                pushedScreen = .help
+            }
+            settingRow(icon: Ph.eyeSlash.regular, tint: Sourdough.Ramp.honey100, ink: Sourdough.Ramp.honey700,
+                       label: "Privacy Policy", value: "", valueMuted: false, first: false) {
+                UIApplication.shared.open(URL(string: "https://www.useupnow.com/privacy")!)
+            }
+            settingRow(icon: Ph.note.regular, tint: Sourdough.Ramp.sage100, ink: Sourdough.Ramp.sage600,
+                       label: "Terms & Conditions", value: "", valueMuted: false, first: false) {
+                UIApplication.shared.open(URL(string: "https://www.useupnow.com/terms")!)
+            }
+        }
+    }
+
     @ViewBuilder
     private func profileGroup<Rows: View>(
         _ title: String,
@@ -430,14 +452,6 @@ struct AccountSettingsView: View {
 
     private var footerLinks: some View {
         VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {
-            Link(destination: URL(string: "https://www.useupnow.com/privacy")!) {
-                Text("Privacy Policy")
-                    .sourdoughTextStyle(.body, color: Sourdough.Colors.mutedInk)
-            }
-            Link(destination: URL(string: "https://www.useupnow.com/terms")!) {
-                Text("Terms & Conditions")
-                    .sourdoughTextStyle(.body, color: Sourdough.Colors.mutedInk)
-            }
             Button { session.signOut() } label: {
                 Text("Sign Out")
                     .sourdoughTextStyle(.body, color: Sourdough.Colors.destructive)
@@ -514,7 +528,7 @@ struct AccountSettingsView: View {
     private func save() {
         guard hasChanges else { return }
 
-        let hasNewPhoto = selectedImage != nil
+        _ = selectedImage != nil
         let hasDietChange = selectedDietType != session.currentUserDietaryPreference
         let hasRestrictionsChange = selectedRestrictions != session.currentUserDietaryRestrictions
         let hasAllergiesChange = selectedAllergies != session.currentUserAllergies || selectedCustomAllergy != session.currentUserCustomAllergy

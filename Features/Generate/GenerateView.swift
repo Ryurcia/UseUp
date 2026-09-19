@@ -44,10 +44,6 @@ struct GenerateView: View {
         !selectedStorageFilters.isEmpty || !selectedCategories.isEmpty
     }
 
-    private var isLimitExhausted: Bool {
-        activityStore.generationsToday >= 5
-    }
-
     // Cached filter result — recomputed via recomputeFilteredIngredients() on relevant changes,
     // not on every body render (filter + O(n log n) sort).
     private func recomputeFilteredIngredients() {
@@ -90,9 +86,6 @@ struct GenerateView: View {
                 .padding(.top, Sourdough.Spacing.rowInternals)
                 .padding(.bottom, Sourdough.Spacing.iconToLabel)
 
-                generationCountRow
-                    .padding(.horizontal, Sourdough.Spacing.screenMargin)
-                    .padding(.bottom, Sourdough.Spacing.insideChip)
             }
 
             Group {
@@ -125,17 +118,13 @@ struct GenerateView: View {
             )
             .presentationDetents([.large])
         }
-        .sheet(isPresented: $showPaywall) {
+        .fullScreenCover(isPresented: $showPaywall) {
             UseUpPaywallView { showPaywall = false }
         }
         .fullScreenCover(isPresented: $showSnapChef) {
             SnapChefFlow(recipeGenerator: recipeGenerator, onFinished: {
                 showSnapChef = false
-                Task { await activityStore.fetchGenerationsToday() }
             })
-        }
-        .task {
-            await activityStore.fetchGenerationsToday()
         }
         .onAppear {
             seedOptionsFromProfile()
@@ -164,14 +153,26 @@ struct GenerateView: View {
             session.requestedQuickGenerateIngredientID = nil
             guard let ingredient = pantryStore.ingredients.first(where: { $0.id == id }), !ingredient.isExpired else { return }
 
-            guard !isLimitExhausted else { return }
-
             // Quick Generation always starts from the baseline defaults — not whatever the user
             // last left `options` at in a manual session — then layers on saved profile prefs,
             // same as a fresh visit to this tab would.
             options = GenerationOptions()
             seedOptionsFromProfile()
             selectedIngredientIDs = [id]
+
+            generationTask?.cancel()
+            generationTask = Task { await runGeneration() }
+        }
+        .onChange(of: session.requestedQuickGenerateIngredientIDs) { _, ids in
+            guard let ids, !ids.isEmpty else { return }
+            session.requestedQuickGenerateIngredientIDs = nil
+            let valid = Set(pantryStore.ingredients.filter { ids.contains($0.id) && !$0.isExpired }.map(\.id))
+            guard !valid.isEmpty else { return }
+
+            // Same "start from baseline defaults" rule as the single-ingredient quick generate above.
+            options = GenerationOptions()
+            seedOptionsFromProfile()
+            selectedIngredientIDs = valid
 
             generationTask?.cancel()
             generationTask = Task { await runGeneration() }
@@ -343,8 +344,6 @@ struct GenerateView: View {
                     .padding(.horizontal, Sourdough.Spacing.screenMargin)
                     .padding(.bottom, Sourdough.Spacing.underTitle + Sourdough.Spacing.underTitle / 3)
                 }
-                .disabled(isLimitExhausted)
-                .opacity(isLimitExhausted ? 0.4 : 1)
                 .overlay(alignment: .bottom) {
                     LinearGradient(
                         colors: [Sourdough.Colors.canvas, Sourdough.Colors.canvas.opacity(0)],
@@ -356,20 +355,14 @@ struct GenerateView: View {
                 }
             }
 
-            if isLimitExhausted {
-                proResetTimerView
-                    .padding(.horizontal, Sourdough.Spacing.screenMargin)
-                    .padding(.bottom, Sourdough.Spacing.rowInternals)
-            } else {
-                VStack(spacing: Sourdough.Spacing.insideChip) {
-                    stepButton(label: "Continue with \(selectedIngredientIDs.count) ingredient\(selectedIngredientIDs.count == 1 ? "" : "s")", disabled: selectedIngredientIDs.isEmpty) {
-                        goToStep(.options)
-                    }
-                    snapChefButton
+            VStack(spacing: Sourdough.Spacing.insideChip) {
+                stepButton(label: "Continue with \(selectedIngredientIDs.count) ingredient\(selectedIngredientIDs.count == 1 ? "" : "s")", disabled: selectedIngredientIDs.isEmpty) {
+                    goToStep(.options)
                 }
-                .padding(.horizontal, Sourdough.Spacing.screenMargin)
-                .padding(.bottom, Sourdough.Spacing.rowInternals)
+                snapChefButton
             }
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+            .padding(.bottom, Sourdough.Spacing.rowInternals)
         }
     }
 
@@ -430,7 +423,7 @@ struct GenerateView: View {
                             Text("·")
                                 .foregroundStyle(Sourdough.Colors.faintInk)
                             Text(days == 0 ? "Expires today" : "Expires in \(days)d")
-                                .foregroundStyle(Sourdough.FreshnessState(daysUntilExpiration: days).style.label)
+                                .foregroundStyle(Sourdough.Colors.destructive)
                                 .sourdoughTextStyle(.caption)
                         }
                     }
@@ -475,11 +468,13 @@ struct GenerateView: View {
                 .padding(.bottom, Sourdough.Spacing.rowInternals)
 
             ScrollView(showsIndicators: false) {
-                VStack(spacing: Sourdough.Spacing.insideChip) {
+                VStack(spacing: 0) {
                     Button { goToStep(.selectDiet) } label: {
                         OptionsRow(label: "Diet", value: options.dietType.rawValue)
                     }
                     .buttonStyle(.plain)
+
+                    Divider().foregroundStyle(Sourdough.Colors.hairline)
 
                     Button { goToStep(.selectRestrictions) } label: {
                         OptionsRow(
@@ -489,11 +484,15 @@ struct GenerateView: View {
                     }
                     .buttonStyle(.plain)
 
+                    Divider().foregroundStyle(Sourdough.Colors.hairline)
+
                     Button { goToStep(.selectAllergies) } label: {
                         let parts = selectedAllergies.map(\.rawValue) + (customAllergy.isEmpty ? [] : [customAllergy])
                         OptionsRow(label: "Allergies", value: parts.isEmpty ? "None" : parts.joined(separator: ", "))
                     }
                     .buttonStyle(.plain)
+
+                    Divider().foregroundStyle(Sourdough.Colors.hairline)
 
                     Button { goToStep(.selectCookTime) } label: {
                         OptionsRow(
@@ -503,7 +502,11 @@ struct GenerateView: View {
                     }
                     .buttonStyle(.plain)
 
+                    Divider().foregroundStyle(Sourdough.Colors.hairline)
+
                     caloriesToggleRow
+
+                    Divider().foregroundStyle(Sourdough.Colors.hairline)
 
                     Button { goToStep(.selectCuisine) } label: {
                         OptionsRow(label: "Cuisine", value: options.cuisine?.rawValue ?? "Any")
@@ -515,13 +518,9 @@ struct GenerateView: View {
             }
 
             VStack(spacing: Sourdough.Spacing.rowInternals) {
-                if isLimitExhausted {
-                    proResetTimerView
-                } else {
-                    stepButton(label: "Generate Recipes", disabled: false) {
-                        generationTask?.cancel()
-                        generationTask = Task { await runGeneration() }
-                    }
+                stepButton(label: "Generate Recipes", disabled: false) {
+                    generationTask?.cancel()
+                    generationTask = Task { await runGeneration() }
                 }
 
                 Button { goToStep(.selectIngredients, forward: false) } label: {
@@ -782,7 +781,7 @@ struct GenerateView: View {
                 HStack(spacing: Sourdough.Spacing.rowInternals) {
                     Text("Calories")
                         .foregroundStyle(Sourdough.Colors.ink)
-                        .sourdoughTextStyle(.body)
+                        .sourdoughTextStyle(.rowTitle)
                     Spacer()
                     Toggle("", isOn: Binding(
                         get: { caloriesEnabled },
@@ -795,17 +794,16 @@ struct GenerateView: View {
                     ))
                     .labelsHidden()
                 }
-                .padding(.horizontal, Sourdough.Spacing.screenMargin)
-                .frame(height: 52)
+                .frame(height: 64)
 
                 if caloriesEnabled {
                     Divider()
-                        .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                        .foregroundStyle(Sourdough.Colors.hairline)
 
                     HStack {
                         Text("Target per serving")
                             .foregroundStyle(Sourdough.Colors.mutedInk)
-                            .sourdoughTextStyle(.subhead)
+                            .sourdoughTextStyle(.body)
                         Spacer()
                         TextField("500", value: Binding(
                             get: { options.targetCalories ?? 500 },
@@ -819,18 +817,11 @@ struct GenerateView: View {
 
                         Text("cal")
                             .foregroundStyle(Sourdough.Colors.mutedInk)
-                            .sourdoughTextStyle(.subhead)
+                            .sourdoughTextStyle(.body)
                     }
-                    .padding(.horizontal, Sourdough.Spacing.screenMargin)
-                    .padding(.vertical, Sourdough.Spacing.rowInternals)
+                    .padding(.vertical, Sourdough.Spacing.screenMargin)
                 }
             }
-            .background(Sourdough.Colors.sunken)
-            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous)
-                    .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
-            )
 
             if let cal = options.targetCalories, cal > 800 {
                 HStack(spacing: Sourdough.Spacing.iconToLabel) {
@@ -942,101 +933,69 @@ struct GenerateView: View {
                     .sourdoughTextStyle(.subhead)
                 Spacer()
             } else {
+                HStack(spacing: Sourdough.Spacing.rowInternals) {
+                    Spacer()
+
+                    Button {
+                        generationTask?.cancel()
+                        generationTask = Task { await runGeneration() }
+                    } label: {
+                        Label {
+                            Text("Regenerate")
+                                .foregroundStyle(Sourdough.Colors.mutedInk)
+                                .sourdoughTextStyle(.subhead)
+                        } icon: {
+                            Ph.arrowClockwise.regular.frame(width: 15, height: 15)
+                        }
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(Sourdough.Colors.sunken)
+                            .clipShape(Capsule())
+                            .overlay(Capsule().stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        goToStep(.selectIngredients, forward: false)
+                        recipes = []
+                        generationError = nil
+                        selectedIngredientIDs.removeAll()
+                    } label: {
+                        Label {
+                            Text("Generate new")
+                                .foregroundStyle(Sourdough.Colors.mutedInk)
+                                .sourdoughTextStyle(.subhead)
+                        } icon: {
+                            Ph.sparkle.regular.frame(width: 15, height: 15)
+                        }
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(Sourdough.Colors.sunken)
+                            .clipShape(Capsule())
+                            .overlay(Capsule().stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                .padding(.top, Sourdough.Spacing.rowInternals)
+                .padding(.bottom, Sourdough.Spacing.insideChip)
+
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 0) {
-                        HStack(spacing: Sourdough.Spacing.rowInternals) {
-                            Spacer()
-
-                            Button {
-                                generationTask?.cancel()
-                                generationTask = Task { await runGeneration() }
-                            } label: {
-                                Label {
-                                    Text("Regenerate")
-                                        .foregroundStyle(Sourdough.Colors.mutedInk)
-                                        .sourdoughTextStyle(.caption)
-                                } icon: {
-                                    Ph.arrowClockwise.regular.frame(width: 13, height: 13)
+                        GeneratedRecipeCardRow(
+                            recipes: recipes,
+                            isSaved: { savedRecipesStore.isSaved($0) },
+                            onToggleSave: { recipe in
+                                if savedRecipesStore.isSaved(recipe) {
+                                    savedRecipesStore.unsaveRecipe(recipe)
+                                } else {
+                                    savedRecipesStore.saveGeneratedRecipe(recipe)
                                 }
-                                    .foregroundStyle(Sourdough.Colors.mutedInk)
-                                    .padding(.horizontal, Sourdough.Spacing.rowInternals)
-                                    .padding(.vertical, 7)
-                                    .background(Sourdough.Colors.sunken)
-                                    .clipShape(Capsule())
-                                    .overlay(Capsule().stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1))
                             }
-                            .buttonStyle(.plain)
-
-                            Button {
-                                goToStep(.selectIngredients, forward: false)
-                                recipes = []
-                                generationError = nil
-                                selectedIngredientIDs.removeAll()
-                            } label: {
-                                Label {
-                                    Text("Generate new")
-                                        .foregroundStyle(Sourdough.Colors.mutedInk)
-                                        .sourdoughTextStyle(.caption)
-                                } icon: {
-                                    Ph.sparkle.regular.frame(width: 13, height: 13)
-                                }
-                                    .foregroundStyle(Sourdough.Colors.mutedInk)
-                                    .padding(.horizontal, Sourdough.Spacing.rowInternals)
-                                    .padding(.vertical, 7)
-                                    .background(Sourdough.Colors.sunken)
-                                    .clipShape(Capsule())
-                                    .overlay(Capsule().stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                        )
                         .padding(.top, Sourdough.Spacing.rowInternals)
-                        .padding(.bottom, Sourdough.Spacing.insideChip)
-
-                        Label {
-                            Text("TOP PICK FOR YOU")
-                                .foregroundStyle(Sourdough.Ramp.honey700)
-                                .sourdoughTextStyle(.sectionHead)
-                        } icon: {
-                            Ph.lightning.fill.frame(width: 11, height: 11)
-                        }
-                            .foregroundStyle(Sourdough.Ramp.honey700)
-                            .padding(.horizontal, Sourdough.Spacing.screenMargin)
-                            .padding(.top, Sourdough.Spacing.rowInternals)
-                            .padding(.bottom, Sourdough.Spacing.insideChip)
-
-                        NavigationLink {
-                            RecipeDetailView(recipe: recipes[0])
-                        } label: {
-                            heroRecipeCard(recipes[0])
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.horizontal, Sourdough.Spacing.screenMargin)
-
-                        if recipes.count > 1 {
-                            HStack {
-                                Text("More for you")
-                                    .foregroundStyle(Sourdough.Colors.ink)
-                                    .sourdoughTextStyle(.title2)
-                                Spacer()
-                            }
-                            .padding(.horizontal, Sourdough.Spacing.screenMargin)
-                            .padding(.top, Sourdough.Spacing.screenMargin)
-                            .padding(.bottom, Sourdough.Spacing.rowInternals)
-
-                            VStack(spacing: Sourdough.Spacing.rowInternals) {
-                                ForEach(recipes.dropFirst()) { recipe in
-                                    NavigationLink {
-                                        RecipeDetailView(recipe: recipe)
-                                    } label: {
-                                        generatedRecipeRow(recipe)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                            .padding(.horizontal, Sourdough.Spacing.screenMargin)
-                            .padding(.bottom, Sourdough.Spacing.rowInternals)
-                        }
                     }
                     .padding(.bottom, Sourdough.Spacing.rowInternals)
                 }
@@ -1045,246 +1004,6 @@ struct GenerateView: View {
         }
     }
 
-    private func heroRecipeCard(_ recipe: Recipe) -> some View {
-        let tags: [String] = {
-            var t: [String] = []
-            if recipe.dietType != "any" { t.append(recipe.dietType.capitalized) }
-            t.append(contentsOf: recipe.dietaryRestrictions)
-            return Array(t.prefix(2)) + (t.count > 2 ? ["+\(t.count - 2) more"] : [])
-        }()
-
-        return OnDarkHeroCard(
-            image: Image("AI_GEN"),
-            title: recipe.title,
-            meta: "\(recipe.macros.calories) cal · \(recipe.macros.proteinG)g protein",
-            tags: tags
-        ) {
-            if !recipe.ingredientsUsed.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 4) {
-                        ForEach(recipe.ingredientsUsed.prefix(6), id: \.id) { ingredient in
-                            Text(ingredient.name.capitalized)
-                                .foregroundStyle(Sourdough.Colors.heroTitleOnDark)
-                                .sourdoughTextStyle(.caption)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.white.opacity(0.2))
-                                .clipShape(Capsule())
-                        }
-                    }
-                }
-                .padding(.bottom, Sourdough.Spacing.iconToLabel)
-            }
-        }
-        .overlay(alignment: .topLeading) {
-            AIGeneratedBadge()
-                .padding(Sourdough.Spacing.rowInternals)
-        }
-        .overlay(alignment: .topTrailing) {
-            HStack(spacing: Sourdough.Spacing.insideChip) {
-                let isSaved = savedRecipesStore.isSaved(recipe)
-                Button {
-                    if isSaved { savedRecipesStore.unsaveRecipe(recipe) }
-                    else { savedRecipesStore.saveGeneratedRecipe(recipe) }
-                } label: {
-                    Group {
-                        if isSaved {
-                            Ph.bookmark.fill
-                        } else {
-                            Ph.bookmark.regular
-                        }
-                    }
-                    .frame(width: 14, height: 14)
-                    .foregroundStyle(isSaved ? Sourdough.Ramp.sageDark : Sourdough.Colors.heroTitleOnDark)
-                    .frame(width: 36, height: 36)
-                    .background(.ultraThinMaterial)
-                    .clipShape(Circle())
-                }
-                .buttonStyle(.plain)
-                timePill(recipe.timeMinutes)
-            }
-            .padding(Sourdough.Spacing.rowInternals)
-        }
-    }
-
-    private func timePill(_ minutes: Int) -> some View {
-        Label {
-            Text("\(minutes) min")
-                .foregroundStyle(Sourdough.Colors.heroTitleOnDark)
-                .sourdoughTextStyle(.caption)
-        } icon: {
-            Ph.clock.regular.frame(width: 12, height: 12)
-        }
-            .foregroundStyle(Sourdough.Colors.heroTitleOnDark)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(.black.opacity(0.45))
-            .clipShape(Capsule())
-    }
-
-    private func generatedRecipeRow(_ recipe: Recipe) -> some View {
-        VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
-            HStack(spacing: 4) {
-                Ph.sparkle.regular
-                    .frame(width: 10, height: 10)
-                Text("AI Generated")
-                    .foregroundStyle(Sourdough.Colors.onAction)
-                    .sourdoughTextStyle(.caption)
-            }
-            .foregroundStyle(Sourdough.Colors.onAction)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(
-                LinearGradient(
-                    colors: [Sourdough.Colors.action, Sourdough.Ramp.terracotta400],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-            )
-            .clipShape(Capsule())
-
-            HStack(alignment: .top, spacing: Sourdough.Spacing.insideChip) {
-                Text(recipe.title)
-                    .foregroundStyle(Sourdough.Colors.ink)
-                    .sourdoughTextStyle(.rowTitle)
-                    .lineLimit(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                let isSaved = savedRecipesStore.isSaved(recipe)
-                Button {
-                    if isSaved { savedRecipesStore.unsaveRecipe(recipe) }
-                    else { savedRecipesStore.saveGeneratedRecipe(recipe) }
-                } label: {
-                    Group {
-                        if isSaved {
-                            Ph.bookmark.fill
-                        } else {
-                            Ph.bookmark.regular
-                        }
-                    }
-                    .frame(width: 15, height: 15)
-                    .foregroundStyle(isSaved ? Sourdough.Ramp.sage500 : Sourdough.Colors.mutedInk)
-                }
-                .buttonStyle(.plain)
-            }
-
-            Label {
-                Text("\(recipe.timeMinutes) min")
-                    .foregroundStyle(Sourdough.Colors.mutedInk)
-                    .sourdoughTextStyle(.subhead)
-            } icon: {
-                Ph.clock.regular.frame(width: 13, height: 13)
-            }
-                .foregroundStyle(Sourdough.Colors.mutedInk)
-
-            if !recipe.ingredientsUsed.isEmpty {
-                let displayed = Array(recipe.ingredientsUsed.prefix(5))
-                let overflow = recipe.ingredientsUsed.count - displayed.count
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 4) {
-                        ForEach(displayed, id: \.id) { ing in
-                            ingredientChip(ing.name)
-                        }
-                        if overflow > 0 {
-                            ingredientChip("+\(overflow) more")
-                        }
-                    }
-                    .padding(.horizontal, 1)
-                }
-            }
-        }
-        .padding(Sourdough.Spacing.screenMargin)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Sourdough.Colors.card)
-        .overlay(
-            RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous)
-                .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
-    }
-
-    private func ingredientChip(_ text: String) -> some View {
-        Text(text.capitalized)
-            .foregroundStyle(Sourdough.Colors.onAction)
-            .sourdoughTextStyle(.caption)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .background(Sourdough.Ramp.sage500)
-            .clipShape(Capsule())
-    }
-
-    // MARK: - Pro Reset Timer
-
-    @ViewBuilder
-    private var proResetTimerView: some View {
-        VStack(spacing: 4) {
-            Text("Daily limit reached")
-                .foregroundStyle(Sourdough.Colors.mutedInk)
-                .sourdoughTextStyle(.subhead)
-
-            if let resetDate = activityStore.nextDailyResetDate {
-                HStack(spacing: Sourdough.Spacing.insideChip) {
-                    Ph.clock.regular
-                        .frame(width: 14, height: 14)
-                    TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                        let remaining = max(0, resetDate.timeIntervalSince(ctx.date))
-                        Text(formatCountdown(remaining))
-                            .sourdoughTextStyle(.numeric)
-                    }
-                    Text("until next 5")
-                        .sourdoughTextStyle(.caption)
-                }
-                .foregroundStyle(Sourdough.Colors.ink)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: 52)
-        .background(Sourdough.Colors.sunken)
-        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous)
-                .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
-        )
-    }
-
-    private func formatCountdown(_ seconds: TimeInterval) -> String {
-        let h = Int(seconds) / 3600
-        let m = (Int(seconds) % 3600) / 60
-        let s = Int(seconds) % 60
-        return h > 0
-            ? String(format: "%d:%02d:%02d", h, m, s)
-            : String(format: "%02d:%02d", m, s)
-    }
-
-    // MARK: - Generation Count Row
-
-    private var generationCountRow: some View {
-        let remaining = max(0, 5 - activityStore.generationsToday)
-        let label = "\(remaining) Generation\(remaining == 1 ? "" : "s") left for the day"
-
-        return HStack(spacing: Sourdough.Spacing.insideChip) {
-            HStack(spacing: 4) {
-                Ph.lightning.fill
-                    .frame(width: 13, height: 13)
-                Text(label)
-                    .foregroundStyle(Sourdough.Colors.onAction)
-                    .sourdoughTextStyle(.subhead)
-            }
-            .foregroundStyle(Sourdough.Colors.onAction)
-            .padding(.horizontal, Sourdough.Spacing.rowInternals)
-            .padding(.vertical, 8)
-            .background(
-                LinearGradient(
-                    colors: [Sourdough.Ramp.sage600, Sourdough.Ramp.sage500],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-            )
-            .clipShape(Capsule())
-
-            Spacer()
-        }
-    }
 
     // MARK: - Navigation Helpers
 
@@ -1418,21 +1137,12 @@ struct GenerateView: View {
             .filter { selectedIngredientIDs.contains($0.id) && !$0.isExpired && $0.isExpiringSoon }
             .map { $0.name }
 
-        options.diversifyIngredients = true
-
         do {
             recipes = try await recipeGenerator.generateRecipes(
                 for: names,
                 options: options
             )
-            // The edge function records the `recipe_generated` row server-side; just reconcile.
-            activityStore.noteRecipeGeneratedRemotely()
             goToStep(.results)
-        } catch RecipeGenerationError.limitExhausted {
-            recipes = []
-            // Server rejected on quota — resync the counter so the UI reflects the real limit state.
-            await activityStore.fetchGenerationsToday()
-            goToStep(.selectIngredients, forward: false)
         } catch {
             recipes = []
             generationError = error
@@ -1465,24 +1175,17 @@ private struct OptionsRow: View {
         HStack(spacing: Sourdough.Spacing.rowInternals) {
             Text(label)
                 .foregroundStyle(Sourdough.Colors.ink)
-                .sourdoughTextStyle(.body)
+                .sourdoughTextStyle(.rowTitle)
             Spacer()
             Text(value)
                 .foregroundStyle(Sourdough.Colors.mutedInk)
-                .sourdoughTextStyle(.subhead)
+                .sourdoughTextStyle(.body)
                 .lineLimit(1)
             Ph.caretRight.regular
                 .frame(width: 12, height: 12)
                 .foregroundStyle(Sourdough.Colors.faintInk)
         }
-        .padding(.horizontal, Sourdough.Spacing.screenMargin)
-        .frame(height: 52)
-        .background(Sourdough.Colors.sunken)
-        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous)
-                .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
-        )
+        .frame(height: 64)
     }
 }
 

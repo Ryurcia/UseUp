@@ -22,7 +22,31 @@ protocol FoodPhotoIdentifying {
 }
 
 final class MockFoodPhotoScanner: FoodPhotoIdentifying {
-    func identifyItems(in imageData: Data) async throws -> [ScannedFoodItem] { [] }
+    func identifyItems(in imageData: Data) async throws -> [ScannedFoodItem] {
+        try? await Task.sleep(for: .seconds(1))
+        return [
+            ScannedFoodItem(
+                name: "chicken breast", category: .meat, estimatedQuantity: "1.2 lb",
+                isPackaged: true, suggestBarcodeScan: false, likelyFrozen: false,
+                suggestedStorage: "fridge", confidence: 0.93, estimatedShelfLifeDays: 2
+            ),
+            ScannedFoodItem(
+                name: "broccoli", category: .produce, estimatedQuantity: "2 heads",
+                isPackaged: false, suggestBarcodeScan: false, likelyFrozen: false,
+                suggestedStorage: "fridge", confidence: 0.88, estimatedShelfLifeDays: 5
+            ),
+            ScannedFoodItem(
+                name: "whole milk", category: .dairy, estimatedQuantity: "1 gal",
+                isPackaged: true, suggestBarcodeScan: true, likelyFrozen: false,
+                suggestedStorage: "fridge", confidence: 0.95, estimatedShelfLifeDays: 7
+            ),
+            ScannedFoodItem(
+                name: "mystery leftovers", category: .other, estimatedQuantity: "1 container",
+                isPackaged: false, suggestBarcodeScan: false, likelyFrozen: false,
+                suggestedStorage: "fridge", confidence: 0.42, estimatedShelfLifeDays: 3
+            ),
+        ]
+    }
 }
 
 /// Calls the `scan-food-photo` Supabase edge function, which holds the Gemini API key, runs the

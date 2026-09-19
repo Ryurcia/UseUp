@@ -15,6 +15,11 @@ enum OpenFoodFactsService {
     }
 
     static func lookup(barcode: String) async throws -> ProductInfo {
+        if TestingMode.isEnabled {
+            try? await Task.sleep(for: .milliseconds(400))
+            return ProductInfo(name: "Mock Scanned Product", quantity: "12 oz", category: .other, barcode: barcode)
+        }
+
         guard let url = URL(string: "https://world.openfoodfacts.org/api/v0/product/\(barcode).json") else {
             throw LookupError.notFound
         }

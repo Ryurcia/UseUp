@@ -2,10 +2,6 @@ import Foundation
 
 struct AIRecipeResponse: Codable {
     let recipes: [AIRecipe]
-    /// Snap Chef only — how many free re-rolls remain for the current recipe, and whether this
-    /// call consumed a daily generation. Absent (nil) for standard generation.
-    let freeRegensRemaining: Int?
-    let countedAgainstDailyLimit: Bool?
 }
 
 struct AIRecipe: Codable {
@@ -19,15 +15,20 @@ struct AIRecipe: Codable {
     let steps: [String]
     let macros: AIMacros
     let substitutions: [AISubstitution]?
+    let tags: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case title, summary, servings, cuisine, steps, macros, substitutions
+        case title, summary, servings, cuisine, steps, macros, substitutions, tags
         case timeMinutes = "time_minutes"
         case ingredientsUsed = "ingredients_used"
         case missingIngredients = "missing_ingredients"
     }
 
-    func toRecipe() -> Recipe {
+    /// `dietType`/`dietaryRestrictions` come from the `GenerationOptions` the request was
+    /// made with, not the LLM response — the response schema doesn't echo them back, but
+    /// the prompt already instructs Gemini to honor them as hard constraints, so the
+    /// request-time options are the source of truth for what got persisted.
+    func toRecipe(dietType: String, dietaryRestrictions: [String]) -> Recipe {
         let recipeCuisine = Cuisine(databaseValue: cuisine) ?? .other
 
         let used = ingredientsUsed.map {
@@ -49,6 +50,16 @@ struct AIRecipe: Codable {
             RecipeSubstitution(ingredient: $0.ingredient, substitute: $0.substitute, note: $0.note)
         }
 
+        let deterministicTags = Recipe.deterministicTags(
+            timeMinutes: timeMinutes,
+            calories: macros.calories,
+            proteinG: macros.proteinG
+        )
+        var mergedTags: [String] = []
+        for tag in deterministicTags + (tags ?? []) where !mergedTags.contains(tag) {
+            mergedTags.append(tag)
+        }
+
         return Recipe(
             title: title,
             summary: summary,
@@ -62,6 +73,9 @@ struct AIRecipe: Codable {
             isUserShared: false,
             cuisine: recipeCuisine,
             rating: 0,
+            dietType: dietType,
+            dietaryRestrictions: dietaryRestrictions,
+            tags: mergedTags,
             isAIGenerated: true,
             substitutions: subs
         )

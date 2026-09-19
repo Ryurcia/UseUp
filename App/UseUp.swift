@@ -9,7 +9,7 @@ struct UseUp: App {
     @StateObject private var statsStore = StatsStore()
     @StateObject private var revenueCatManager = RevenueCatManager.shared
     @Environment(\.scenePhase) private var scenePhase
-    private let recipeGenerator: RecipeGenerating = SupabaseRecipeGenerator()
+    private let recipeGenerator: RecipeGenerating = TestingMode.isEnabled ? MockRecipeGenerator() : SupabaseRecipeGenerator()
 
     init() {
         RevenueCatManager.shared.configure()

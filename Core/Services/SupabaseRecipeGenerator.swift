@@ -8,32 +8,30 @@ final class SupabaseRecipeGenerator: RecipeGenerating {
     private let client = SupabaseManager.client
 
     func generateRecipes(for ingredientNames: [String], options: GenerationOptions, count: Int) async throws -> [Recipe] {
-        let response = try await invoke(ingredientNames, options: options, count: count, intent: "standard")
-        let recipes = response.recipes.prefix(count).map { $0.toRecipe() }
+        let response = try await invoke(ingredientNames, options: options, count: count)
+        let recipes = response.recipes.prefix(count).map {
+            $0.toRecipe(
+                dietType: options.dietType.rawValue.lowercased(),
+                dietaryRestrictions: options.dietaryRestrictions.map(\.rawValue)
+            )
+        }
         guard !recipes.isEmpty else { throw RecipeGenerationError.emptyResponse }
         return recipes
     }
 
-    func snapChefRecipe(for ingredientNames: [String], options: GenerationOptions, isRegeneration: Bool) async throws -> SnapChefGeneration {
-        let response = try await invoke(
-            ingredientNames,
-            options: options,
-            count: 1,
-            intent: isRegeneration ? "snap_chef_regenerate" : "snap_chef"
-        )
-        guard let recipe = response.recipes.first?.toRecipe() else { throw RecipeGenerationError.emptyResponse }
-        return SnapChefGeneration(
-            recipe: recipe,
-            freeRegensRemaining: response.freeRegensRemaining ?? 0,
-            countedAgainstDailyLimit: response.countedAgainstDailyLimit ?? true
-        )
+    func snapChefRecipe(for ingredientNames: [String], options: GenerationOptions) async throws -> SnapChefGeneration {
+        let response = try await invoke(ingredientNames, options: options, count: 1)
+        guard let recipe = response.recipes.first?.toRecipe(
+            dietType: options.dietType.rawValue.lowercased(),
+            dietaryRestrictions: options.dietaryRestrictions.map(\.rawValue)
+        ) else { throw RecipeGenerationError.emptyResponse }
+        return SnapChefGeneration(recipe: recipe)
     }
 
     private func invoke(
         _ ingredientNames: [String],
         options: GenerationOptions,
-        count: Int,
-        intent: String
+        count: Int
     ) async throws -> AIRecipeResponse {
         let cleaned = ingredientNames
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
@@ -44,8 +42,7 @@ final class SupabaseRecipeGenerator: RecipeGenerating {
         let body = RecipeGenerationRequest(
             ingredientNames: cleaned,
             options: .init(options),
-            count: count,
-            intent: intent
+            count: count
         )
 
         do {
@@ -72,7 +69,6 @@ private struct RecipeGenerationRequest: Encodable {
     let ingredientNames: [String]
     let options: Options
     let count: Int
-    let intent: String
 
     struct Options: Encodable {
         let dietType: String
@@ -83,7 +79,6 @@ private struct RecipeGenerationRequest: Encodable {
         let cuisine: String?
         let skillLevel: Int
         let priorityIngredients: [String]
-        let diversifyIngredients: Bool
 
         init(_ o: GenerationOptions) {
             dietType = o.dietType.rawValue
@@ -94,7 +89,6 @@ private struct RecipeGenerationRequest: Encodable {
             cuisine = o.cuisine?.rawValue
             skillLevel = o.skillLevel
             priorityIngredients = o.priorityIngredients
-            diversifyIngredients = o.diversifyIngredients
         }
     }
 }

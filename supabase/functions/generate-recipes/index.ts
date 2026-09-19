@@ -17,8 +17,6 @@ const GEMINI_MODEL = 'models/gemini-2.5-flash'
 const CACHE_TTL_SECONDS = 86_400 // 24h
 const CACHE_REFRESH_BUFFER_MS = 30 * 60 * 1000 // refresh when <30 min from expiry
 const DAILY_LIMIT = 5
-// Snap Chef: after the first (quota-consuming) recipe, this many re-rolls are free and uncounted.
-const FREE_REGENS = 2
 
 async function sha256Hex(input: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input))
@@ -28,13 +26,10 @@ async function sha256Hex(input: string): Promise<string> {
 const SYSTEM_PROMPT_HASH = (await sha256Hex(SYSTEM_PROMPT)).slice(0, 12)
 const CACHE_ID = `${GEMINI_MODEL}:${SYSTEM_PROMPT_HASH}`
 
-type GenerationIntent = 'standard' | 'snap_chef' | 'snap_chef_regenerate'
-
 interface RequestBody {
   ingredientNames?: string[]
   options?: Partial<GenerationOptions>
   count?: number
-  intent?: GenerationIntent
 }
 
 class GeminiError extends Error {
@@ -53,10 +48,10 @@ function jsonResponse(body: unknown, status: number): Response {
 // MARK: - Quota
 
 async function isUnderQuota(admin: SupabaseClient, userId: string): Promise<boolean> {
-  // One limit for everyone: DAILY_LIMIT generations per UTC day. Logging pantry items requires a
-  // subscription, so anyone who can reach generation is already a paying user — there is no
-  // separate free tier. Server time is UTC; the client's "today" uses the device timezone.
-  // Minor divergence at the midnight boundary is acceptable — the server count is authoritative.
+  // DAILY_LIMIT generations per UTC day for non-premium callers only — see isPremiumUser below,
+  // which bypasses this entirely for premium subscribers (unlimited generations). Server time is
+  // UTC; the client's "today" uses the device timezone. Minor divergence at the midnight boundary
+  // is acceptable — the server count is authoritative.
   const since = new Date(new Date().setUTCHours(0, 0, 0, 0)).toISOString()
 
   const { count } = await admin
@@ -67,6 +62,18 @@ async function isUnderQuota(admin: SupabaseClient, userId: string): Promise<bool
     .gte('created_at', since)
 
   return (count ?? 0) < DAILY_LIMIT
+}
+
+// Premium subscribers have unlimited generations — the daily cap only ever applies to a
+// non-premium tier, if one exists. `profiles.subscription_type` is the same field
+// `AppSession.applyProfile` reads client-side to set `isPremium`.
+async function isPremiumUser(admin: SupabaseClient, userId: string): Promise<boolean> {
+  const { data } = await admin
+    .from('profiles')
+    .select('subscription_type')
+    .eq('id', userId)
+    .maybeSingle()
+  return data?.subscription_type === 'premium'
 }
 
 // MARK: - Gemini cache
@@ -282,37 +289,9 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: 'no_ingredients' }, 400)
   }
   const options = normalizeOptions({ ...raw.options, count: raw.count })
-  const intent: GenerationIntent = raw.intent ?? 'standard'
 
-  // Snap Chef gives 2 free re-rolls per generated recipe. A free re-roll skips both the daily
-  // quota check and the `recipe_generated` log; once the 2 are spent, a re-roll behaves like a
-  // normal generation (counts against the daily 5).
-  let countsAgainstDailyLimit = true
-  let freeRegensRemaining: number | null = null
-
-  if (intent === 'snap_chef_regenerate') {
-    const { data: lastGen } = await admin
-      .from('user_activity')
-      .select('created_at')
-      .eq('user_id', userId)
-      .eq('event_type', 'recipe_generated')
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle()
-    const since = lastGen?.created_at ?? new Date(0).toISOString()
-    const { count: freeUsed } = await admin
-      .from('user_activity')
-      .select('*', { count: 'exact', head: true })
-      .eq('user_id', userId)
-      .eq('event_type', 'snap_chef_regenerate')
-      .gt('created_at', since)
-    if ((freeUsed ?? 0) < FREE_REGENS) {
-      countsAgainstDailyLimit = false
-      freeRegensRemaining = FREE_REGENS - (freeUsed ?? 0) - 1
-    }
-  }
-
-  if (countsAgainstDailyLimit && !(await isUnderQuota(admin, userId))) {
+  const premium = await isPremiumUser(admin, userId)
+  if (!premium && !(await isUnderQuota(admin, userId))) {
     return jsonResponse({ error: 'limit_exhausted' }, 429)
   }
 
@@ -330,21 +309,12 @@ Deno.serve(async (req) => {
   }
 
   // Authoritative usage record — replaces the client's optimistic `activityStore.logEvent`.
-  const eventType = countsAgainstDailyLimit ? 'recipe_generated' : 'snap_chef_regenerate'
   const { error: logErr } = await admin
     .from('user_activity')
-    .insert({ user_id: userId, event_type: eventType })
+    .insert({ user_id: userId, event_type: 'recipe_generated' })
   if (logErr) {
-    console.error(`failed to log ${eventType}`, logErr)
+    console.error('failed to log recipe_generated', logErr)
   }
 
-  // Any `recipe_generated` row resets the free re-roll window (the count is "since the last one").
-  if (countsAgainstDailyLimit) {
-    freeRegensRemaining = FREE_REGENS
-  }
-
-  return jsonResponse(
-    { ...result, freeRegensRemaining, countedAgainstDailyLimit: countsAgainstDailyLimit },
-    200,
-  )
+  return jsonResponse(result, 200)
 })

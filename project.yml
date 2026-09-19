@@ -53,6 +53,9 @@ targets:
         Debug:
           ONLY_ACTIVE_ARCH: YES
           ENABLE_DEBUG_DYLIB: YES
+          CODE_SIGN_ENTITLEMENTS: UseUp.entitlements
+        Release:
+          CODE_SIGN_ENTITLEMENTS: UseUpRelease.entitlements
     dependencies:
       - package: Supabase
       - package: SwiftSoup

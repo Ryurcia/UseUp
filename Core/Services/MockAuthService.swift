@@ -38,6 +38,10 @@ final class MockAuthService: AuthServicing {
         return AppUser(id: UUID(), email: newEmail, phone: nil)
     }
 
+    func sendEmailVerificationCode(email: String) async throws {
+        try await Task.sleep(for: .milliseconds(500))
+    }
+
     func signOut() {}
 
     func deleteAccount() async throws {}

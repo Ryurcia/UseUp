@@ -1,4 +1,5 @@
 import SwiftUI
+import PhosphorSwift
 
 /// The single pantry dashboard between the greeting and the list: freshness percent (with a
 /// 3-segment tier bar), total estimated pantry value, and the estimated value at risk from items
@@ -11,7 +12,7 @@ struct PantryDashboard: View {
     let ingredients: [Ingredient]
     let isLoading: Bool
     let isPantryEmpty: Bool
-    let onReviewExpired: () -> Void
+    let onShowExpired: () -> Void
     let onAddFirstItem: () -> Void
 
     private struct Tally {
@@ -27,13 +28,13 @@ struct PantryDashboard: View {
         ingredients: [Ingredient],
         isLoading: Bool,
         isPantryEmpty: Bool,
-        onReviewExpired: @escaping () -> Void,
+        onShowExpired: @escaping () -> Void,
         onAddFirstItem: @escaping () -> Void
     ) {
         self.ingredients = ingredients
         self.isLoading = isLoading
         self.isPantryEmpty = isPantryEmpty
-        self.onReviewExpired = onReviewExpired
+        self.onShowExpired = onShowExpired
         self.onAddFirstItem = onAddFirstItem
         self.tally = ingredients.reduce(into: Tally()) { result, ingredient in
             let state = ingredient.freshnessState
@@ -105,7 +106,7 @@ struct PantryDashboard: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(pct) percent still fresh. \(freshCount) fresh, \(soonCount) use soon, \(urgentCount) use today.")
 
-            HStack(alignment: .top, spacing: Sourdough.Spacing.screenMargin) {
+            HStack(alignment: .top, spacing: Sourdough.Spacing.rowInternals) {
                 metric(
                     "PANTRY VALUE",
                     value: tally.pricedCount > 0 ? tally.pantryValue.asExactDollarString : "—",
@@ -113,31 +114,50 @@ struct PantryDashboard: View {
                 )
                 metric(
                     "AT RISK",
-                    value: tally.atRiskCount > 0 ? tally.atRiskValue.asWholeDollarString : "—",
+                    value: tally.atRiskCount > 0 ? tally.atRiskValue.asExactDollarString : "—",
                     color: tally.atRiskCount > 0 ? Sourdough.Ramp.honey700 : Sourdough.Colors.mutedInk
                 )
-            }
-
-            if expiredCount > 0 {
-                Button(action: onReviewExpired) {
-                    Text("\(expiredCount) expired · review")
-                        .sourdoughTextStyle(.caption, color: Sourdough.Colors.destructive)
+                if expiredCount > 0 {
+                    VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {
+                        Text(" ")
+                            .sourdoughTextStyle(.sectionHead, color: .clear)
+                            .lineLimit(1)
+                        showExpiredButton
+                    }
                 }
-                .buttonStyle(.plain)
             }
         }
-        .pantryDashboardCard()
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var showExpiredButton: some View {
+        Button(action: onShowExpired) {
+            HStack(spacing: 4) {
+                Text("Show Expired")
+                    .sourdoughTextStyle(.subhead, color: Sourdough.Colors.destructive)
+                Ph.caretRight.regular
+                    .frame(width: 10, height: 10)
+                    .foregroundStyle(Sourdough.Colors.destructive)
+            }
+            .padding(.horizontal, Sourdough.Spacing.rowInternals)
+            .padding(.vertical, 8)
+            .background(Sourdough.Colors.destructive.opacity(0.1))
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 
     private func metric(_ label: String, value: String, color: Color) -> some View {
         VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {
             Text(label)
                 .sourdoughTextStyle(.sectionHead, color: Sourdough.Colors.mutedInk)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
             Text(value)
                 .foregroundStyle(color)
-                .sourdoughTextStyle(.title1)
+                .sourdoughTextStyle(.title2)
                 .lineLimit(1)
-                .minimumScaleFactor(0.7)
+                .minimumScaleFactor(0.6)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -208,7 +228,7 @@ struct PantryDashboard: View {
                     .fill(Sourdough.Colors.sunken)
                     .frame(height: 8)
             }
-            HStack(spacing: Sourdough.Spacing.screenMargin) {
+            HStack(spacing: Sourdough.Spacing.rowInternals) {
                 ForEach(0..<2, id: \.self) { _ in
                     VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {
                         RoundedRectangle(cornerRadius: 4, style: .continuous)
@@ -222,7 +242,7 @@ struct PantryDashboard: View {
                 }
             }
         }
-        .pantryDashboardCard()
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .redacted(reason: .placeholder)
     }
 }

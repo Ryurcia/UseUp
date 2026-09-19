@@ -11,16 +11,15 @@ const baseOptions = {
   cuisine: null,
   skillLevel: 1,
   priorityIngredients: [] as string[],
-  diversifyIngredients: false,
   count: RECIPES_PER_GENERATION,
 }
 
-Deno.test('lists ingredients and the fixed recipe count', () => {
+Deno.test('lists ingredients and the minimum-needed recipe count', () => {
   const prompt = buildUserPrompt(['chicken', 'rice', 'broccoli'], baseOptions)
   assertStringIncludes(prompt, 'chicken, rice, broccoli')
-  assertStringIncludes(prompt, 'Generate exactly 5 recipes')
+  assertStringIncludes(prompt, 'Generate the MINIMUM number of recipes needed — up to 5 at most')
   assertStringIncludes(prompt, 'at least 3 user-provided ingredients')
-  assertStringIncludes(prompt, "at least 60% of the user's provided ingredients")
+  assertStringIncludes(prompt, 'Prioritize maximizing combined ingredient coverage across the fewest recipes')
 })
 
 Deno.test('count defaults to RECIPES_PER_GENERATION and clamps out-of-range values', () => {
@@ -34,20 +33,13 @@ Deno.test('count defaults to RECIPES_PER_GENERATION and clamps out-of-range valu
 Deno.test('count: 1 asks for a single recipe and clamps the min-ingredient rule', () => {
   const prompt = buildUserPrompt(['chicken', 'rice', 'broccoli'], { ...baseOptions, count: 1 })
   assertStringIncludes(prompt, 'Generate exactly 1 recipe in "recipes"')
-  assertEquals(prompt.includes('Generate exactly 5 recipes'), false)
+  assertEquals(prompt.includes('Generate the MINIMUM number of recipes needed'), false)
 
   const twoItems = buildUserPrompt(['chicken', 'rice'], { ...baseOptions, count: 1 })
   assertStringIncludes(twoItems, 'at least 2 user-provided ingredients')
 
   const oneItem = buildUserPrompt(['chicken'], { ...baseOptions, count: 1 })
   assertStringIncludes(oneItem, 'at least 1 user-provided ingredient.')
-})
-
-Deno.test('diversify mode swaps the coverage rules', () => {
-  const prompt = buildUserPrompt(['a', 'b', 'c'], { ...baseOptions, diversifyIngredients: true })
-  assertStringIncludes(prompt, 'at least 2 user-provided ingredients')
-  assertStringIncludes(prompt, 'DIFFERENT SUBSET of the provided ingredients')
-  assertEquals(prompt.includes("at least 60% of the user's provided ingredients"), false)
 })
 
 Deno.test('allergy block is present verbatim and safety-critical phrasing intact', () => {

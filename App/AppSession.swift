@@ -48,13 +48,28 @@ final class AppSession: ObservableObject {
     @Published var currentUserAllergies: Set<AllergyType> = []
     @Published var currentUserCustomAllergy: String = ""
     @Published var currentUserCookingSkillLevel: Int = 1
-    @Published var isPremium: Bool = false
+    private static let cachedIsPremiumKey = "cached_is_premium_v1"
+
+    /// Seeded from the last known value instead of hardcoded `false` so cold launch shows the
+    /// right state immediately, before the fresh Supabase/RevenueCat checks land — persisted
+    /// automatically on every write (including `signOut()`'s `isPremium = false`, which also
+    /// clears the cache so a different account signing in on this device doesn't briefly
+    /// inherit a stale `true`).
+    @Published var isPremium: Bool = UserDefaults.standard.bool(forKey: AppSession.cachedIsPremiumKey) {
+        didSet { UserDefaults.standard.set(isPremium, forKey: Self.cachedIsPremiumKey) }
+    }
+    @Published var isEmailVerified: Bool = false
     @Published var showNotifications: Bool = false
     @Published var showProfile: Bool = false
     @Published var requestedTab: Tab? = nil
     @Published var requestedIngredientID: UUID? = nil
     @Published var requestedQuickGenerateIngredientID: UUID? = nil
+    @Published var requestedQuickGenerateIngredientIDs: Set<UUID>? = nil
     @Published var requestedShowAddIngredient: Bool = false
+    @Published var requestedPantryLocation: Ingredient.StorageLocation? = nil
+    /// Toggled (not just set) so `PantryView` sees a change on every consecutive re-tap of an
+    /// already-selected Home tab — see `MainTabView.selectTab(_:)`.
+    @Published var requestedPantryHomeReset: Bool = false
     @Published var dietaryUpdatedAt: Date?
     @Published private(set) var currentAvatarPath: String?
 
@@ -169,6 +184,25 @@ final class AppSession: ObservableObject {
             let user = try await authService.verifyEmailOTP(email: email, token: token)
             requiresOTPVerification = false
             await handleSuccessfulAuth(user: user)
+            if let userId = currentUserId {
+                try? await profileService.markEmailVerified(userId: userId)
+                isEmailVerified = true
+            }
+        } catch let error as AuthServiceError {
+            authError = error.errorDescription
+        } catch {
+            authError = error.localizedDescription
+        }
+    }
+
+    /// Sends a fresh one-time code to the signed-in user's own email, for proving inbox ownership
+    /// after the fact (deferred verification) — decoupled from Supabase's own `email_confirmed_at`,
+    /// which is already set at signup time on this project (see `isEmailVerified`).
+    func sendEmailVerificationCode() async {
+        guard let email = currentUserEmail else { return }
+        authError = nil
+        do {
+            try await authService.sendEmailVerificationCode(email: email)
         } catch let error as AuthServiceError {
             authError = error.errorDescription
         } catch {
@@ -291,6 +325,7 @@ final class AppSession: ObservableObject {
         nicknameUpdatedAt = profile.nicknameUpdatedAt
         loadDietaryPreference(from: profile)
         isPremium = profile.subscriptionType == "premium"
+        isEmailVerified = profile.emailVerifiedAt != nil
         hasSeenGetStarted = true
         hasCompletedFeatureOnboarding = true
         hasSeenOnboardingPaywall = true

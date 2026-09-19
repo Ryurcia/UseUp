@@ -29,6 +29,7 @@ private struct IngredientRow: Codable {
     let estimatedTotalCost: Double?
     let costUnit: String?
     let costSource: String?
+    let wastedRecordedAt: Date?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -47,6 +48,7 @@ private struct IngredientRow: Codable {
         case estimatedTotalCost = "estimated_total_cost"
         case costUnit = "cost_unit"
         case costSource = "cost_source"
+        case wastedRecordedAt = "wasted_recorded_at"
     }
 
     func toIngredient() -> Ingredient {
@@ -76,7 +78,8 @@ private struct IngredientRow: Codable {
             estimatedUnitCost: estimatedUnitCost,
             estimatedTotalCost: estimatedTotalCost,
             costUnit: costUnit,
-            costSource: costSource
+            costSource: costSource,
+            wastedRecordedAt: wastedRecordedAt
         )
     }
 }
@@ -353,6 +356,10 @@ final class PantryStore: ObservableObject {
             guard let daysUntil = ingredient.daysUntilExpiration else { return false }
             return daysUntil <= days
         }
+    }
+
+    func count(in location: Ingredient.StorageLocation) -> Int {
+        ingredients.filter { $0.location == location }.count
     }
 
     private func saveRecipeReadTimestamps() {
@@ -664,7 +671,7 @@ final class PantryStore: ObservableObject {
                 .upsert(row, onConflict: "user_id,ingredient_key")
                 .execute()
         } catch {
-            print("upsertConfirmedPrice failed: \(error.localizedDescription)")
+            // Fire-and-forget — a failure here never blocks the pantry mutation.
         }
     }
 
@@ -689,7 +696,7 @@ final class PantryStore: ObservableObject {
             do {
                 try await client.from("pantry_events").insert(rows).execute()
             } catch {
-                print("recordPantryEvents(\(outcome.rawValue)) failed: \(error.localizedDescription)")
+                // Fire-and-forget — a failure here never blocks or rolls back the pantry mutation.
             }
         }
     }
@@ -731,9 +738,15 @@ final class PantryStore: ObservableObject {
     /// `outcome` records why the item left the pantry, for the Stats event ledger — `.used` when
     /// it was consumed (via `useIngredient`'s full-use path or cooking), `.wasted` for any other
     /// removal (the default: a plain delete of a still-good or expired item both read as binned).
+    ///
+    /// Skips writing a `.wasted` event when `wastedRecordedAt` is already set — the daily
+    /// server-side sweep (see the `record_expired_ingredients_as_wasted` migration) already
+    /// counted this item's cost once, as soon as it expired, rather than waiting for the user to
+    /// get around to deleting it; recording it again here would double-count it.
     func deleteIngredient(id: UUID, outcome: PantryEventOutcome = .wasted) {
         guard let index = ingredients.firstIndex(where: { $0.id == id }) else { return }
         let removed = ingredients[index]
+        let alreadyCountedAsWasted = removed.wastedRecordedAt != nil
 
         performOptimistic(
             apply: { ingredients.remove(at: index) },
@@ -745,7 +758,9 @@ final class PantryStore: ObservableObject {
                 .eq("id", value: id.uuidString)
                 .execute()
             self.rescheduleNotifications()
-            self.recordPantryEvents([removed], outcome: outcome)
+            if !(outcome == .wasted && alreadyCountedAsWasted) {
+                self.recordPantryEvents([removed], outcome: outcome)
+            }
         }
     }
 

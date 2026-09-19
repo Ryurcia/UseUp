@@ -7,11 +7,13 @@ struct ReportContentSheet: View {
     enum Subject {
         case recipe(name: String)
         case review(nickname: String)
+        case user(nickname: String)
 
         var title: String {
             switch self {
             case .recipe: return "Report Recipe"
             case .review: return "Report Review"
+            case .user: return "Report User"
             }
         }
 
@@ -21,12 +23,15 @@ struct ReportContentSheet: View {
                 return "Why are you reporting \"\(name)\"? Our team will review it."
             case .review(let nickname):
                 return "Why are you reporting \(nickname)'s review? Our team will review it."
+            case .user(let nickname):
+                return "Why are you reporting \(nickname)? Our team will review it."
             }
         }
     }
 
     let subject: Subject
     let onSubmit: (String, String?) -> Void
+
     @Environment(\.dismiss) private var dismiss
     @State private var selectedCategory: ReportCategory? = nil
     @State private var description: String = ""
@@ -168,5 +173,26 @@ struct ReportContentSheet: View {
             .padding(.bottom, Sourdough.Spacing.screenMargin)
         }
         .background(Sourdough.Colors.canvas)
+    }
+}
+
+/// Lets a single "flag" affordance offer a choice between reporting a recipe or its creator —
+/// one piece of `Identifiable` state per call site instead of a bare `Recipe?`/`Bool` pair.
+enum ReportTarget: Identifiable {
+    case recipe(Recipe)
+    case user(id: UUID, nickname: String)
+
+    var id: String {
+        switch self {
+        case .recipe(let recipe): return "recipe-\(recipe.id)"
+        case .user(let id, _): return "user-\(id)"
+        }
+    }
+
+    var subject: ReportContentSheet.Subject {
+        switch self {
+        case .recipe(let recipe): return .recipe(name: recipe.title)
+        case .user(_, let nickname): return .user(nickname: nickname)
+        }
     }
 }

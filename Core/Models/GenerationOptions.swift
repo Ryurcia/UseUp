@@ -32,5 +32,4 @@ struct GenerationOptions: Hashable {
     var cuisine: Cuisine?
     var skillLevel: Int = 1
     var priorityIngredients: [String] = []
-    var diversifyIngredients: Bool = false
 }

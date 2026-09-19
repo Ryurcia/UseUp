@@ -53,6 +53,7 @@ private struct RecipeRowWithRelations: Decodable {
     let ratingCount: Int
     let dietType: String?
     let dietaryRestrictions: [String]?
+    let tags: [String]?
     let recipeIngredients: [RecipeIngredientRow]
     let sourceLinks: [SourceLinkRow]
 
@@ -72,6 +73,7 @@ private struct RecipeRowWithRelations: Decodable {
         case ratingCount = "rating_count"
         case dietType = "diet_type"
         case dietaryRestrictions = "dietary_restrictions"
+        case tags
         case recipeIngredients = "recipe_ingredients"
         case sourceLinks = "source_links"
     }
@@ -108,7 +110,8 @@ private struct RecipeRowWithRelations: Decodable {
             createdByName: displayName,
             rating: avgRating,
             dietType: dietType ?? "any",
-            dietaryRestrictions: dietaryRestrictions ?? []
+            dietaryRestrictions: dietaryRestrictions ?? [],
+            tags: tags ?? []
         )
     }
 }
@@ -130,6 +133,7 @@ private struct RecipeInsert: Encodable {
     let fatG: Int
     let dietType: String
     let dietaryRestrictions: [String]
+    let tags: [String]
     let isPublic: Bool
 
     enum CodingKeys: String, CodingKey {
@@ -145,6 +149,7 @@ private struct RecipeInsert: Encodable {
         case fatG = "fat_g"
         case dietType = "diet_type"
         case dietaryRestrictions = "dietary_restrictions"
+        case tags
         case isPublic = "public"
     }
 }
@@ -259,6 +264,7 @@ private struct AIRecipeInsert: Encodable {
     let fatG: Int
     let dietType: String
     let dietaryRestrictions: [String]
+    let tags: [String]
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -275,6 +281,7 @@ private struct AIRecipeInsert: Encodable {
         case fatG = "fat_g"
         case dietType = "diet_type"
         case dietaryRestrictions = "dietary_restrictions"
+        case tags
     }
 
     init(recipe: Recipe, createdBy: UUID) {
@@ -295,6 +302,7 @@ private struct AIRecipeInsert: Encodable {
         fatG = recipe.macros.fatG
         dietType = recipe.dietType
         dietaryRestrictions = recipe.dietaryRestrictions
+        tags = recipe.tags
     }
 }
 
@@ -373,11 +381,32 @@ final class SavedRecipesStore: ObservableObject {
     @Published private(set) var isLoading = false
     @Published var error: String?
 
+    /// Community feed pagination — `communityRecipes` holds whatever pages have loaded so far.
+    @Published private(set) var hasMoreCommunityRecipes = true
+    @Published private(set) var isLoadingMoreCommunityRecipes = false
+
+    /// Server-side search results — separate from `communityRecipes`, its own pagination.
+    @Published private(set) var searchResults: [Recipe] = []
+    @Published private(set) var isSearching = false
+    @Published private(set) var isLoadingMoreSearchResults = false
+    @Published private(set) var hasMoreSearchResults = true
+
+    /// Discovery sections for the default (no-filter) Recipes tab browsing state — fetched
+    /// server-side (via `fetchCategoryRecipes`/`get_cuisine_counts`) so a cuisine/category
+    /// shows up as soon as it has content, instead of waiting for enough of it to
+    /// coincidentally appear in the paginated `communityRecipes` feed.
+    @Published private(set) var discoveryGeneralRecipes: [String: [Recipe]] = [:]
+    @Published private(set) var discoveryCuisineRecipes: [Cuisine: [Recipe]] = [:]
+    @Published private(set) var discoveryCuisineOrder: [Cuisine] = []
+    @Published private(set) var isLoadingDiscoverySections = false
+
     var userId: UUID?
     var currentUserNickname: String?
     private var lastFetchedAt: Date?
+    private var discoverySectionsFetchedAt: Date?
     private var reviewsFetchedAt: [UUID: Date] = [:]
     private let client = SupabaseManager.client
+    private let recipePageSize = 20
 
     init(
         savedRecipes: [Recipe] = [],
@@ -405,7 +434,6 @@ final class SavedRecipesStore: ObservableObject {
             do {
                 try await persist()
             } catch {
-                print("performOptimistic failed: \(error)")
                 rollback()
                 self.error = error.localizedDescription
             }
@@ -482,6 +510,24 @@ final class SavedRecipesStore: ObservableObject {
         }
     }
 
+    /// Hydrates raw rows into `[Recipe]` (creator nicknames + the current user's own rating/review
+    /// merged in) — the per-batch equivalent of the nickname/rating logic inlined in `fetchRecipes()`,
+    /// factored out so paginated fetches (a "load more" page, a search page) can reuse it without
+    /// re-fetching or re-merging the whole existing `communityRecipes`/`savedRecipes` arrays.
+    private func hydrateRecipes(from rows: [RecipeRowWithRelations]) async -> [Recipe] {
+        let nicknameMap = await fetchNicknames(for: Set(rows.map { $0.createdBy }))
+        var recipes = rows.map { $0.toRecipe(nicknameMap: nicknameMap) }
+        guard let userId = getUserId() else { return recipes }
+        let ratings = await fetchUserRatings(for: recipes.map(\.id), userId: userId)
+        for i in recipes.indices {
+            if let rating = ratings[recipes[i].id] {
+                recipes[i].userRating = rating.rating
+                recipes[i].review = rating.review
+            }
+        }
+        return recipes
+    }
+
     func fetchRecipes() async {
         if let last = lastFetchedAt, Date().timeIntervalSince(last) < 60, !communityRecipes.isEmpty || !savedRecipes.isEmpty || !sharedRecipes.isEmpty { return }
         guard let userId = getUserId() else { return }
@@ -495,7 +541,7 @@ final class SavedRecipesStore: ObservableObject {
                 .select("*, recipe_ingredients(*), source_links(*)")
                 .eq("is_user_shared", value: true)
                 .order("created_at", ascending: false)
-                .limit(50)
+                .range(from: 0, to: recipePageSize - 1)
                 .execute()
                 .value
             async let bookmarkRowsTask: [SavedRecipeRow] = client
@@ -519,7 +565,8 @@ final class SavedRecipesStore: ObservableObject {
                 savedRecipeCollections = membership
                 collectionRecipeCache = memberRecipes
             } catch {
-                print("[Collections] fetchRecipes: embedded collections fetch failed - \(error)")
+                // Self-heals: `fetchCollections()` runs this same fetch again the next time
+                // the Collections tab or save-to-collection picker appears.
             }
 
             // Fetch saved recipes by ID
@@ -541,6 +588,7 @@ final class SavedRecipesStore: ObservableObject {
             let nicknameMap = await fetchNicknames(for: allCreatorIds)
 
             communityRecipes = communityRows.map { $0.toRecipe(nicknameMap: nicknameMap) }
+            hasMoreCommunityRecipes = communityRows.count == recipePageSize
             sharedRecipes = communityRecipes.filter { $0.createdBy == userId.uuidString }
             savedRecipes = savedRows.map { $0.toRecipe(nicknameMap: nicknameMap) }
 
@@ -589,14 +637,138 @@ final class SavedRecipesStore: ObservableObject {
         isLoading = false
     }
 
+    /// Appends the next page of the community feed onto `communityRecipes`, same filter/sort as
+    /// `fetchRecipes()`'s initial page. Distinct `isLoadingMoreCommunityRecipes` flag so the UI can
+    /// tell "loading more" apart from the initial `isLoading` spinner.
+    func fetchMoreCommunityRecipes() async {
+        guard !isLoadingMoreCommunityRecipes, hasMoreCommunityRecipes else { return }
+        isLoadingMoreCommunityRecipes = true
+        defer { isLoadingMoreCommunityRecipes = false }
+
+        do {
+            let offset = communityRecipes.count
+            let rows: [RecipeRowWithRelations] = try await client
+                .from("recipes")
+                .select("*, recipe_ingredients(*), source_links(*)")
+                .eq("is_user_shared", value: true)
+                .order("created_at", ascending: false)
+                .range(from: offset, to: offset + recipePageSize - 1)
+                .execute()
+                .value
+
+            communityRecipes.append(contentsOf: await hydrateRecipes(from: rows))
+            hasMoreCommunityRecipes = rows.count == recipePageSize
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    /// First page of server-side search results, ranked/typo-tolerant via the `search_vector`
+    /// generated tsvector column (`websearch_to_tsquery` semantics) — replaces `searchResults`
+    /// entirely, unlike `fetchMoreSearchResults` which appends.
+    func searchRecipes(query: String) async {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            searchResults = []
+            hasMoreSearchResults = true
+            return
+        }
+        isSearching = true
+        searchResults = []
+        defer { isSearching = false }
+
+        do {
+            let rows: [RecipeRowWithRelations] = try await client
+                .from("recipes")
+                .select("*, recipe_ingredients(*), source_links(*)")
+                .eq("is_user_shared", value: true)
+                .textSearch("search_vector", query: trimmed, config: "english", type: .websearch)
+                .order("created_at", ascending: false)
+                .range(from: 0, to: recipePageSize - 1)
+                .execute()
+                .value
+
+            searchResults = await hydrateRecipes(from: rows)
+            hasMoreSearchResults = rows.count == recipePageSize
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    /// Appends the next page of search results for the same query onto `searchResults`.
+    func fetchMoreSearchResults(query: String) async {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !isLoadingMoreSearchResults, hasMoreSearchResults else { return }
+        isLoadingMoreSearchResults = true
+        defer { isLoadingMoreSearchResults = false }
+
+        do {
+            let offset = searchResults.count
+            let rows: [RecipeRowWithRelations] = try await client
+                .from("recipes")
+                .select("*, recipe_ingredients(*), source_links(*)")
+                .eq("is_user_shared", value: true)
+                .textSearch("search_vector", query: trimmed, config: "english", type: .websearch)
+                .order("created_at", ascending: false)
+                .range(from: offset, to: offset + recipePageSize - 1)
+                .execute()
+                .value
+
+            searchResults.append(contentsOf: await hydrateRecipes(from: rows))
+            hasMoreSearchResults = rows.count == recipePageSize
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
     // MARK: - Fetch Category Recipes (Paginated)
 
     enum CategoryFilter {
         case cuisine(Cuisine)
+        case cuisineGroup(Set<Cuisine>)
         case lowCalorie(maxCalories: Int)
         case highProtein(minProteinG: Int)
         case quick(maxMinutes: Int)
+        case tag(String)
+        case tagGroup(Set<String>)
+
+        /// In-memory equivalent of this filter's SQL translation in `fetchCategoryRecipes`
+        /// — the single definition of "does this recipe belong to this category," reused
+        /// by both the server-driven discovery fetch and `RecipesView.buildCategories`'s
+        /// client-side fallback (when a filter/quick-filter is active) so the two paths
+        /// can't drift apart the way `RecipesView`'s duplicated general-category list did.
+        func matches(_ recipe: Recipe) -> Bool {
+            switch self {
+            case .cuisine(let cuisine): return recipe.cuisine == cuisine
+            case .cuisineGroup(let cuisines): return cuisines.contains(recipe.cuisine)
+            case .lowCalorie(let max): return recipe.macros.calories <= max
+            case .highProtein(let min): return recipe.macros.proteinG >= min
+            case .quick(let max): return recipe.timeMinutes <= max
+            case .tag(let tag): return recipe.tags.contains(tag)
+            case .tagGroup(let tags): return !tags.isDisjoint(with: Set(recipe.tags))
+            }
+        }
     }
+
+    struct GeneralCategorySpec {
+        let title: String
+        let icon: String
+        let filter: CategoryFilter
+    }
+
+    /// Single source of truth for the Recipes tab's "QUICK PICKS" general categories —
+    /// used both to fetch them server-side (`fetchDiscoverySections`) and to derive them
+    /// client-side (`RecipesView.buildCategories`) when a filter is active.
+    static let generalCategorySpecs: [GeneralCategorySpec] = [
+        GeneralCategorySpec(title: "Low Calorie", icon: "flame", filter: .lowCalorie(maxCalories: 200)),
+        GeneralCategorySpec(title: "High Protein", icon: "bolt.fill", filter: .highProtein(minProteinG: 30)),
+        GeneralCategorySpec(title: "Quick & Easy", icon: "clock", filter: .quick(maxMinutes: 15)),
+        GeneralCategorySpec(title: "Comfort Food", icon: "heart.fill", filter: .tag("comfort-food")),
+        GeneralCategorySpec(title: "Weeknight Dinners", icon: "calendar", filter: .tag("weeknight")),
+        GeneralCategorySpec(title: "Spicy", icon: "flame.fill", filter: .tag("spicy")),
+        GeneralCategorySpec(title: "Soups & Stews", icon: "cup.and.saucer.fill", filter: .tagGroup(["soup", "stew"])),
+        GeneralCategorySpec(title: "Budget-Friendly", icon: "dollarsign.circle", filter: .tag("budget-friendly"))
+    ]
 
     func fetchCategoryRecipes(filter: CategoryFilter, limit: Int = 30, offset: Int = 0) async -> [Recipe] {
         do {
@@ -608,12 +780,18 @@ final class SavedRecipesStore: ObservableObject {
             switch filter {
             case .cuisine(let cuisine):
                 query = query.eq("cuisine", value: cuisine.databaseValue)
+            case .cuisineGroup(let cuisines):
+                query = query.in("cuisine", values: cuisines.map { $0.databaseValue })
             case .lowCalorie(let max):
                 query = query.lte("calories", value: max)
             case .highProtein(let min):
                 query = query.gte("protein_g", value: min)
             case .quick(let max):
                 query = query.lte("time_minutes", value: max)
+            case .tag(let tag):
+                query = query.contains("tags", value: [tag])
+            case .tagGroup(let tags):
+                query = query.overlaps("tags", value: Array(tags))
             }
 
             let rows: [RecipeRowWithRelations] = try await query
@@ -622,12 +800,79 @@ final class SavedRecipesStore: ObservableObject {
                 .execute()
                 .value
 
-            let creatorIds = Set(rows.map { $0.createdBy })
-            let nicknameMap = await fetchNicknames(for: creatorIds)
-            return rows.map { $0.toRecipe(nicknameMap: nicknameMap) }
+            return await hydrateRecipes(from: rows)
         } catch {
             return []
         }
+    }
+
+    // MARK: - Discovery Sections (server-driven cuisine/category rows)
+
+    private struct CuisineCountRow: Decodable {
+        let cuisine: String
+        let cnt: Int
+    }
+
+    /// Recipe counts per cuisine across the whole shared feed (not just what's paginated
+    /// in locally), via the `get_cuisine_counts()` SQL function — one cheap aggregate query
+    /// instead of scanning `communityRecipes`.
+    private func fetchCuisineCounts() async -> [Cuisine: Int] {
+        do {
+            let rows: [CuisineCountRow] = try await client
+                .rpc("get_cuisine_counts")
+                .execute()
+                .value
+            var result: [Cuisine: Int] = [:]
+            for row in rows {
+                if let cuisine = Cuisine(databaseValue: row.cuisine) {
+                    result[cuisine] = row.cnt
+                }
+            }
+            return result
+        } catch {
+            return [:]
+        }
+    }
+
+    /// Populates `discoveryGeneralRecipes`/`discoveryCuisineRecipes`/`discoveryCuisineOrder`
+    /// for the default (no-filter) Recipes tab state. Throttled like `fetchRecipes()`.
+    func fetchDiscoverySections(force: Bool = false) async {
+        if !force, let last = discoverySectionsFetchedAt, Date().timeIntervalSince(last) < 60 { return }
+        isLoadingDiscoverySections = true
+        defer { isLoadingDiscoverySections = false }
+
+        let counts = await fetchCuisineCounts()
+        let topCuisines = counts.filter { $0.value > 0 }
+            .sorted { $0.value > $1.value }
+            .prefix(8)
+            .map(\.key)
+
+        let generalResults: [(String, [Recipe])] = await withTaskGroup(of: (String, [Recipe]).self) { group in
+            for spec in Self.generalCategorySpecs {
+                group.addTask { [self] in
+                    (spec.title, await fetchCategoryRecipes(filter: spec.filter, limit: 6))
+                }
+            }
+            var results: [(String, [Recipe])] = []
+            for await result in group { results.append(result) }
+            return results
+        }
+
+        let cuisineRecipes: [(Cuisine, [Recipe])] = await withTaskGroup(of: (Cuisine, [Recipe]).self) { group in
+            for cuisine in topCuisines {
+                group.addTask { [self] in
+                    (cuisine, await fetchCategoryRecipes(filter: .cuisine(cuisine), limit: 6))
+                }
+            }
+            var results: [(Cuisine, [Recipe])] = []
+            for await result in group { results.append(result) }
+            return results
+        }
+
+        discoveryGeneralRecipes = Dictionary(uniqueKeysWithValues: generalResults)
+        discoveryCuisineRecipes = Dictionary(uniqueKeysWithValues: cuisineRecipes)
+        discoveryCuisineOrder = Array(topCuisines)
+        discoverySectionsFetchedAt = Date()
     }
 
     // MARK: - Fetch Community Reviews
@@ -696,11 +941,18 @@ final class SavedRecipesStore: ObservableObject {
         cuisine: Cuisine,
         dietType: String = "any",
         dietaryRestrictions: [String] = [],
+        tags: [String] = [],
         isPublic: Bool = false,
         isUserShared: Bool = true
     ) async throws {
         guard let userId = getUserId() else {
             throw NSError(domain: "SavedRecipesStore", code: 0, userInfo: [NSLocalizedDescriptionKey: "Not signed in."])
+        }
+
+        var mergedTags: [String] = []
+        let deterministicTags = Recipe.deterministicTags(timeMinutes: timeMinutes, calories: macros.calories, proteinG: macros.proteinG)
+        for tag in deterministicTags + tags where !mergedTags.contains(tag) {
+            mergedTags.append(tag)
         }
 
         if isUserShared {
@@ -726,7 +978,8 @@ final class SavedRecipesStore: ObservableObject {
             isUserShared: isUserShared,
             imageData: imageData,
             cuisine: cuisine,
-            createdByName: currentUserNickname
+            createdByName: currentUserNickname,
+            tags: mergedTags
         )
         if isUserShared {
             sharedRecipes.insert(tempRecipe, at: 0)
@@ -765,6 +1018,7 @@ final class SavedRecipesStore: ObservableObject {
                 fatG: macros.fatG,
                 dietType: dietType,
                 dietaryRestrictions: dietaryRestrictions,
+                tags: mergedTags,
                 isPublic: isPublic
             )
 
@@ -936,7 +1190,7 @@ final class SavedRecipesStore: ObservableObject {
                     .eq("recipe_id", value: recipe.id.uuidString)
                     .execute()
             } catch {
-                print("unsaveRecipe: collection_recipes cleanup failed - \(error)")
+                // Best-effort cleanup — the recipe is already unsaved either way.
             }
         }
     }
@@ -1007,7 +1261,6 @@ final class SavedRecipesStore: ObservableObject {
             savedRecipeCollections = membership
             collectionRecipeCache = memberRecipes
         } catch {
-            print("[Collections] fetchCollections failed: \(error)")
             self.error = error.localizedDescription
         }
     }
@@ -1033,10 +1286,8 @@ final class SavedRecipesStore: ObservableObject {
             }
             let collection = row.toCollection()
             collections.append(collection)
-            print("[Collections] created '\(collection.name)' (\(collection.id))")
             return collection
         } catch {
-            print("[Collections] createCollection failed: \(error)")
             throw error
         }
     }
@@ -1115,10 +1366,8 @@ final class SavedRecipesStore: ObservableObject {
                 try await client.from("collection_recipes")
                     .upsert(inserts, onConflict: "collection_id,recipe_id", ignoreDuplicates: true)
                     .execute()
-                print("[Collections] added recipe \(recipe.id) to \(collectionIds.count) collection(s)")
             }
         } catch {
-            print("[Collections] saveAndAddToCollections failed: \(error)")
             if !wasSavedLocally { savedRecipes.removeAll { $0.id == recipe.id } }
             savedRecipeCollections[recipe.id] = previousCollections
             throw error
@@ -1319,6 +1568,57 @@ final class SavedRecipesStore: ObservableObject {
             description: description
         )
         try await client.from("review_reports").insert(insert).execute()
+    }
+
+    private struct UserReportInsert: Encodable {
+        let reportedUserId: UUID
+        let reporterId: UUID
+        let category: String
+        let description: String?
+
+        enum CodingKeys: String, CodingKey {
+            case reportedUserId = "reported_user_id"
+            case reporterId = "reporter_id"
+            case category, description
+        }
+    }
+
+    func reportUser(_ reportedUserId: UUID, category: String, description: String?) async throws {
+        guard let userId = getUserId() else {
+            throw NSError(domain: "SavedRecipesStore", code: 0,
+                          userInfo: [NSLocalizedDescriptionKey: "Not signed in."])
+        }
+        let insert = UserReportInsert(reportedUserId: reportedUserId, reporterId: userId, category: category, description: description)
+        try await client.from("user_reports").insert(insert).execute()
+    }
+
+    private struct FeedbackInsert: Encodable {
+        let reporterId: UUID
+        let kind: String
+        let title: String
+        let description: String
+
+        enum CodingKeys: String, CodingKey {
+            case reporterId = "reporter_id"
+            case kind, title, description
+        }
+    }
+
+    private func submitFeedback(kind: String, title: String, description: String) async throws {
+        guard let userId = getUserId() else {
+            throw NSError(domain: "SavedRecipesStore", code: 0,
+                          userInfo: [NSLocalizedDescriptionKey: "Not signed in."])
+        }
+        let insert = FeedbackInsert(reporterId: userId, kind: kind, title: title, description: description)
+        try await client.from("feedback_submissions").insert(insert).execute()
+    }
+
+    func reportBug(title: String, description: String) async throws {
+        try await submitFeedback(kind: "bug", title: title, description: description)
+    }
+
+    func requestFeature(title: String, description: String) async throws {
+        try await submitFeedback(kind: "feature", title: title, description: description)
     }
 
     // MARK: - Block Users

@@ -69,6 +69,7 @@ struct Recipe: Identifiable, Hashable {
     var review: String?
     var dietType: String
     var dietaryRestrictions: [String]
+    var tags: [String]
     var isAIGenerated: Bool
     var substitutions: [RecipeSubstitution]
 
@@ -94,6 +95,7 @@ struct Recipe: Identifiable, Hashable {
         review: String? = nil,
         dietType: String = "any",
         dietaryRestrictions: [String] = [],
+        tags: [String] = [],
         isAIGenerated: Bool = false,
         substitutions: [RecipeSubstitution] = []
     ) {
@@ -118,7 +120,18 @@ struct Recipe: Identifiable, Hashable {
         self.review = review
         self.dietType = dietType
         self.dietaryRestrictions = dietaryRestrictions
+        self.tags = tags
         self.isAIGenerated = isAIGenerated
         self.substitutions = substitutions
+    }
+
+    /// Tags derivable purely from macros/timing — used to backfill `tags` for recipes that
+    /// don't get one from the LLM or the user, and merged with any explicitly-provided ones.
+    static func deterministicTags(timeMinutes: Int, calories: Int, proteinG: Int) -> [String] {
+        var tags: [String] = []
+        if timeMinutes <= 15 { tags.append("quick") }
+        if proteinG >= 30 { tags.append("high-protein") }
+        if calories <= 200 { tags.append("low-calorie") }
+        return tags
     }
 }

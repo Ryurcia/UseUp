@@ -32,7 +32,7 @@ struct PhotoScanCaptureView: View {
     @State private var showTips: Bool
     @State private var didPassTips = false
 
-    private let foodPhotoScanner: FoodPhotoIdentifying = SupabaseFoodPhotoScanner()
+    private let foodPhotoScanner: FoodPhotoIdentifying = TestingMode.isEnabled ? MockFoodPhotoScanner() : SupabaseFoodPhotoScanner()
 
     init(onComplete: @escaping () -> Void) {
         self.onComplete = onComplete

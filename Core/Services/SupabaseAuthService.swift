@@ -94,6 +94,14 @@ final class SupabaseAuthService: AuthServicing {
         }
     }
 
+    func sendEmailVerificationCode(email: String) async throws {
+        do {
+            try await client.auth.signInWithOTP(email: email, shouldCreateUser: false)
+        } catch {
+            throw mapError(error)
+        }
+    }
+
     func signOut() {
         Task { try? await client.auth.signOut() }
     }

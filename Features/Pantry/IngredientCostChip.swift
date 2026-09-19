@@ -30,10 +30,13 @@ struct IngredientCostChip: View {
                 chip
             }
         }
-        .font(.system(size: 11, weight: .semibold))
-        .padding(.horizontal, Sourdough.Spacing.insideChip)
-        .frame(height: 24)
+        .font(.system(size: 14, weight: .semibold))
+        .padding(.horizontal, Sourdough.Spacing.rowInternals)
+        .frame(height: 34)
         .background(Sourdough.Colors.sunken)
+        .overlay(
+            Capsule().stroke(total == nil ? Color.clear : tint.opacity(0.35), lineWidth: 1)
+        )
         .clipShape(Capsule())
     }
 
@@ -44,13 +47,13 @@ struct IngredientCostChip: View {
             isEditing = true
             fieldFocused = true
         } label: {
-            HStack(spacing: 5) {
+            HStack(spacing: 6) {
                 if isCrowdsourced {
-                    Ph.tag.fill.frame(width: 9, height: 9)
+                    Ph.tag.fill.frame(width: 12, height: 12)
                 }
                 Text(label)
                 if total != nil {
-                    Ph.pencil.regular.frame(width: 9, height: 9)
+                    Ph.pencil.fill.frame(width: 12, height: 12)
                 }
             }
             .foregroundStyle(total == nil ? Sourdough.Colors.faintInk : tint)
@@ -65,16 +68,16 @@ struct IngredientCostChip: View {
     }
 
     private var editingField: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: 3) {
             Text("$").foregroundStyle(tint)
             TextField("0.00", text: $draft)
                 .keyboardType(.decimalPad)
                 .focused($fieldFocused)
                 .foregroundStyle(Sourdough.Colors.ink)
-                .frame(width: 44)
+                .frame(width: 56)
                 .onSubmit(commit)
             Button(action: commit) {
-                Ph.check.bold.frame(width: 10, height: 10).foregroundStyle(tint)
+                Ph.check.bold.frame(width: 13, height: 13).foregroundStyle(tint)
             }
             .buttonStyle(.plain)
         }

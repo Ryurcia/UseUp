@@ -50,9 +50,16 @@ final class MockIngredientCostEstimator: IngredientCostEstimating {
         unitCount: Int,
         barcode: String?
     ) async throws -> IngredientCost {
-        IngredientCost(
-            unitPriceUsd: 1.25,
-            totalPriceUsd: 1.25 * quantity * Double(unitCount),
+        // Deterministic but varied — same name always resolves to the same fake price (so testing
+        // stays stable across runs/launches), different names look plausibly different rather than
+        // every scanned item showing an identical flat price. `String.hashValue` is randomized per
+        // process launch, so sum the unicode scalars instead — stable across runs.
+        let charSum = ingredientName.lowercased().unicodeScalars.reduce(0) { $0 + Int($1.value) }
+        let unitPrice = (Double(charSum % 1150) / 100.0) + 0.50 // $0.50–$12.00
+        let rounded = (unitPrice * 100).rounded() / 100
+        return IngredientCost(
+            unitPriceUsd: rounded,
+            totalPriceUsd: (rounded * quantity * Double(unitCount) * 100).rounded() / 100,
             source: .estimate,
             conversionApplied: false,
             confidence: 0.5

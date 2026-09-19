@@ -72,7 +72,15 @@ struct StatsBarChart: View {
         let total = CGFloat(bar.spend) * scale
         let waste = bar.waste > 0 ? max(3, CGFloat(bar.waste) * scale) : 0
         let eaten = max(3, total - waste)
-        return (eaten, waste)
+
+        // bar.waste isn't bounded by bar.spend (an item bought in an earlier period can
+        // be wasted in this one), so the combined height can exceed maxBarPixels even
+        // though `total` alone never does. Scale both segments down together so the bar
+        // never pokes out past the chart's peak reference line.
+        let combined = eaten + waste
+        guard combined > maxBarPixels else { return (eaten, waste) }
+        let overflowScale = maxBarPixels / combined
+        return (eaten * overflowScale, waste * overflowScale)
     }
 }
 

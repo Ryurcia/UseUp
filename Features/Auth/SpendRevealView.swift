@@ -17,14 +17,6 @@ struct SpendRevealView: View {
     private let averageDinnerPrice = 15.0
     private var dinnerCount: Int { Int((yearlySpend / averageDinnerPrice).rounded()) }
 
-    /// Illustrative — the app doesn't collect a delivery/fees/snacks split. Matches the source
-    /// design's example breakdown.
-    private let breakdown: [(label: String, percent: Int, color: Color)] = [
-        ("Delivery apps", 69, Sourdough.Colors.action),
-        ("Fees & tips", 22, Sourdough.Ramp.terracotta400),
-        ("Late-night snacks", 9, Sourdough.Ramp.honey300),
-    ]
-
     var body: some View {
         VStack(spacing: 0) {
             TabView(selection: $currentPage) {
@@ -34,12 +26,7 @@ struct SpendRevealView: View {
                     }
                     .tag(0)
 
-                page {
-                    VStack(alignment: .leading, spacing: Sourdough.Spacing.underTitle) {
-                        yearlyBlock
-                        breakdownCard
-                    }
-                }
+                page { yearlyBlock }
                 .onAppear {
                     Sourdough.animatedCountUp(to: yearlySpend) { animatedYearly = $0 }
                     // Smooth (non-haptic) count-up — a second overlapping haptic-tick
@@ -77,19 +64,20 @@ struct SpendRevealView: View {
         GeometryReader { geo in
             ScrollView(showsIndicators: false) {
                 content()
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.horizontal, Sourdough.Spacing.screenMargin)
                     .padding(.vertical, Sourdough.Spacing.betweenBlocks)
-                    .frame(minHeight: geo.size.height, alignment: Alignment(horizontal: .leading, vertical: .center))
+                    .frame(minHeight: geo.size.height, alignment: Alignment(horizontal: .center, vertical: .center))
             }
         }
     }
 
     private var damageBlock: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .center, spacing: 0) {
             Text("Here's the damage")
                 .foregroundStyle(Sourdough.Colors.actionInk)
                 .sourdoughTextStyle(.sectionHead)
+                .multilineTextAlignment(.center)
 
             HStack(alignment: .lastTextBaseline, spacing: 2) {
                 Text("$")
@@ -104,15 +92,17 @@ struct SpendRevealView: View {
             Text("a month you spend ordering in.")
                 .foregroundStyle(Sourdough.Colors.ink)
                 .sourdoughTextStyle(.display)
+                .multilineTextAlignment(.center)
                 .padding(.top, Sourdough.Spacing.screenMargin)
         }
     }
 
     private var yearlyBlock: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .center, spacing: 0) {
             Text("And over a year")
                 .foregroundStyle(Sourdough.Colors.actionInk)
                 .sourdoughTextStyle(.sectionHead)
+                .multilineTextAlignment(.center)
 
             HStack(alignment: .lastTextBaseline, spacing: 2) {
                 Text("$")
@@ -130,39 +120,8 @@ struct SpendRevealView: View {
                 + Text(" you paid delivery prices for.")
             }
             .sourdoughTextStyle(.display)
+            .multilineTextAlignment(.center)
             .padding(.top, Sourdough.Spacing.screenMargin)
         }
-    }
-
-    private var breakdownCard: some View {
-        VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {
-            Text("Where it goes")
-                .foregroundStyle(Sourdough.Colors.mutedInk)
-                .sourdoughTextStyle(.sectionHead)
-
-            VStack(spacing: Sourdough.Spacing.rowInternals) {
-                ForEach(Array(breakdown.enumerated()), id: \.offset) { index, row in
-                    VStack(alignment: .leading, spacing: Sourdough.Spacing.iconToLabel) {
-                        HStack {
-                            Text(row.label)
-                                .sourdoughTextStyle(.rowTitle)
-                            Spacer()
-                            Text("\(row.percent)%")
-                                .sourdoughTextStyle(.numeric)
-                        }
-                        Sourdough.AnimatedBarH(
-                            fraction: Double(row.percent) / 100,
-                            fill: row.color,
-                            delay: 0.9 + Double(index) * 0.09
-                        )
-                    }
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(Sourdough.Spacing.screenMargin)
-        .background(Sourdough.Colors.card)
-        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.hero, style: .continuous))
-        .sourdoughElevation(.lifted, cornerRadius: Sourdough.Radius.hero)
     }
 }

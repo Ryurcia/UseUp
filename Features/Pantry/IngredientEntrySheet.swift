@@ -119,11 +119,6 @@ enum IngredientEntryPage: Equatable {
     case expires
 }
 
-enum AmountMode: Equatable {
-    case rough
-    case exact
-}
-
 // MARK: - Sheet chrome
 
 extension View {
@@ -167,10 +162,6 @@ struct IngredientEntryFormContent: View {
     @Binding var location: Ingredient.StorageLocation
     /// The row's committed value — only written to when the Expires sub-sheet's Save is tapped.
     @Binding var expirationDate: Date?
-    /// The row's committed rough/exact summary — only written to when the Amount sub-sheet's
-    /// Save is tapped.
-    @Binding var quantityEstimate: Ingredient.QuantityEstimate
-    @Binding var amountMode: AmountMode
     @Binding var amountValue: Double
     @Binding var amountUnit: UnitMeasurement
     /// How many of `amountValue`/`amountUnit`'s unit size the user has (e.g. 5 cans of 227g each).
@@ -191,8 +182,6 @@ struct IngredientEntryFormContent: View {
     @FocusState private var isNameFieldFocused: Bool
 
     // Amount sub-sheet draft — only committed to the bound values above on "Save amount".
-    @State private var draftMode: AmountMode = .rough
-    @State private var draftEstimate: Ingredient.QuantityEstimate = .some
     @State private var draftValue: Double = 100
     @State private var draftValueText: String = "100"
     @State private var draftUnit: UnitMeasurement = .g
@@ -203,12 +192,8 @@ struct IngredientEntryFormContent: View {
     @State private var draftExpiration: Date?
 
     private var amountLabel: String {
-        switch amountMode {
-        case .rough: return quantityEstimate.title
-        case .exact:
-            let size = "\(QuantityConverter.formatQuantity(amountValue)) \(amountUnit.label)"
-            return unitCount > 1 ? "\(unitCount) × \(size)" : size
-        }
+        let size = "\(QuantityConverter.formatQuantity(amountValue)) \(amountUnit.label)"
+        return unitCount > 1 ? "\(unitCount) × \(size)" : size
     }
 
     private var expiresLabel: String {
@@ -284,8 +269,6 @@ struct IngredientEntryFormContent: View {
                             Text(amountLabel)
                                 .sourdoughTextStyle(.rowTitle, color: Sourdough.Ramp.sage500)
                         } action: {
-                            draftMode = amountMode
-                            draftEstimate = quantityEstimate
                             draftValue = amountValue
                             draftValueText = QuantityConverter.formatQuantity(amountValue)
                             draftUnit = amountUnit
@@ -604,35 +587,18 @@ struct IngredientEntryFormContent: View {
             subHeader("Amount", trailingLabel: "Cancel") { page = .main }
 
             ScrollView(showsIndicators: false) {
-            VStack(spacing: Sourdough.Spacing.betweenBlocks) {
-                HStack(spacing: Sourdough.Spacing.insideChip) {
-                    modeTab("Rough", isSelected: draftMode == .rough) { draftMode = .rough }
-                    modeTab("Exact", isSelected: draftMode == .exact) { draftMode = .exact }
-                }
-                .padding(Sourdough.Spacing.iconToLabel)
-                .background(Sourdough.Colors.sunken)
-                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.tile + 2, style: .continuous))
-
-                if draftMode == .rough {
-                    HStack(spacing: Sourdough.Spacing.insideChip) {
-                        ForEach(Ingredient.QuantityEstimate.allCases) { estimate in
-                            roughCard(estimate.title, isSelected: draftEstimate == estimate) {
-                                draftEstimate = estimate
-                            }
-                        }
-                    }
-                } else {
-                    exactModeContent
-                }
+            VStack(spacing: Sourdough.Spacing.betweenBlocks + Sourdough.Spacing.insideChip) {
+                amountField
+                unitField
+                quantityField
             }
             .padding(.horizontal, Sourdough.Spacing.screenMargin)
-            .padding(.bottom, Sourdough.Spacing.betweenBlocks - Sourdough.Spacing.insideChip)
+            .padding(.top, Sourdough.Spacing.betweenBlocks)
+            .padding(.bottom, Sourdough.Spacing.betweenBlocks)
             }
             .frame(maxHeight: .infinity)
 
             saveButton(label: "Save amount") {
-                amountMode = draftMode
-                quantityEstimate = draftEstimate
                 amountValue = draftValue
                 amountUnit = draftUnit
                 unitCount = draftUnitCount
@@ -641,40 +607,12 @@ struct IngredientEntryFormContent: View {
         }
     }
 
-    private func modeTab(_ label: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(label)
-                .sourdoughTextStyle(.body, color: isSelected ? Color.white : Sourdough.Colors.mutedInk)
-                .fontWeight(isSelected ? .bold : .regular)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, Sourdough.Spacing.rowInternals - Sourdough.Spacing.iconToLabel)
-                .background(isSelected ? Sourdough.Ramp.sage500 : Color.clear)
-                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.tile - 1, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
-    }
+    private var amountField: some View {
+        VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
+            Text("Amount")
+                .sourdoughTextStyle(.sectionHead, color: Sourdough.Colors.mutedInk)
+                .padding(.leading, Sourdough.Spacing.iconToLabel)
 
-    private func roughCard(_ label: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(label)
-                .sourdoughTextStyle(.body, color: isSelected ? Color.white : Sourdough.Colors.mutedInk)
-                .fontWeight(isSelected ? .bold : .regular)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, Sourdough.Spacing.betweenBlocks - Sourdough.Spacing.insideChip)
-                .background(isSelected ? Sourdough.Ramp.sage500 : Color.clear)
-                .overlay(
-                    RoundedRectangle(cornerRadius: Sourdough.Radius.tile + 2, style: .continuous)
-                        .stroke(isSelected ? Color.clear : Sourdough.Colors.hairline, lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.tile + 2, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
-    }
-
-    private var exactModeContent: some View {
-        VStack(spacing: Sourdough.Spacing.betweenBlocks) {
             HStack {
                 stepperButton(icon: Ph.minus.bold, background: Sourdough.Colors.sunken, glyphColor: Sourdough.Colors.ink, label: "Decrease amount") {
                     let next = (draftValue - draftUnit.stepSize).rounded(toPlaces: 2)
@@ -708,104 +646,84 @@ struct IngredientEntryFormContent: View {
             .background(Sourdough.Colors.card)
             .overlay(RoundedRectangle(cornerRadius: Sourdough.Radius.card + 2, style: .continuous).stroke(Sourdough.Colors.hairline, lineWidth: 1))
             .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card + 2, style: .continuous))
+        }
+    }
 
-            VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
-                Text("Quantity Owned")
-                    .sourdoughTextStyle(.sectionHead, color: Sourdough.Colors.mutedInk)
-                    .padding(.leading, Sourdough.Spacing.iconToLabel)
+    private var unitField: some View {
+        VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
+            Text("Unit")
+                .sourdoughTextStyle(.sectionHead, color: Sourdough.Colors.mutedInk)
+                .padding(.leading, Sourdough.Spacing.iconToLabel)
 
-                HStack {
-                    stepperButton(icon: Ph.minus.bold, background: Sourdough.Colors.sunken, glyphColor: Sourdough.Colors.ink, label: "Decrease quantity owned") {
-                        draftUnitCount = max(1, draftUnitCount - 1)
-                        draftUnitCountText = "\(draftUnitCount)"
-                    }
-                    Spacer()
-                    HStack(alignment: .lastTextBaseline, spacing: Sourdough.Spacing.iconToLabel) {
-                        TextField("1", text: $draftUnitCountText)
-                            .keyboardType(.numberPad)
-                            .multilineTextAlignment(.center)
-                            .frame(minWidth: 50)
-                            .sourdoughTextStyle(.display)
-                            .foregroundStyle(Sourdough.Colors.ink)
-                            .onChange(of: draftUnitCountText) { _, newValue in
-                                let filtered = newValue.filter { $0.isNumber }
-                                if filtered != newValue { draftUnitCountText = filtered }
-                                if let parsed = Int(filtered), parsed > 0 { draftUnitCount = parsed }
-                            }
-                        Text(draftUnitCount == 1 ? "unit" : "units")
-                            .sourdoughTextStyle(.rowTitle, color: Sourdough.Colors.mutedInk)
-                    }
-                    Spacer()
-                    stepperButton(icon: Ph.plus.bold, background: Sourdough.Ramp.sage500, glyphColor: Sourdough.Colors.onAction, label: "Increase quantity owned") {
-                        draftUnitCount += 1
-                        draftUnitCountText = "\(draftUnitCount)"
-                    }
-                }
-                .padding(.horizontal, Sourdough.Spacing.rowInternals + Sourdough.Spacing.iconToLabel)
-                .padding(.vertical, Sourdough.Spacing.rowInternals)
-                .background(Sourdough.Colors.card)
-                .overlay(RoundedRectangle(cornerRadius: Sourdough.Radius.card + 2, style: .continuous).stroke(Sourdough.Colors.hairline, lineWidth: 1))
-                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card + 2, style: .continuous))
-            }
-
-            VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
-                Text("Unit")
-                    .sourdoughTextStyle(.sectionHead, color: Sourdough.Colors.mutedInk)
-                    .padding(.leading, Sourdough.Spacing.iconToLabel)
-
-                Menu {
-                    ForEach(UnitMeasurement.pickerUnits) { unit in
-                        Button {
-                            draftUnit = unit
-                        } label: {
-                            HStack {
-                                Text(unit.chipLabel)
-                                if draftUnit == unit {
-                                    Ph.check.regular.frame(width: 16, height: 16)
-                                }
+            Menu {
+                ForEach(UnitMeasurement.pickerUnits) { unit in
+                    Button {
+                        draftUnit = unit
+                    } label: {
+                        HStack {
+                            Text(unit.chipLabel)
+                            if draftUnit == unit {
+                                Ph.check.regular.frame(width: 16, height: 16)
                             }
                         }
                     }
-                } label: {
-                    HStack(spacing: Sourdough.Spacing.iconToLabel) {
-                        Text(draftUnit.chipLabel)
-                            .sourdoughTextStyle(.body, color: Sourdough.Colors.ink)
-                        Spacer()
-                        Ph.caretDown.regular
-                            .frame(width: 11, height: 11)
-                            .foregroundStyle(Sourdough.Colors.faintInk)
-                    }
-                    .padding(.horizontal, Sourdough.Spacing.rowInternals)
-                    .frame(height: 48)
-                    .background(Sourdough.Colors.sunken)
-                    .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
                 }
-            }
-
-            HStack(spacing: Sourdough.Spacing.insideChip) {
-                presetChip(value: 250, unit: .g)
-                presetChip(value: 500, unit: .g)
-                presetChip(value: 1, unit: .kg)
+            } label: {
+                HStack(spacing: Sourdough.Spacing.iconToLabel) {
+                    Text(draftUnit.chipLabel)
+                        .sourdoughTextStyle(.body, color: Sourdough.Colors.ink)
+                    Spacer()
+                    Ph.caretDown.regular
+                        .frame(width: 11, height: 11)
+                        .foregroundStyle(Sourdough.Colors.faintInk)
+                }
+                .padding(.horizontal, Sourdough.Spacing.rowInternals)
+                .frame(height: 48)
+                .background(Sourdough.Colors.sunken)
+                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
             }
         }
     }
 
-    private func presetChip(value: Double, unit: UnitMeasurement) -> some View {
-        Button {
-            draftValue = value
-            draftValueText = QuantityConverter.formatQuantity(value)
-            draftUnit = unit
-            draftMode = .exact
-        } label: {
-            Text("\(QuantityConverter.formatQuantity(value)) \(unit.chipLabel)")
-                .sourdoughTextStyle(.body)
-                .foregroundStyle(Sourdough.Colors.ink)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, Sourdough.Spacing.rowInternals)
-                .background(Sourdough.Colors.sunken)
-                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.tile - 1, style: .continuous))
+    private var quantityField: some View {
+        VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
+            Text("Quantity")
+                .sourdoughTextStyle(.sectionHead, color: Sourdough.Colors.mutedInk)
+                .padding(.leading, Sourdough.Spacing.iconToLabel)
+
+            HStack {
+                stepperButton(icon: Ph.minus.bold, background: Sourdough.Colors.sunken, glyphColor: Sourdough.Colors.ink, label: "Decrease quantity") {
+                    draftUnitCount = max(1, draftUnitCount - 1)
+                    draftUnitCountText = "\(draftUnitCount)"
+                }
+                Spacer()
+                HStack(alignment: .lastTextBaseline, spacing: Sourdough.Spacing.iconToLabel) {
+                    TextField("1", text: $draftUnitCountText)
+                        .keyboardType(.numberPad)
+                        .multilineTextAlignment(.center)
+                        .frame(minWidth: 50)
+                        .sourdoughTextStyle(.display)
+                        .foregroundStyle(Sourdough.Colors.ink)
+                        .onChange(of: draftUnitCountText) { _, newValue in
+                            let filtered = newValue.filter { $0.isNumber }
+                            if filtered != newValue { draftUnitCountText = filtered }
+                            if let parsed = Int(filtered), parsed > 0 { draftUnitCount = parsed }
+                        }
+                    Text(draftUnitCount == 1 ? "unit" : "units")
+                        .sourdoughTextStyle(.rowTitle, color: Sourdough.Colors.mutedInk)
+                }
+                Spacer()
+                stepperButton(icon: Ph.plus.bold, background: Sourdough.Ramp.sage500, glyphColor: Sourdough.Colors.onAction, label: "Increase quantity") {
+                    draftUnitCount += 1
+                    draftUnitCountText = "\(draftUnitCount)"
+                }
+            }
+            .padding(.horizontal, Sourdough.Spacing.rowInternals + Sourdough.Spacing.iconToLabel)
+            .padding(.vertical, Sourdough.Spacing.rowInternals)
+            .background(Sourdough.Colors.card)
+            .overlay(RoundedRectangle(cornerRadius: Sourdough.Radius.card + 2, style: .continuous).stroke(Sourdough.Colors.hairline, lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card + 2, style: .continuous))
         }
-        .buttonStyle(.plain)
     }
 
     private func stepperButton(icon: Image, background: Color, glyphColor: Color, label: String, action: @escaping () -> Void) -> some View {
@@ -958,8 +876,6 @@ struct EditIngredientSheet: View {
     @State private var location: Ingredient.StorageLocation
     @State private var expirationDate: Date?
 
-    @State private var quantityEstimate: Ingredient.QuantityEstimate
-    @State private var amountMode: AmountMode
     @State private var amountValue: Double
     @State private var amountUnit: UnitMeasurement
     @State private var unitCount: Int
@@ -979,35 +895,30 @@ struct EditIngredientSheet: View {
 
         if let amount = ingredient.amount, !amount.isEmpty {
             let parsed = UnitMeasurement.parse(from: amount)
-            _amountMode = State(initialValue: .exact)
             _amountValue = State(initialValue: Double(parsed.value) ?? 1)
             _amountUnit = State(initialValue: parsed.unit)
         } else {
-            _amountMode = State(initialValue: .rough)
-            _amountValue = State(initialValue: 100)
-            _amountUnit = State(initialValue: .g)
+            // No prior exact amount (e.g. only ever roughly estimated) — seed a neutral
+            // generic default rather than presuming grams; editing always captures an
+            // exact value now, so this is the "upgrade to exact" starting point.
+            _amountValue = State(initialValue: 1)
+            _amountUnit = State(initialValue: .pieces)
         }
-        _quantityEstimate = State(initialValue: ingredient.quantityEstimate ?? .some)
     }
 
     private var canSave: Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var formattedAmount: String? {
-        guard amountMode == .exact else { return nil }
-        return "\(QuantityConverter.formatQuantity(amountValue)) \(amountUnit.label)"
+    private var formattedAmount: String {
+        "\(QuantityConverter.formatQuantity(amountValue)) \(amountUnit.label)"
     }
 
     /// Preserves the ingredient's original `quantitySource` (e.g. `.barcode`) when re-saving
-    /// without actually changing the amount/estimate — only recomputes it when the value differs.
-    private var resolvedQuantityFields: (estimate: Ingredient.QuantityEstimate?, source: Ingredient.QuantitySource) {
-        if amountMode == .exact {
-            let unchanged = formattedAmount == ingredient.amount
-            return (nil, unchanged ? (ingredient.quantitySource ?? .manualPrecise) : .manualPrecise)
-        }
-        let unchanged = quantityEstimate == ingredient.quantityEstimate
-        return (quantityEstimate, unchanged ? (ingredient.quantitySource ?? .manualEstimate) : .manualEstimate)
+    /// without actually changing the amount — only recomputes it when the value differs.
+    private var resolvedQuantitySource: Ingredient.QuantitySource {
+        let unchanged = formattedAmount == ingredient.amount
+        return unchanged ? (ingredient.quantitySource ?? .manualPrecise) : .manualPrecise
     }
 
     var body: some View {
@@ -1017,8 +928,7 @@ struct EditIngredientSheet: View {
             canSave: canSave,
             onCancel: { dismiss() },
             onSave: {
-                let resolved = resolvedQuantityFields
-                onSave(name, formattedAmount, unitCount, resolved.estimate, resolved.source, category, location, expirationDate, icon)
+                onSave(name, formattedAmount, unitCount, nil, resolvedQuantitySource, category, location, expirationDate, icon)
                 dismiss()
             },
             page: $page,
@@ -1027,8 +937,6 @@ struct EditIngredientSheet: View {
             category: $category,
             location: $location,
             expirationDate: $expirationDate,
-            quantityEstimate: $quantityEstimate,
-            amountMode: $amountMode,
             amountValue: $amountValue,
             amountUnit: $amountUnit,
             unitCount: $unitCount,

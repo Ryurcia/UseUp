@@ -4,6 +4,7 @@ import PhosphorSwift
 struct CookbookView: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var savedRecipesStore: SavedRecipesStore
+    @Environment(\.dismiss) private var dismiss
     @State private var showAddRecipeOptions = false
     @State private var showPasteURLSheet = false
     @State private var cookbookRecipeData: RecipeImportData? = nil
@@ -76,6 +77,13 @@ struct CookbookView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: Sourdough.Spacing.screenMargin) {
+                Button { dismiss() } label: {
+                    Ph.caretLeft.regular
+                        .frame(width: 17, height: 17)
+                        .foregroundStyle(Sourdough.Colors.ink)
+                }
+                .buttonStyle(.plain)
+
                 Text("Cookbook")
                     .foregroundStyle(Sourdough.Colors.ink)
                     .sourdoughTextStyle(.title1)
@@ -105,6 +113,7 @@ struct CookbookView: View {
             premiumContent
         }
         .background(Sourdough.Colors.canvas)
+        .background(SwipeBackEnabler())
         .toolbar(.hidden, for: .navigationBar)
         .navigationDestination(item: $navigateToRecipe) { recipe in
             RecipeDetailView(recipe: recipe)

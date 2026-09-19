@@ -58,7 +58,11 @@ enum ExpirationNotificationScheduler {
                 default:
                     content.title = "Your \(ingredient.name) expires in \(daysRemaining) days"
                 }
+                if let cost = ingredient.estimatedTotalCost, cost > 0 {
+                    content.body = "That's \(cost.asHedgedDollar) you'd waste if it goes uneaten."
+                }
             } else {
+                let totalCost = items.compactMap { $0.ingredient.estimatedTotalCost }.reduce(0, +)
                 let uniqueDays = Set(items.map(\.daysRemaining))
                 if uniqueDays.count == 1, let daysRemaining = uniqueDays.first {
                     switch daysRemaining {
@@ -70,6 +74,9 @@ enum ExpirationNotificationScheduler {
                         content.title = "You have \(items.count) things about to go bad in \(daysRemaining) days"
                     }
                     content.body = items.map { $0.ingredient.name }.joined(separator: ", ")
+                    if totalCost > 0 {
+                        content.body += " — \(totalCost.asHedgedDollar) at risk if wasted"
+                    }
                 } else {
                     // Mixed urgency (different expiration dates, same fire day) — annotate each.
                     content.title = "You have \(items.count) items expiring soon"
@@ -83,6 +90,9 @@ enum ExpirationNotificationScheduler {
                             }
                         }
                         .joined(separator: ", ")
+                    if totalCost > 0 {
+                        content.body += " — \(totalCost.asHedgedDollar) at risk if wasted"
+                    }
                 }
             }
 

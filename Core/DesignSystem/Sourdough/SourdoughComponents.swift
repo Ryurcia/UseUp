@@ -296,7 +296,7 @@ struct SelectableChip: View {
 
 extension View {
     /// Shared chrome for `PantryView`'s dashboard card — hero-radius surface, hairline stroke,
-    /// lifted elevation. Hugs its content.
+    /// no shadow. Hugs its content.
     func pantryDashboardCard() -> some View {
         self
             .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -307,6 +307,6 @@ extension View {
                     .stroke(Sourdough.Colors.hairline, lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.hero, style: .continuous))
-            .sourdoughElevation(.lifted, cornerRadius: Sourdough.Radius.hero)
+            .sourdoughElevation(.hairline, cornerRadius: Sourdough.Radius.hero)
     }
 }

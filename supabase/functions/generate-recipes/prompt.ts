@@ -9,7 +9,7 @@ export const RECIPES_PER_GENERATION = 5
 export const SYSTEM_PROMPT = `You are a professional chef and recipe curator. Your job is to generate recipes based on user-provided ingredients, preferences, and constraints.
 
  CRITICAL CONSTRAINTS (highest priority):
-            - Return exactly the number of recipes requested in the user message — no more, no fewer.
+            - Follow the recipe-count instructions in the user message exactly — whether it specifies an exact number or a minimum-needed-up-to-a-cap objective.
             - Strictly follow dietary restrictions — never include restricted ingredients, even in suggested additions.
 
 Respond ONLY with valid JSON matching this exact structure — no markdown, no backticks, no preamble:
@@ -36,7 +36,8 @@ Respond ONLY with valid JSON matching this exact structure — no markdown, no b
       },
       "substitutions": [
         { "ingredient": "string — exact name of a missing_ingredient", "substitute": "string — practical replacement", "note": "string — one-sentence reason or tip" }
-      ]
+      ],
+      "tags": ["string — short lowercase keyword describing the dish beyond cuisine, e.g. comfort-food, one-pan, meal-prep, budget-friendly"]
     }
   ]
 }
@@ -53,7 +54,8 @@ Core rules:
            - Prep and cook times must be realistic for a home cook, not a professional kitchen — factor in actual chopping, measuring, and cleanup between steps.
            - Yield/servings must be reasonable for the recipe type (e.g. a stir-fry for 2-4, a casserole for 4-6)
            - Macro estimates should be conservative approximations based on standard nutritional values — rough estimates, not precise calculations. Round calories and fat up, protein down, when uncertain.
-           - "substitutions" must only reference "missing_ingredients", never "ingredients_used". Provide one where a practical alternative exists; omit pantry staples with no viable substitute (e.g. water, salt). Keep notes to one sentence, and apply the same allergy/dietary-restriction/diet-type constraints as everywhere else — zero exceptions.`
+           - "substitutions" must only reference "missing_ingredients", never "ingredients_used". Provide one where a practical alternative exists; omit pantry staples with no viable substitute (e.g. water, salt). Keep notes to one sentence, and apply the same allergy/dietary-restriction/diet-type constraints as everywhere else — zero exceptions.
+           - "tags": 2-5 short lowercase keywords per recipe, hyphenated for multi-word (e.g. "one-pan", "meal-prep"). Describe the dish itself — cooking method, occasion, or vibe — never repeat cuisine, diet type, or anything already implied by the other fields.`
 
 export interface GenerationOptions {
   dietType: string
@@ -64,8 +66,8 @@ export interface GenerationOptions {
   cuisine: string | null
   skillLevel: number
   priorityIngredients: string[]
-  diversifyIngredients: boolean
-  // How many recipes to return. Standard generation = RECIPES_PER_GENERATION; Snap Chef = 1.
+  // Recipe count ceiling. Standard generation = RECIPES_PER_GENERATION (a cap, not a target — see
+  // buildUserPrompt); Snap Chef = 1 (always exact).
   count: number
 }
 
@@ -80,7 +82,6 @@ export function normalizeOptions(o: Partial<GenerationOptions> | undefined): Gen
     cuisine: o?.cuisine ?? null,
     skillLevel: o?.skillLevel ?? 1,
     priorityIngredients: o?.priorityIngredients ?? [],
-    diversifyIngredients: o?.diversifyIngredients ?? false,
     count: typeof count === 'number' && count >= 1 && count <= RECIPES_PER_GENERATION
       ? Math.floor(count)
       : RECIPES_PER_GENERATION,
@@ -102,24 +103,11 @@ export function buildUserPrompt(ingredientNames: string[], o: GenerationOptions)
     )
   } else {
     lines.push(
-      `Generate exactly ${o.count} recipes in "recipes" — no more, no fewer. This overrides ingredient-splitting logic: consolidate into the ${o.count} strongest combinations if grouping would yield more, or add variations from the same ingredient pool if fewer.`,
+      `Generate the MINIMUM number of recipes needed — up to ${o.count} at most — so that, together, they use almost all of the listed ingredients at least once. Do not generate more recipes than necessary just to reach ${o.count}: if 2 recipes can reasonably cover almost everything, return 2, not ${o.count}. Only add another recipe when the remaining unused ingredients don't culinarily belong in the recipes you already have. Prioritize maximizing combined ingredient coverage across the fewest recipes over recipe variety — recipes may share ingredients where useful.`,
     )
   }
-  const minIngredients = Math.min(o.diversifyIngredients ? 2 : 3, ingredientNames.length)
+  const minIngredients = Math.min(3, ingredientNames.length)
   lines.push(`Each recipe must use at least ${minIngredients} user-provided ingredient${minIngredients === 1 ? '' : 's'}.`)
-
-  if (o.diversifyIngredients) {
-    lines.push(
-      'Each recipe should use a DIFFERENT SUBSET of the provided ingredients. You do NOT need to use all ingredients in every recipe — variety is the goal. Different recipes can share some ingredients, but each recipe should explore a distinct combination. Prioritize ingredient diversity across the recipe set.',
-    )
-    lines.push(
-      'Recipe style: Each recipe should use a DIFFERENT combination of the provided ingredients. Do not repeat the same set of ingredients across recipes.',
-    )
-  } else {
-    lines.push(
-      "Each recipe must use at least 60% of the user's provided ingredients. Prioritize recipes that maximize use of provided ingredients.",
-    )
-  }
 
   if (o.priorityIngredients.length > 0) {
     lines.push(

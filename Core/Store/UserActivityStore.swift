@@ -7,7 +7,6 @@ enum ActivityEventType: String {
     case itemSaved = "item_saved"
     case recipeCooked = "recipe_cooked"
     case itemWasted = "item_wasted"
-    case recipeGenerated = "recipe_generated"
 }
 
 /// Decodable row for the `user_activity` table — shared by every fetch method below rather than
@@ -27,8 +26,6 @@ final class UserActivityStore: ObservableObject {
     @Published var itemsSaved: Int = 0
     @Published var recipesCooked: Int = 0
     @Published var itemsWasted: Int = 0
-    @Published var generationsToday: Int = 0
-    @Published var nextDailyResetDate: Date? = nil
 
     var userId: UUID?
     private let client = SupabaseManager.client
@@ -47,8 +44,6 @@ final class UserActivityStore: ObservableObject {
         case .itemSaved: itemsSaved += 1
         case .recipeCooked: recipesCooked += 1
         case .itemWasted: itemsWasted += 1
-        case .recipeGenerated:
-            generationsToday += 1
         }
 
         Task {
@@ -66,19 +61,9 @@ final class UserActivityStore: ObservableObject {
                 case .itemSaved: itemsSaved = max(0, itemsSaved - 1)
                 case .recipeCooked: recipesCooked = max(0, recipesCooked - 1)
                 case .itemWasted: itemsWasted = max(0, itemsWasted - 1)
-                case .recipeGenerated:
-                    generationsToday = max(0, generationsToday - 1)
                 }
             }
         }
-    }
-
-    /// The `recipe_generated` row is written server-side by the `generate-recipes` edge function,
-    /// so the client doesn't `logEvent` for it. Bump the counter optimistically for instant UI,
-    /// then reconcile against the table.
-    func noteRecipeGeneratedRemotely() {
-        generationsToday += 1
-        Task { await fetchGenerationsToday() }
     }
 
     func fetchStats(since date: Date) async {
@@ -114,33 +99,9 @@ final class UserActivityStore: ObservableObject {
         }
     }
 
-    func fetchGenerationsToday() async {
-        guard let userId else { return }
-
-        let startOfDay = Calendar.current.startOfDay(for: Date())
-        let dateString = Self.iso8601.string(from: startOfDay)
-
-        do {
-            let rows: [ActivityRow] = try await client
-                .from("user_activity")
-                .select("event_type")
-                .eq("user_id", value: userId.uuidString)
-                .eq("event_type", value: ActivityEventType.recipeGenerated.rawValue)
-                .gte("created_at", value: dateString)
-                .limit(5)
-                .execute()
-                .value
-
-            generationsToday = rows.count
-            nextDailyResetDate = Calendar.current.date(byAdding: .day, value: 1, to: startOfDay)
-        } catch {
-            // Keep current value on error
-        }
-    }
-
     /// Every activity row for the current user, unfiltered by date/type/limit — used for data
-    /// export. `fetchStats(since:)` and `fetchGenerationsToday()` are windowed for their specific
-    /// dashboard purpose; neither returns the complete history.
+    /// export. `fetchStats(since:)` is windowed for its specific dashboard purpose; this returns
+    /// the complete history.
     func fetchAllActivity() async -> [(eventType: String, createdAt: String?)] {
         guard let userId else { return [] }
         do {
@@ -161,8 +122,6 @@ final class UserActivityStore: ObservableObject {
         itemsSaved = 0
         recipesCooked = 0
         itemsWasted = 0
-        generationsToday = 0
-        nextDailyResetDate = nil
         userId = nil
     }
 }

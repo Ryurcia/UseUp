@@ -105,6 +105,10 @@ struct Ingredient: Identifiable, Hashable {
     var estimatedTotalCost: Double?
     var costUnit: String?
     var costSource: String?
+    /// Set once a daily server-side sweep has recorded this item's cost as a `wasted`
+    /// `pantry_events` row (because its `expirationDate` passed) — lets `PantryStore.deleteIngredient`
+    /// avoid writing a second `wasted` event for the same item when it's later deleted.
+    var wastedRecordedAt: Date?
 
     init(
         id: UUID = UUID(),
@@ -124,7 +128,8 @@ struct Ingredient: Identifiable, Hashable {
         estimatedUnitCost: Double? = nil,
         estimatedTotalCost: Double? = nil,
         costUnit: String? = nil,
-        costSource: String? = nil
+        costSource: String? = nil,
+        wastedRecordedAt: Date? = nil
     ) {
         self.id = id
         self.name = name
@@ -144,6 +149,7 @@ struct Ingredient: Identifiable, Hashable {
         self.estimatedTotalCost = estimatedTotalCost
         self.costUnit = costUnit
         self.costSource = costSource
+        self.wastedRecordedAt = wastedRecordedAt
     }
 
     /// Total on hand, accounting for `unitCount` (5 x "227 g" -> "1135 g") -- what "enough for a

@@ -15,6 +15,7 @@ protocol AuthServicing {
     func updatePassword(_ newPassword: String) async throws
     func updateEmail(_ newEmail: String) async throws
     func verifyEmailChangeOTP(newEmail: String, token: String) async throws -> AppUser
+    func sendEmailVerificationCode(email: String) async throws
     func signOut()
     func deleteAccount() async throws
 }

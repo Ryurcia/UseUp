@@ -11,18 +11,17 @@ struct OnboardingOptionCard: View {
             HStack(spacing: Sourdough.Spacing.insideChip) {
                 Text(label)
                     .foregroundStyle(isSelected ? Sourdough.Colors.onAction : Sourdough.Colors.ink)
-                    .sourdoughTextStyle(.body)
+                    .sourdoughTextStyle(.rowTitle)
                     .multilineTextAlignment(.leading)
                 Spacer(minLength: 0)
-                if isSelected {
-                    Ph.checkCircle.fill
-                        .frame(width: 16, height: 16)
-                        .foregroundStyle(Sourdough.Colors.onAction)
-                }
+                Ph.checkCircle.fill
+                    .frame(width: 18, height: 18)
+                    .foregroundStyle(Sourdough.Colors.onAction)
+                    .opacity(isSelected ? 1 : 0)
             }
             .padding(.horizontal, Sourdough.Spacing.screenMargin)
-            .padding(.vertical, Sourdough.Spacing.screenMargin)
-            .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
+            .padding(.vertical, 20)
+            .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
             .background(isSelected ? Sourdough.Ramp.sage500 : Sourdough.Colors.sunken)
             .overlay(
                 RoundedRectangle(cornerRadius: Sourdough.Radius.hero, style: .continuous)

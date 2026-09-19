@@ -32,6 +32,7 @@ struct NotificationListView: View {
     @State private var allExpiringItems: [Ingredient] = []
     @State private var todayItems: [Ingredient] = []
     @State private var thisWeekItems: [Ingredient] = []
+    @State private var showVerificationSheet = false
 
     private let autoHideInterval: TimeInterval = 3 * 24 * 3600
 
@@ -107,6 +108,12 @@ struct NotificationListView: View {
             headerView
             tabPicker
 
+            if !session.isEmailVerified {
+                verifyEmailNotificationRow
+                    .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                    .padding(.top, Sourdough.Spacing.rowInternals)
+            }
+
             if isEmpty {
                 emptyStateView
             } else {
@@ -146,6 +153,10 @@ struct NotificationListView: View {
         .sheet(item: $recipeSearchIngredient) { ingredient in
             RecipeSuggestionSheet(ingredient: ingredient)
                 .environmentObject(savedRecipesStore)
+        }
+        .sheet(isPresented: $showVerificationSheet) {
+            OTPVerificationView(email: session.currentUserEmail ?? "")
+                .environmentObject(session)
         }
         .navigationDestination(item: $navigateToRecipe) { recipe in
             RecipeDetailView(recipe: recipe)
@@ -295,6 +306,50 @@ struct NotificationListView: View {
         .padding(.horizontal, Sourdough.Spacing.screenMargin)
         .padding(.top, Sourdough.Spacing.insideChip)
         .padding(.bottom, Sourdough.Spacing.insideChip)
+    }
+
+    // MARK: - Pinned Verify-Email Row
+
+    /// Pinned above all three tabs until `session.isEmailVerified` — rendered outside the `List`
+    /// entirely (not a row), so it has no `.swipeActions`/mark-as-read behavior and never enters
+    /// `unreadCount`/`NotificationBellButton`'s badge math.
+    private var verifyEmailNotificationRow: some View {
+        Button {
+            Task { await session.sendEmailVerificationCode() }
+            showVerificationSheet = true
+        } label: {
+            HStack(spacing: Sourdough.Spacing.screenMargin) {
+                Ph.envelope.regular
+                    .frame(width: 22, height: 22)
+                    .foregroundStyle(Sourdough.Ramp.honey700)
+                    .frame(width: 50, height: 50)
+                    .background(Sourdough.Ramp.honey100)
+                    .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.tile, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Verify your email")
+                        .foregroundStyle(Sourdough.Colors.ink)
+                        .sourdoughTextStyle(.rowTitle)
+                    Text("Finish setting up your account")
+                        .foregroundStyle(Sourdough.Ramp.honey700)
+                        .sourdoughTextStyle(.subhead)
+                }
+
+                Spacer()
+
+                Ph.caretRight.bold
+                    .frame(width: 7, height: 12)
+                    .foregroundStyle(Sourdough.Ramp.honey500)
+            }
+            .padding(Sourdough.Spacing.screenMargin)
+        }
+        .buttonStyle(.plain)
+        .background(Sourdough.Ramp.honey50)
+        .overlay(
+            RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous)
+                .stroke(Sourdough.Ramp.honey200, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
     }
 
     // MARK: - Expiring Card

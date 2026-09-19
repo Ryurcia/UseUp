@@ -11,20 +11,18 @@ struct SnapChefFlow: View {
 
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var savedRecipesStore: SavedRecipesStore
-    @EnvironmentObject private var activityStore: UserActivityStore
 
-    private let scanner: FoodPhotoIdentifying = SupabaseFoodPhotoScanner()
+    private let scanner: FoodPhotoIdentifying = TestingMode.isEnabled ? MockFoodPhotoScanner() : SupabaseFoodPhotoScanner()
 
     enum Phase { case tips, camera, identifying, review, loading, result }
 
     @State private var phase: Phase
     @State private var ingredients: [SnapChefIngredient] = []
-    @State private var confirmedNames: [String] = []
     @State private var resultRecipe: Recipe?
     @State private var pushedRecipe: Recipe?
     @State private var generationError: Error?
-    @State private var freeRegensRemaining: Int?
-    @State private var lastWasRegeneration = false
+    @State private var isEditingDetectedIngredients = false
+    @FocusState private var focusedIngredientID: UUID?
 
     @State private var captureRequested = false
     @State private var torchOn = false
@@ -77,7 +75,7 @@ struct SnapChefFlow: View {
         case .review:
             SnapChefReviewView(
                 ingredients: $ingredients,
-                onConfirm: { startGeneration(isRegeneration: false) },
+                onConfirm: { startGeneration() },
                 onRetake: { phase = .camera },
                 onCancel: onFinished
             )
@@ -174,15 +172,29 @@ struct SnapChefFlow: View {
                 }
 
                 Button { pushedRecipe = recipe } label: {
-                    heroCard(recipe)
+                    RecipeCard(
+                        recipe: recipe,
+                        showBadge: false,
+                        isSaved: savedRecipesStore.isSaved(recipe),
+                        imageAspectRatio: 16 / 9,
+                        onSave: {
+                            if savedRecipesStore.isSaved(recipe) {
+                                savedRecipesStore.unsaveRecipe(recipe)
+                            } else {
+                                savedRecipesStore.saveGeneratedRecipe(recipe)
+                            }
+                        }
+                    )
                 }
                 .buttonStyle(.plain)
-
-                regenerateButton
 
                 Text("Tap the card for the full recipe, ingredients and steps.")
                     .sourdoughTextStyle(.caption, color: Sourdough.Colors.faintInk)
                     .frame(maxWidth: .infinity, alignment: .center)
+
+                ingredientReviewSection
+
+                regenerateButton
             }
             .padding(.horizontal, Sourdough.Spacing.screenMargin)
             .padding(.top, Sourdough.Spacing.rowInternals)
@@ -203,63 +215,197 @@ struct SnapChefFlow: View {
         .buttonStyle(.plain)
     }
 
-    private func heroCard(_ recipe: Recipe) -> some View {
-        OnDarkHeroCard(
-            image: Image("AI_GEN"),
-            title: recipe.title,
-            meta: "\(recipe.macros.calories) cal · \(recipe.macros.proteinG)g protein · \(recipe.timeMinutes) min"
-        ) {
-            if !recipe.ingredientsUsed.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 4) {
-                        ForEach(recipe.ingredientsUsed.prefix(6), id: \.id) { ingredient in
-                            Text(ingredient.name.capitalized)
-                                .foregroundStyle(Sourdough.Colors.heroTitleOnDark)
-                                .sourdoughTextStyle(.caption)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.white.opacity(0.2))
-                                .clipShape(Capsule())
-                        }
-                    }
+    // MARK: - Ingredient review (post-generation recap)
+
+    private var ingredientReviewSection: some View {
+        VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {
+            HStack(spacing: Sourdough.Spacing.rowInternals) {
+                Text("What we used")
+                    .sourdoughTextStyle(.rowTitle, color: Sourdough.Colors.ink)
+                Spacer(minLength: 0)
+                if !isEditingDetectedIngredients {
+                    editPillButton
                 }
-                .padding(.bottom, Sourdough.Spacing.iconToLabel)
             }
-        }
-        .overlay(alignment: .topLeading) {
-            AIGeneratedBadge().padding(Sourdough.Spacing.rowInternals)
-        }
-        .overlay(alignment: .topTrailing) {
-            let isSaved = savedRecipesStore.isSaved(recipe)
-            Button {
-                if isSaved { savedRecipesStore.unsaveRecipe(recipe) }
-                else { savedRecipesStore.saveGeneratedRecipe(recipe) }
-            } label: {
-                (isSaved ? Ph.bookmark.fill : Ph.bookmark.regular)
-                    .frame(width: 14, height: 14)
-                    .foregroundStyle(isSaved ? Sourdough.Ramp.sageDark : Sourdough.Colors.heroTitleOnDark)
-                    .frame(width: 36, height: 36)
-                    .background(.ultraThinMaterial)
-                    .clipShape(Circle())
+
+            ForEach($ingredients) { $item in
+                detectedIngredientRow($item)
             }
-            .buttonStyle(.plain)
-            .padding(Sourdough.Spacing.rowInternals)
+
+            if isEditingDetectedIngredients {
+                addDetectedIngredientButton
+                saveIngredientEditsButton
+            }
         }
     }
 
-    private var regenerateButton: some View {
-        let free = freeRegensRemaining ?? 0
-        let dailyLeft = max(0, 5 - activityStore.generationsToday)
-        let canRegen = free >= 1 || dailyLeft >= 1
-        let label: String = free >= 1
-            ? "Re-roll · \(free) free left"
-            : dailyLeft >= 1 ? "Re-roll · uses 1 of \(dailyLeft) today"
-            : "Daily limit reached"
+    private var hasUsableDetectedIngredient: Bool {
+        ingredients.contains { !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
 
-        return Button { startGeneration(isRegeneration: true) } label: {
+    private var saveIngredientEditsButton: some View {
+        Button {
+            focusedIngredientID = nil
+            isEditingDetectedIngredients = false
+        } label: {
+            Text("Save")
+                .foregroundStyle(Sourdough.Colors.onAction)
+                .sourdoughTextStyle(.rowTitle)
+                .frame(maxWidth: .infinity)
+                .frame(height: 44)
+                .background(Sourdough.Colors.action)
+                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(!hasUsableDetectedIngredient)
+        .opacity(hasUsableDetectedIngredient ? 1 : 0.5)
+    }
+
+    private var editPillButton: some View {
+        Button {
+            isEditingDetectedIngredients = true
+        } label: {
+            Text("Edit")
+                .sourdoughTextStyle(.subhead, color: Sourdough.Colors.action)
+                .padding(.horizontal, Sourdough.Spacing.rowInternals)
+                .frame(height: 36)
+                .overlay(Capsule().stroke(Sourdough.Colors.action, lineWidth: 1.5))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func detectedIngredientRow(_ item: Binding<SnapChefIngredient>) -> some View {
+        HStack(spacing: Sourdough.Spacing.rowInternals) {
+            if isEditingDetectedIngredients {
+                HStack(alignment: .top, spacing: Sourdough.Spacing.rowInternals) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("NAME")
+                            .sourdoughTextStyle(.caption, color: Sourdough.Colors.faintInk)
+                        TextField("Ingredient", text: item.name)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .sourdoughTextStyle(.body, color: Sourdough.Colors.ink)
+                            .focused($focusedIngredientID, equals: item.wrappedValue.id)
+                            .submitLabel(.done)
+                            .padding(.horizontal, Sourdough.Spacing.insideChip)
+                            .frame(height: 40)
+                            .background(Sourdough.Colors.sunken)
+                            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.input, style: .continuous))
+                    }
+                    .frame(maxWidth: .infinity)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("QTY")
+                            .sourdoughTextStyle(.caption, color: Sourdough.Colors.faintInk)
+                        TextField("Amount", text: item.amount)
+                            .keyboardType(.decimalPad)
+                            .sourdoughTextStyle(.body, color: Sourdough.Colors.ink)
+                            .padding(.horizontal, Sourdough.Spacing.insideChip)
+                            .frame(height: 40)
+                            .background(Sourdough.Colors.sunken)
+                            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.input, style: .continuous))
+                    }
+                    .frame(width: 64)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("UNIT")
+                            .sourdoughTextStyle(.caption, color: Sourdough.Colors.faintInk)
+                        Menu {
+                            ForEach(UnitMeasurement.pickerUnits) { unit in
+                                Button {
+                                    item.wrappedValue.unit = unit
+                                } label: {
+                                    HStack {
+                                        Text(unit.chipLabel)
+                                        if item.wrappedValue.unit == unit {
+                                            Ph.check.regular.frame(width: 16, height: 16)
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text(item.wrappedValue.unit.chipLabel.isEmpty ? "unit" : item.wrappedValue.unit.chipLabel)
+                                    .sourdoughTextStyle(.body, color: item.wrappedValue.unit == .none ? Sourdough.Colors.faintInk : Sourdough.Colors.ink)
+                                    .lineLimit(1)
+                                Spacer(minLength: 0)
+                                Ph.caretDown.regular
+                                    .frame(width: 9, height: 9)
+                                    .foregroundStyle(Sourdough.Colors.faintInk)
+                            }
+                            .padding(.horizontal, Sourdough.Spacing.insideChip)
+                            .frame(height: 40)
+                            .background(Sourdough.Colors.sunken)
+                            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.input, style: .continuous))
+                        }
+                    }
+                    .frame(width: 86)
+
+                    Button {
+                        ingredients.removeAll { $0.id == item.wrappedValue.id }
+                    } label: {
+                        Ph.trash.regular
+                            .frame(width: 15, height: 15)
+                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 22)
+                }
+            } else {
+                Text(item.wrappedValue.name.capitalized)
+                    .sourdoughTextStyle(.body, color: Sourdough.Colors.ink)
+                Spacer()
+                let quantity = displayQuantity(item.wrappedValue)
+                if !quantity.isEmpty {
+                    Text(quantity)
+                        .sourdoughTextStyle(.subhead, color: Sourdough.Colors.mutedInk)
+                }
+                if item.wrappedValue.lowConfidence {
+                    Ph.warning.regular
+                        .frame(width: 12, height: 12)
+                        .foregroundStyle(Sourdough.Ramp.honey700)
+                }
+            }
+        }
+        .padding(Sourdough.Spacing.rowInternals)
+        .background(Sourdough.Colors.card)
+        .overlay(
+            RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous)
+                .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
+    }
+
+    private var addDetectedIngredientButton: some View {
+        Button {
+            let new = SnapChefIngredient(name: "")
+            ingredients.append(new)
+            focusedIngredientID = new.id
+        } label: {
+            HStack(spacing: Sourdough.Spacing.insideChip) {
+                Ph.plus.bold.frame(width: 13, height: 13)
+                Text("Add an ingredient")
+            }
+            .foregroundStyle(Sourdough.Colors.action)
+            .sourdoughTextStyle(.subhead)
+            .frame(maxWidth: .infinity)
+            .frame(height: 40)
+            .overlay(
+                RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous)
+                    .stroke(Sourdough.Colors.action, style: StrokeStyle(lineWidth: 1, dash: [5]))
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var regenerateButton: some View {
+        Button {
+            isEditingDetectedIngredients = false
+            startGeneration()
+        } label: {
             HStack(spacing: Sourdough.Spacing.insideChip) {
                 Ph.arrowClockwise.bold.frame(width: 16, height: 16)
-                Text(label)
+                Text("Regenerate")
             }
             .foregroundStyle(Sourdough.Colors.action)
             .sourdoughTextStyle(.rowTitle)
@@ -273,8 +419,6 @@ struct SnapChefFlow: View {
             .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
         }
         .buttonStyle(.plain)
-        .disabled(!canRegen)
-        .opacity(canRegen ? 1 : 0.5)
     }
 
     // MARK: - Generation error
@@ -301,7 +445,7 @@ struct SnapChefFlow: View {
 
             VStack(spacing: Sourdough.Spacing.insideChip) {
                 if !isLimit {
-                    Button { startGeneration(isRegeneration: lastWasRegeneration) } label: {
+                    Button { startGeneration() } label: {
                         Text("Try again")
                             .foregroundStyle(Sourdough.Colors.onAction)
                             .sourdoughTextStyle(.rowTitle)
@@ -310,7 +454,15 @@ struct SnapChefFlow: View {
                             .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
                     }
                     .buttonStyle(.plain)
-                    Button { generationError = nil; phase = .review } label: {
+                    Button {
+                        generationError = nil
+                        if resultRecipe != nil {
+                            isEditingDetectedIngredients = true
+                            phase = .result
+                        } else {
+                            phase = .review
+                        }
+                    } label: {
                         Text("Edit ingredients")
                             .sourdoughTextStyle(.subhead, color: Sourdough.Colors.mutedInk)
                     }
@@ -351,9 +503,19 @@ struct SnapChefFlow: View {
             let scanned = try await scanner.identifyItems(in: data)
             guard !Task.isCancelled else { return }
             ingredients = scanned.map {
-                SnapChefIngredient(name: $0.name.lowercased(), lowConfidence: $0.confidence < 0.6)
+                let parsed = UnitMeasurement.parse(from: $0.estimatedQuantity)
+                return SnapChefIngredient(
+                    name: $0.name.lowercased(),
+                    amount: parsed.value,
+                    unit: parsed.unit,
+                    lowConfidence: $0.confidence < 0.6
+                )
             }
-            phase = .review
+            if ingredients.isEmpty {
+                phase = .review
+            } else {
+                await startGeneration()
+            }
         } catch is CancellationError {
             return
         } catch {
@@ -362,34 +524,40 @@ struct SnapChefFlow: View {
         }
     }
 
-    @MainActor
-    private func startGeneration(isRegeneration: Bool) {
-        generationError = nil
-        lastWasRegeneration = isRegeneration
-        if !isRegeneration {
-            confirmedNames = ingredients
-                .map { $0.name.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
+    /// Formats each ingredient as `"name (amount)"` when an amount is present, matching
+    /// `GenerateView.runGeneration`'s convention — read fresh at every call so an in-place edit to
+    /// `ingredients` (via the result screen's review section) is picked up by the next Regenerate.
+    private func ingredientNames() -> [String] {
+        ingredients.compactMap { item in
+            let name = item.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { return nil }
+            let quantity = displayQuantity(item)
+            return quantity.isEmpty ? name : "\(name) (\(quantity))"
         }
+    }
+
+    private func displayQuantity(_ item: SnapChefIngredient) -> String {
+        let amount = item.amount.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !amount.isEmpty else { return "" }
+        let unitLabel = item.unit.chipLabel
+        return unitLabel.isEmpty ? amount : "\(amount) \(unitLabel)"
+    }
+
+    @MainActor
+    private func startGeneration() {
+        generationError = nil
         phase = .loading
 
         let options = GenerationOptions(snapChefProfile: session)
-        let names = confirmedNames
+        let names = ingredientNames()
 
         generationTask?.cancel()
         generationTask = Task {
             do {
-                let out = try await recipeGenerator.snapChefRecipe(
-                    for: names,
-                    options: options,
-                    isRegeneration: isRegeneration
-                )
+                let out = try await recipeGenerator.snapChefRecipe(for: names, options: options)
                 guard !Task.isCancelled else { return }
                 resultRecipe = out.recipe
-                freeRegensRemaining = out.freeRegensRemaining
-                if out.countedAgainstDailyLimit {
-                    activityStore.noteRecipeGeneratedRemotely()
-                }
+                isEditingDetectedIngredients = false
                 withAnimation { phase = .result }
             } catch is CancellationError {
                 return
@@ -431,8 +599,7 @@ extension GenerationOptions {
             targetCalories: nil,
             cuisine: nil,
             skillLevel: session.currentUserCookingSkillLevel,
-            priorityIngredients: [],
-            diversifyIngredients: false
+            priorityIngredients: []
         )
     }
 }

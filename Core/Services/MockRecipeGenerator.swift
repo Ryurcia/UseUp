@@ -31,15 +31,18 @@ final class MockRecipeGenerator: RecipeGenerating {
                 missingIngredients: template.missingIngredients,
                 steps: template.steps,
                 macros: macros,
-                sources: template.sources
+                sources: template.sources,
+                dietType: template.dietType,
+                dietaryRestrictions: template.dietaryRestrictions,
+                isAIGenerated: true
             )
         }
     }
 
-    func snapChefRecipe(for ingredientNames: [String], options: GenerationOptions, isRegeneration: Bool) async throws -> SnapChefGeneration {
+    func snapChefRecipe(for ingredientNames: [String], options: GenerationOptions) async throws -> SnapChefGeneration {
         let recipes = try await generateRecipes(for: ingredientNames, options: options, count: 1)
         guard let recipe = recipes.first else { throw RecipeGenerationError.emptyResponse }
-        return SnapChefGeneration(recipe: recipe, freeRegensRemaining: isRegeneration ? 1 : 2, countedAgainstDailyLimit: !isRegeneration)
+        return SnapChefGeneration(recipe: recipe)
     }
 
     private func recipeTemplates(for ingredients: [String]) -> [RecipeTemplate] {
@@ -156,7 +159,9 @@ final class MockRecipeGenerator: RecipeGenerating {
                     "Drizzle with olive oil, season generously, and scatter over thyme.",
                     "Roast for 25 to 30 minutes, flipping halfway, until golden at the edges."
                 ],
-                sources: sampleSources(topic: "sheet-pan-veg")
+                sources: sampleSources(topic: "sheet-pan-veg"),
+                dietType: "Vegan",
+                dietaryRestrictions: ["Gluten-Free"]
             )
         )
 
@@ -174,7 +179,8 @@ final class MockRecipeGenerator: RecipeGenerating {
                     "Repeat with remaining yogurt and toppings.",
                     "Finish with a drizzle of honey and serve immediately."
                 ],
-                sources: sampleSources(topic: "yogurt-parfait")
+                sources: sampleSources(topic: "yogurt-parfait"),
+                dietType: "Vegetarian"
             )
         )
 
@@ -229,4 +235,6 @@ private struct RecipeTemplate {
     var missingIngredients: [RecipeIngredient]
     var steps: [String]
     var sources: [SourceLink]
+    var dietType: String = "any"
+    var dietaryRestrictions: [String] = []
 }

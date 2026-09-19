@@ -15,26 +15,26 @@ struct HideTabBarKey: PreferenceKey {
 }
 
 enum Tab: Int, CaseIterable {
-    case pantry = 0
-    case recipes = 1
-    case generate = 2
-    case cookbook = 3
+    case home = 0
+    case pantry = 1
+    case recipes = 2
+    case generate = 3
 
     var title: String {
         switch self {
+        case .home: return "Home"
         case .pantry: return "Pantry"
         case .recipes: return "Recipes"
         case .generate: return "Generate"
-        case .cookbook: return "Cookbook"
         }
     }
 
     var phosphorIcon: Image {
         switch self {
-        case .pantry: return Ph.jarLabel.bold
+        case .home: return Ph.house.bold
+        case .pantry: return Ph.basket.bold
         case .recipes: return Ph.notebook.bold
         case .generate: return Ph.chefHat.bold
-        case .cookbook: return Ph.bookOpenText.bold
         }
     }
 }
@@ -42,11 +42,11 @@ enum Tab: Int, CaseIterable {
 struct MainTabView: View {
     let recipeGenerator: RecipeGenerating
     @EnvironmentObject private var session: AppSession
-    @State private var selectedTab: Tab = .pantry
+    @State private var selectedTab: Tab = .home
+    @State private var homePath = NavigationPath()
     @State private var pantryPath = NavigationPath()
     @State private var recipesPath = NavigationPath()
     @State private var generatePath = NavigationPath()
-    @State private var cookbookPath = NavigationPath()
     @State private var hideTabBar = false
 
     // Global "Add Ingredient" flow — lives here (not PantryView) so it's reachable from any tab.
@@ -76,7 +76,13 @@ struct MainTabView: View {
             showingPaywall = true
             return
         }
-        guard tab != selectedTab else { return }
+        guard tab != selectedTab else {
+            if tab == .home {
+                homePath = NavigationPath()
+                session.requestedPantryHomeReset.toggle()
+            }
+            return
+        }
         withAnimation(.easeInOut(duration: 0.25)) {
             selectedTab = tab
         }
@@ -85,8 +91,20 @@ struct MainTabView: View {
     var body: some View {
         ZStack {
             ZStack {
+                NavigationStack(path: $homePath) {
+                    HomeView(isActiveTab: selectedTab == .home)
+                        .navigationDestination(isPresented: notificationBinding(for: .home)) {
+                            NotificationListView()
+                        }
+                        .navigationDestination(isPresented: profileBinding(for: .home)) {
+                            AccountSettingsView()
+                        }
+                }
+                .opacity(selectedTab == .home ? 1 : 0)
+                .allowsHitTesting(selectedTab == .home)
+
                 NavigationStack(path: $pantryPath) {
-                    PantryView(isActiveTab: selectedTab == .pantry)
+                    PantryView()
                         .navigationDestination(isPresented: notificationBinding(for: .pantry)) {
                             NotificationListView()
                         }
@@ -120,24 +138,12 @@ struct MainTabView: View {
                 }
                 .opacity(selectedTab == .generate ? 1 : 0)
                 .allowsHitTesting(selectedTab == .generate)
-
-                NavigationStack(path: $cookbookPath) {
-                    CookbookView()
-                        .navigationDestination(isPresented: notificationBinding(for: .cookbook)) {
-                            NotificationListView()
-                        }
-                        .navigationDestination(isPresented: profileBinding(for: .cookbook)) {
-                            AccountSettingsView()
-                        }
-                }
-                .opacity(selectedTab == .cookbook ? 1 : 0)
-                .allowsHitTesting(selectedTab == .cookbook)
             }
             .onChange(of: selectedTab) { _, _ in
+                homePath = NavigationPath()
                 pantryPath = NavigationPath()
                 recipesPath = NavigationPath()
                 generatePath = NavigationPath()
-                cookbookPath = NavigationPath()
                 session.showNotifications = false
                 session.showProfile = false
             }
@@ -183,7 +189,7 @@ struct MainTabView: View {
         .fullScreenCover(isPresented: $showingPhotoScan) {
             PhotoScanCaptureView(onComplete: { showingPhotoScan = false })
         }
-        .sheet(isPresented: $showingPaywall) {
+        .fullScreenCover(isPresented: $showingPaywall) {
             UseUpPaywallView(onDismiss: { showingPaywall = false })
         }
     }

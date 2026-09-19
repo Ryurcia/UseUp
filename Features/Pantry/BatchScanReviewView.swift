@@ -16,7 +16,7 @@ struct BatchScanReviewView: View {
     @State private var itemPendingRemoval: BatchScanItem?
     @State private var onlyFlagged = false
 
-    private let costEstimator: IngredientCostEstimating = SupabaseIngredientCostEstimator()
+    private let costEstimator: IngredientCostEstimating = TestingMode.isEnabled ? MockIngredientCostEstimator() : SupabaseIngredientCostEstimator()
 
     private var flaggedCount: Int { items.filter(\.isFlagged).count }
 
@@ -264,9 +264,9 @@ struct BatchScanReviewView: View {
                         editingItem = item
                     } label: {
                         Ph.pencil.regular
-                            .frame(width: 12, height: 12)
+                            .frame(width: 16, height: 16)
                             .foregroundStyle(Sourdough.Colors.mutedInk)
-                            .frame(width: 30, height: 30)
+                            .frame(width: 38, height: 38)
                             .background(Sourdough.Colors.sunken)
                             .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.thumbnail, style: .continuous))
                     }
@@ -276,9 +276,11 @@ struct BatchScanReviewView: View {
                         itemPendingRemoval = item
                     } label: {
                         Ph.trash.regular
-                            .frame(width: 12, height: 12)
-                            .foregroundStyle(Sourdough.Colors.faintInk)
-                            .frame(width: 30, height: 30)
+                            .frame(width: 16, height: 16)
+                            .foregroundStyle(Sourdough.Colors.onDestructive)
+                            .frame(width: 38, height: 38)
+                            .background(Sourdough.Colors.destructive)
+                            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.thumbnail, style: .continuous))
                     }
                     .buttonStyle(.plain)
                 }
@@ -339,7 +341,7 @@ struct BatchScanReviewView: View {
         let copy = warningCopy(for: item)
         return HStack(alignment: .top, spacing: Sourdough.Spacing.iconToLabel) {
             (Text(copy.title).fontWeight(.bold) + Text(" " + copy.body))
-                .sourdoughTextStyle(.caption, color: Sourdough.Ramp.honeyDark)
+                .sourdoughTextStyle(.caption, color: Sourdough.Ramp.honey700)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack(spacing: 6) {
@@ -359,7 +361,7 @@ struct BatchScanReviewView: View {
                 } label: {
                     Text("Keep")
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Sourdough.Ramp.honeyDark)
+                        .foregroundStyle(Sourdough.Ramp.honey700)
                         .padding(.horizontal, 10)
                         .frame(height: 28)
                         .overlay(Capsule().stroke(Sourdough.Ramp.honey300, lineWidth: 1))
@@ -503,8 +505,6 @@ private struct BatchItemEditSheet: View {
     @State private var category: Ingredient.Category
     @State private var location: Ingredient.StorageLocation
     @State private var expirationDate: Date?
-    @State private var quantityEstimate: Ingredient.QuantityEstimate
-    @State private var amountMode: AmountMode
     @State private var amountValue: Double
     @State private var amountUnit: UnitMeasurement
     @State private var unitCount: Int
@@ -519,7 +519,6 @@ private struct BatchItemEditSheet: View {
             _category = State(initialValue: existing.category)
             _location = State(initialValue: existing.storageLocation)
             _expirationDate = State(initialValue: existing.expirationDate)
-            _quantityEstimate = State(initialValue: existing.quantityEstimate)
             _unitCount = State(initialValue: existing.unitCount)
         } else {
             let seed = IngredientDefaults.defaults(forName: "")
@@ -528,19 +527,18 @@ private struct BatchItemEditSheet: View {
             _category = State(initialValue: seed.category)
             _location = State(initialValue: seed.storage)
             _expirationDate = State(initialValue: Calendar.current.date(byAdding: .day, value: seed.shelfLifeDays, to: Date()))
-            _quantityEstimate = State(initialValue: .some)
             _unitCount = State(initialValue: 1)
         }
 
         if let amount = existing?.amountText, !amount.isEmpty {
             let parsed = UnitMeasurement.parse(from: amount)
-            _amountMode = State(initialValue: .exact)
             _amountValue = State(initialValue: Double(parsed.value) ?? 1)
             _amountUnit = State(initialValue: parsed.unit)
         } else {
-            _amountMode = State(initialValue: .rough)
-            _amountValue = State(initialValue: 100)
-            _amountUnit = State(initialValue: .g)
+            // No prior exact amount — seed a neutral generic default rather than presuming
+            // grams; editing always captures an exact value now.
+            _amountValue = State(initialValue: 1)
+            _amountUnit = State(initialValue: .pieces)
         }
     }
 
@@ -548,9 +546,8 @@ private struct BatchItemEditSheet: View {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var formattedAmount: String? {
-        guard amountMode == .exact else { return nil }
-        return "\(QuantityConverter.formatQuantity(amountValue)) \(amountUnit.label)"
+    private var formattedAmount: String {
+        "\(QuantityConverter.formatQuantity(amountValue)) \(amountUnit.label)"
     }
 
     var body: some View {
@@ -561,14 +558,16 @@ private struct BatchItemEditSheet: View {
             onCancel: { dismiss() },
             onSave: {
                 var result = existing ?? BatchScanItem(captureToken: UUID(), name: name, storageLocation: location, status: .identified)
-                let costInputsChanged = existing == nil
+                // Name/amount changes the ingredient's identity or per-unit size, so the estimate
+                // needs a fresh fetch. Quantity alone doesn't — the per-unit price is unaffected by
+                // how many the user has, so it's rescaled locally below instead of re-resolved.
+                let sizeInputsChanged = existing == nil
                     || existing?.name != name
                     || existing?.amountText != formattedAmount
-                    || existing?.unitCount != unitCount
+                let unitCountChanged = existing?.unitCount != unitCount
                 result.name = name
                 result.icon = icon
                 result.category = category
-                result.quantityEstimate = quantityEstimate
                 result.amountText = formattedAmount
                 result.unitCount = unitCount
                 result.storageLocation = location
@@ -576,9 +575,13 @@ private struct BatchItemEditSheet: View {
                 result.status = .identified
                 result.suggestBarcodeRescan = false
                 result.warningDismissed = true
-                if costInputsChanged {
+                if sizeInputsChanged {
                     result.cost = nil
                     result.costConfirmed = false
+                } else if unitCountChanged, let unitPrice = result.cost?.unitPriceUsd {
+                    let (quantity, _) = result.costQuantityUnit
+                    let newTotal = unitPrice * quantity * Double(max(unitCount, 1))
+                    result.cost?.totalPriceUsd = (newTotal * 100).rounded() / 100
                 }
                 onSave(result)
                 dismiss()
@@ -589,8 +592,6 @@ private struct BatchItemEditSheet: View {
             category: $category,
             location: $location,
             expirationDate: $expirationDate,
-            quantityEstimate: $quantityEstimate,
-            amountMode: $amountMode,
             amountValue: $amountValue,
             amountUnit: $amountUnit,
             unitCount: $unitCount,

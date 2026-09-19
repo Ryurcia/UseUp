@@ -64,8 +64,18 @@ final class RevenueCatManager: NSObject, ObservableObject {
     private func updatePremiumState(from customerInfo: CustomerInfo) async {
         // Any active entitlement counts — avoids breakage if the entitlement ID in the dashboard
         // doesn't exactly match RevenueCatConstants.entitlementID.
-        isPremium = !customerInfo.entitlements.active.isEmpty
-        session?.isPremium = isPremium
+        let hasActiveEntitlement = !customerInfo.entitlements.active.isEmpty
+        isPremium = hasActiveEntitlement
+
+        // Supabase's profiles.subscription_type (synced via the RevenueCat webhook) is the
+        // source of truth. This on-device check may only push session.isPremium UP — a fast
+        // "yes" right after a fresh purchase, before the webhook + profile refetch land —
+        // never DOWN. Right after logIn() identifies a user, RevenueCat's backend can still
+        // be resolving their historical entitlements and briefly report none, which would
+        // otherwise clobber a value Supabase had already correctly set.
+        if hasActiveEntitlement {
+            session?.isPremium = true
+        }
     }
 }
 

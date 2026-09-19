@@ -5,6 +5,8 @@ import PhosphorSwift
 struct SnapChefIngredient: Identifiable, Equatable {
     let id = UUID()
     var name: String
+    var amount: String = ""
+    var unit: UnitMeasurement = .none
     var lowConfidence: Bool = false
 }
 

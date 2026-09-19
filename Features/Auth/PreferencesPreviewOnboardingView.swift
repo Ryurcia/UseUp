@@ -24,13 +24,6 @@ struct PreferencesPreviewOnboardingView: View {
                         .clipShape(Circle())
                 }
                 .buttonStyle(AuthBackButtonStyle())
-
-                Spacer()
-
-                Button("Skip", action: onSkip)
-                    .foregroundStyle(Sourdough.Colors.mutedInk)
-                    .sourdoughTextStyle(.subhead)
-                    .buttonStyle(.plain)
             }
             .padding(.horizontal, Sourdough.Spacing.screenMargin)
             .padding(.top, Sourdough.Spacing.insideChip)
@@ -91,6 +84,12 @@ struct PreferencesPreviewOnboardingView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(Sourdough.PrimaryButtonStyle(fullWidth: true))
+
+                Button("Skip For Now", action: onSkip)
+                    .foregroundStyle(Sourdough.Colors.mutedInk)
+                    .sourdoughTextStyle(.subhead)
+                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity)
 
                 Text("You can change any of this later in Settings.")
                     .foregroundStyle(Sourdough.Colors.faintInk)

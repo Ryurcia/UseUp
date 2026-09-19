@@ -28,7 +28,7 @@ struct RecipeDetailView: View {
     @State private var isCooking = false
     @State private var checkedIngredients: Set<UUID> = []
     @State private var selectedTab: RecipeTab = .ingredients
-    @State private var showReportSheet = false
+    @State private var reportTarget: ReportTarget?
     @State private var reportError: String?
     @State private var showDeleteAlert = false
     @State private var showBlockAlert = false
@@ -64,6 +64,7 @@ struct RecipeDetailView: View {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 0) {
                     heroSection
+                    dietaryPillsSection
                     statsBar
                     if recipe.isAIGenerated {
                         HStack(spacing: Sourdough.Spacing.insideChip) {
@@ -168,17 +169,22 @@ struct RecipeDetailView: View {
                 ShareSheet(items: [pdfURL])
             }
         }
-        .sheet(isPresented: $showPaywall) {
+        .fullScreenCover(isPresented: $showPaywall) {
             UseUpPaywallView(onDismiss: { showPaywall = false })
         }
-        .sheet(isPresented: $showReportSheet) {
-            ReportContentSheet(subject: .recipe(name: recipe.title)) { category, description in
+        .sheet(item: $reportTarget) { target in
+            ReportContentSheet(subject: target.subject) { category, description in
                 Task {
                     do {
-                        try await savedRecipesStore.reportRecipe(recipe, category: category, description: description)
+                        switch target {
+                        case .recipe(let recipe):
+                            try await savedRecipesStore.reportRecipe(recipe, category: category, description: description)
+                        case .user(let id, _):
+                            try await savedRecipesStore.reportUser(id, category: category, description: description)
+                        }
                     } catch {
                         reportError = error.localizedDescription.contains("duplicate") || error.localizedDescription.contains("unique")
-                            ? "You've already reported this recipe."
+                            ? "You've already submitted this report."
                             : "Failed to submit report. Please try again."
                     }
                 }
@@ -256,22 +262,6 @@ struct RecipeDetailView: View {
 
                 // Title / labels block
                 VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
-                    let allLabels: [String] = {
-                        var labels: [String] = []
-                        if recipe.dietType != "any" { labels.append(recipe.dietType.uppercased()) }
-                        labels += recipe.dietaryRestrictions.map { $0.uppercased() }
-                        return labels
-                    }()
-                    if !allLabels.isEmpty {
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 4) {
-                                ForEach(allLabels.indices, id: \.self) { i in
-                                    OnDarkBadge(text: allLabels[i])
-                                }
-                            }
-                        }
-                    }
-
                     Text(recipe.title)
                         .foregroundStyle(Sourdough.Colors.heroTitleOnDark)
                         .sourdoughTextStyle(.title1)
@@ -363,10 +353,22 @@ struct RecipeDetailView: View {
                     if recipe.isUserShared && !isOwner {
                         Menu {
                             Button {
-                                showReportSheet = true
+                                reportTarget = .recipe(recipe)
                             } label: {
                                 Label {
-                                    Text("Report")
+                                    Text("Report Recipe")
+                                } icon: {
+                                    Ph.flag.regular
+                                        .frame(width: 16, height: 16)
+                                }
+                            }
+
+                            Button {
+                                guard let creatorIdString = recipe.createdBy, let creatorId = UUID(uuidString: creatorIdString) else { return }
+                                reportTarget = .user(id: creatorId, nickname: recipe.createdByName ?? "this user")
+                            } label: {
+                                Label {
+                                    Text("Report User")
                                 } icon: {
                                     Ph.flag.regular
                                         .frame(width: 16, height: 16)
@@ -399,6 +401,37 @@ struct RecipeDetailView: View {
             }
         }
         .frame(height: 320)
+    }
+
+    // MARK: - Dietary Pills
+
+    private var dietaryPillsSection: some View {
+        Group {
+            if recipe.dietType != "any" || !recipe.dietaryRestrictions.isEmpty {
+                FlowLayout(spacing: Sourdough.Spacing.iconToLabel) {
+                    if recipe.dietType != "any" {
+                        Text(recipe.dietType.capitalized)
+                            .foregroundStyle(Sourdough.Ramp.sage600)
+                            .sourdoughTextStyle(.caption)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Sourdough.Ramp.sage100)
+                            .clipShape(Capsule())
+                    }
+                    ForEach(recipe.dietaryRestrictions, id: \.self) { restriction in
+                        Text(restriction)
+                            .foregroundStyle(Sourdough.Ramp.honey600)
+                            .sourdoughTextStyle(.caption)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Sourdough.Ramp.honey100)
+                            .clipShape(Capsule())
+                    }
+                }
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                .padding(.top, Sourdough.Spacing.rowInternals)
+            }
+        }
     }
 
     // MARK: - Stats Bar
