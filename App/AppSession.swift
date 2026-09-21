@@ -507,7 +507,12 @@ final class AppSession: ObservableObject {
     func refreshPremiumStatus() async {
         guard let userId = currentUserId else { return }
         if let profile = try? await profileService.fetchProfile(userId: userId) {
-            isPremium = profile.subscriptionType == "premium"
+            // OR'd with RevenueCat's on-device entitlement check (kept fresh by
+            // `checkEntitlements()`, which always runs immediately before this) so a Supabase
+            // read that's still lagging the `revenuecat-webhook` can't clobber a real, just-
+            // completed purchase back to free — mirrors the "never push down" guard
+            // `RevenueCatManager.updatePremiumState` already applies to its own writes.
+            isPremium = profile.subscriptionType == "premium" || RevenueCatManager.shared.isPremium
         }
     }
 

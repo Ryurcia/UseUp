@@ -12,8 +12,6 @@ const FREE_EVENTS = new Set([
   'CANCELLATION',
 ])
 
-const ENTITLEMENT_ID = 'UseUp Pro'
-
 Deno.serve(async (req) => {
   if (req.method !== 'POST') {
     return new Response('Method not allowed', { status: 405 })
@@ -43,7 +41,11 @@ Deno.serve(async (req) => {
 
   let subscriptionType: string | null = null
 
-  if (PREMIUM_EVENTS.has(eventType) && entitlementIds.includes(ENTITLEMENT_ID)) {
+  // Any active entitlement counts — avoids silently ignoring the event forever if the
+  // entitlement ID configured in the RevenueCat dashboard doesn't exactly match a
+  // hardcoded string (mirrors the same "any active entitlement" check on the client in
+  // RevenueCatManager.updatePremiumState).
+  if (PREMIUM_EVENTS.has(eventType) && entitlementIds.length > 0) {
     subscriptionType = 'premium'
   } else if (FREE_EVENTS.has(eventType)) {
     subscriptionType = 'free'
