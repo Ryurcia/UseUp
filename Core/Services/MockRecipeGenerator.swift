@@ -39,12 +39,6 @@ final class MockRecipeGenerator: RecipeGenerating {
         }
     }
 
-    func snapChefRecipe(for ingredientNames: [String], options: GenerationOptions) async throws -> SnapChefGeneration {
-        let recipes = try await generateRecipes(for: ingredientNames, options: options, count: 1)
-        guard let recipe = recipes.first else { throw RecipeGenerationError.emptyResponse }
-        return SnapChefGeneration(recipe: recipe)
-    }
-
     private func recipeTemplates(for ingredients: [String]) -> [RecipeTemplate] {
         let has = { (value: String) in ingredients.contains(value) }
         var templates: [RecipeTemplate] = []

@@ -2,7 +2,7 @@ import SwiftUI
 import AVFoundation
 import PhosphorSwift
 
-/// Snap Chef — the one-tap "photo → single recipe" flow, presented as a full-screen cover from
+/// Snap Chef — the one-tap "photo → recipe(s)" flow, presented as a full-screen cover from
 /// the Generate screen. Reuses the shared camera, the photo-scan identification pipeline, the
 /// recipe-generation loading animation, and `RecipeDetailView`.
 struct SnapChefFlow: View {
@@ -18,8 +18,7 @@ struct SnapChefFlow: View {
 
     @State private var phase: Phase
     @State private var ingredients: [SnapChefIngredient] = []
-    @State private var resultRecipe: Recipe?
-    @State private var pushedRecipe: Recipe?
+    @State private var resultRecipes: [Recipe] = []
     @State private var generationError: Error?
     @State private var isEditingDetectedIngredients = false
     @FocusState private var focusedIngredientID: UUID?
@@ -44,9 +43,6 @@ struct SnapChefFlow: View {
             content
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar(.hidden, for: .navigationBar)
-                .navigationDestination(item: $pushedRecipe) { recipe in
-                    RecipeDetailView(recipe: recipe)
-                }
         }
         .alert("Photo couldn't be processed", isPresented: $showScanFailedAlert) {
             Button("Retake") { phase = .camera }
@@ -89,8 +85,8 @@ struct SnapChefFlow: View {
             }
 
         case .result:
-            if let resultRecipe {
-                resultView(resultRecipe)
+            if !resultRecipes.isEmpty {
+                resultView(resultRecipes)
             } else {
                 statusView("…")
             }
@@ -161,34 +157,33 @@ struct SnapChefFlow: View {
 
     // MARK: - Result
 
-    private func resultView(_ recipe: Recipe) -> some View {
+    private func resultView(_ recipes: [Recipe]) -> some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: Sourdough.Spacing.betweenBlocks) {
                 HStack {
-                    Text("Your recipe")
+                    Text(recipes.count == 1 ? "Your recipe" : "Your recipes")
                         .sourdoughTextStyle(.title2, color: Sourdough.Colors.ink)
                     Spacer()
                     circleButtonSunken(Ph.x.bold) { onFinished() }
                 }
 
-                Button { pushedRecipe = recipe } label: {
-                    RecipeCard(
-                        recipe: recipe,
-                        showBadge: false,
-                        isSaved: savedRecipesStore.isSaved(recipe),
-                        imageAspectRatio: 16 / 9,
-                        onSave: {
-                            if savedRecipesStore.isSaved(recipe) {
-                                savedRecipesStore.unsaveRecipe(recipe)
-                            } else {
-                                savedRecipesStore.saveGeneratedRecipe(recipe)
-                            }
+                // GeneratedRecipeCardRow applies its own horizontal screenMargin (sized for sitting
+                // directly in a ScrollView, as it does on the Generate tab) — cancel it out here
+                // since this VStack already applies that margin to every sibling.
+                GeneratedRecipeCardRow(
+                    recipes: recipes,
+                    isSaved: { savedRecipesStore.isSaved($0) },
+                    onToggleSave: { recipe in
+                        if savedRecipesStore.isSaved(recipe) {
+                            savedRecipesStore.unsaveRecipe(recipe)
+                        } else {
+                            savedRecipesStore.saveGeneratedRecipe(recipe)
                         }
-                    )
-                }
-                .buttonStyle(.plain)
+                    }
+                )
+                .padding(.horizontal, -Sourdough.Spacing.screenMargin)
 
-                Text("Tap the card for the full recipe, ingredients and steps.")
+                Text("Tap a card for the full recipe, ingredients and steps.")
                     .sourdoughTextStyle(.caption, color: Sourdough.Colors.faintInk)
                     .frame(maxWidth: .infinity, alignment: .center)
 
@@ -456,7 +451,7 @@ struct SnapChefFlow: View {
                     .buttonStyle(.plain)
                     Button {
                         generationError = nil
-                        if resultRecipe != nil {
+                        if !resultRecipes.isEmpty {
                             isEditingDetectedIngredients = true
                             phase = .result
                         } else {
@@ -554,9 +549,9 @@ struct SnapChefFlow: View {
         generationTask?.cancel()
         generationTask = Task {
             do {
-                let out = try await recipeGenerator.snapChefRecipe(for: names, options: options)
+                let recipes = try await recipeGenerator.generateRecipes(for: names, options: options)
                 guard !Task.isCancelled else { return }
-                resultRecipe = out.recipe
+                resultRecipes = recipes
                 isEditingDetectedIngredients = false
                 withAnimation { phase = .result }
             } catch is CancellationError {

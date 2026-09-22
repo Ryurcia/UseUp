@@ -230,7 +230,21 @@ final class PantryStore: ObservableObject {
     /// the same reason as `recipeNotifReadTimestamps` — these notifications aren't stable server rows.
     @Published var dismissedRecipeNotifIDs: Set<String> = []
 
-    var userId: UUID?
+    var userId: UUID? {
+        didSet {
+            guard oldValue != userId else { return }
+            if oldValue != nil { ingredients = [] }
+            notificationDebounceTask?.cancel()
+            fetchGeneration = UUID()
+            fetchTask?.cancel()
+            fetchTask = nil
+            lastFetchedAt = nil
+            isLoading = false
+        }
+    }
+    private var fetchGeneration = UUID()
+    private var fetchTask: Task<Void, Never>?
+
     private var lastFetchedAt: Date?
     private let client = SupabaseManager.client
     private var notificationDebounceTask: Task<Void, Never>?
@@ -410,10 +424,21 @@ final class PantryStore: ObservableObject {
     // MARK: - Fetch
 
     func fetchIngredients() async {
-        if let last = lastFetchedAt, Date().timeIntervalSince(last) < 60, !ingredients.isEmpty { return }
-        guard let userId = getUserId() else { return }
+        guard let userId else { return }
+        if let fetchTask { await fetchTask.value; return }
+        if let last = lastFetchedAt, Date().timeIntervalSince(last) < 60 { return }
+        let generation = fetchGeneration
+        let task = Task { await self.loadInitialData(userId: userId, generation: generation) }
+        fetchTask = task
+        await task.value
+        if fetchGeneration == generation { fetchTask = nil }
+    }
+
+    private func loadInitialData(userId: UUID, generation: UUID) async {
+        guard fetchGeneration == generation, !Task.isCancelled else { return }
         isLoading = true
         error = nil
+        defer { if fetchGeneration == generation { isLoading = false } }
 
         do {
             let rows: [IngredientRow] = try await client
@@ -424,6 +449,8 @@ final class PantryStore: ObservableObject {
                 .execute()
                 .value
 
+            guard fetchGeneration == generation, !Task.isCancelled else { return }
+
             // Preserve any optimistic inserts that are still in-flight (not yet in DB).
             // Their locally-generated UUIDs won't appear in server results.
             let serverIds = Set(rows.map(\.id))
@@ -432,10 +459,10 @@ final class PantryStore: ObservableObject {
             lastFetchedAt = Date()
             rescheduleNotifications()
         } catch {
+            guard fetchGeneration == generation, !Task.isCancelled else { return }
             self.error = error.localizedDescription
         }
 
-        isLoading = false
     }
 
     // MARK: - Name suggestions (autocomplete)

@@ -66,8 +66,8 @@ export interface GenerationOptions {
   cuisine: string | null
   skillLevel: number
   priorityIngredients: string[]
-  // Recipe count ceiling. Standard generation = RECIPES_PER_GENERATION (a cap, not a target — see
-  // buildUserPrompt); Snap Chef = 1 (always exact).
+  // Recipe count ceiling — a cap, not a target (see buildUserPrompt). Standard generation and
+  // Snap Chef both send RECIPES_PER_GENERATION; the server returns the minimum needed up to it.
   count: number
 }
 

@@ -70,8 +70,13 @@ final class AppSession: ObservableObject {
     /// Toggled (not just set) so `PantryView` sees a change on every consecutive re-tap of an
     /// already-selected Home tab — see `MainTabView.selectTab(_:)`.
     @Published var requestedPantryHomeReset: Bool = false
+    /// Same pattern as `requestedPantryHomeReset`, for re-tapping an already-selected Generate tab.
+    @Published var requestedGenerateReset: Bool = false
     @Published var dietaryUpdatedAt: Date?
     @Published private(set) var currentAvatarPath: String?
+
+    private var avatarLoadTask: Task<Void, Never>?
+    private var avatarLoadToken = UUID()
 
     private let authService: AuthServicing
     let profileService: ProfileServicing
@@ -114,7 +119,7 @@ final class AppSession: ObservableObject {
 
             if let profile = try? await profileService.fetchProfile(userId: user.id),
                let nickname = profile.nickname, !nickname.isEmpty {
-                await applyProfile(profile)
+                applyProfile(profile)
             }
         } catch {
             // No valid session — user stays logged out
@@ -313,31 +318,42 @@ final class AppSession: ObservableObject {
 
         if let profile = try? await profileService.fetchProfile(userId: user.id),
            let nickname = profile.nickname, !nickname.isEmpty {
-            await applyProfile(profile)
+            applyProfile(profile)
         } else {
             requiresNicknameOnboarding = true
         }
     }
 
-    private func applyProfile(_ profile: Profile) async {
+    private func applyProfile(_ profile: Profile) {
+        guard currentUserId == profile.id else { return }
         currentUserNickname = profile.nickname
         currentUserDisplayName = profile.displayName
         nicknameUpdatedAt = profile.nicknameUpdatedAt
         loadDietaryPreference(from: profile)
         isPremium = profile.subscriptionType == "premium"
+            || (RevenueCatManager.shared.identifiedUserId == profile.id.uuidString && RevenueCatManager.shared.isPremium)
         isEmailVerified = profile.emailVerifiedAt != nil
         hasSeenGetStarted = true
         hasCompletedFeatureOnboarding = true
         hasSeenOnboardingPaywall = true
         isAuthenticated = true
 
-        if let avatarPath = profile.avatarPath, !avatarPath.isEmpty {
-            currentAvatarPath = avatarPath
-            if let cached = AvatarCache.load(for: avatarPath) {
+        avatarLoadTask?.cancel()
+        avatarLoadToken = UUID()
+        let token = avatarLoadToken
+        profileImageData = nil
+        currentAvatarPath = profile.avatarPath
+        guard let path = profile.avatarPath, !path.isEmpty else { return }
+        let userId = profile.id
+        avatarLoadTask = Task {
+            let cached = await Task.detached(priority: .utility) { AvatarCache.load(for: path) }.value
+            guard !Task.isCancelled, currentUserId == userId, avatarLoadToken == token else { return }
+            if let cached {
                 profileImageData = cached
-            } else if let data = try? await profileService.fetchAvatarData(avatarPath: avatarPath) {
+            } else if let data = try? await profileService.fetchAvatarData(avatarPath: path) {
+                guard !Task.isCancelled, currentUserId == userId, avatarLoadToken == token else { return }
                 profileImageData = data
-                AvatarCache.save(data, for: avatarPath)
+                await Task.detached(priority: .utility) { AvatarCache.save(data, for: path) }.value
             }
         }
     }
@@ -395,6 +411,8 @@ final class AppSession: ObservableObject {
     }
 
     func updateProfilePhoto(_ imageData: Data) async throws {
+        avatarLoadTask?.cancel()
+        avatarLoadToken = UUID()
         let previousData = profileImageData
         let previousPath = currentAvatarPath
         profileImageData = imageData
@@ -507,6 +525,7 @@ final class AppSession: ObservableObject {
     func refreshPremiumStatus() async {
         guard let userId = currentUserId else { return }
         if let profile = try? await profileService.fetchProfile(userId: userId) {
+            guard currentUserId == userId else { return }
             // OR'd with RevenueCat's on-device entitlement check (kept fresh by
             // `checkEntitlements()`, which always runs immediately before this) so a Supabase
             // read that's still lagging the `revenuecat-webhook` can't clobber a real, just-
@@ -560,6 +579,8 @@ final class AppSession: ObservableObject {
     }
 
     func signOut() {
+        avatarLoadTask?.cancel()
+        avatarLoadToken = UUID()
         authService.signOut()
         currentUserId = nil
         currentUserEmail = nil
@@ -586,6 +607,11 @@ final class AppSession: ObservableObject {
         emailChangeCodeSent = false
         pendingNewEmail = nil
         hasSeenOnboardingPaywall = false
+        // Sign Out lives on the Profile screen itself, so showProfile is still true right now —
+        // AppSession isn't recreated across sign-out/sign-in, so leaving it set would immediately
+        // re-push AccountSettingsView onto the Home tab the moment the user logs back in.
+        showProfile = false
+        showNotifications = false
         isAuthenticated = false
         AvatarCache.clear()
         ExpirationNotificationScheduler.cancelAll()

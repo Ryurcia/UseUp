@@ -43,6 +43,7 @@ struct MainTabView: View {
     let recipeGenerator: RecipeGenerating
     @EnvironmentObject private var session: AppSession
     @State private var selectedTab: Tab = .home
+    @State private var visitedTabs: Set<Tab> = [.home]
     @State private var homePath = NavigationPath()
     @State private var pantryPath = NavigationPath()
     @State private var recipesPath = NavigationPath()
@@ -80,10 +81,14 @@ struct MainTabView: View {
             if tab == .home {
                 homePath = NavigationPath()
                 session.requestedPantryHomeReset.toggle()
+            } else if tab == .generate {
+                generatePath = NavigationPath()
+                session.requestedGenerateReset.toggle()
             }
             return
         }
         withAnimation(.easeInOut(duration: 0.25)) {
+            visitedTabs.insert(tab)
             selectedTab = tab
         }
     }
@@ -102,42 +107,56 @@ struct MainTabView: View {
                 }
                 .opacity(selectedTab == .home ? 1 : 0)
                 .allowsHitTesting(selectedTab == .home)
+                .accessibilityHidden(selectedTab != .home)
+                .transformPreference(HideTabBarKey.self) { if selectedTab != .home { $0 = false } }
 
-                NavigationStack(path: $pantryPath) {
-                    PantryView()
-                        .navigationDestination(isPresented: notificationBinding(for: .pantry)) {
-                            NotificationListView()
-                        }
-                        .navigationDestination(isPresented: profileBinding(for: .pantry)) {
-                            AccountSettingsView()
-                        }
+                if visitedTabs.contains(.pantry) {
+                    NavigationStack(path: $pantryPath) {
+                        PantryView(isActiveTab: selectedTab == .pantry)
+                            .navigationDestination(isPresented: notificationBinding(for: .pantry)) {
+                                NotificationListView()
+                            }
+                            .navigationDestination(isPresented: profileBinding(for: .pantry)) {
+                                AccountSettingsView()
+                            }
+                    }
+                    .opacity(selectedTab == .pantry ? 1 : 0)
+                    .allowsHitTesting(selectedTab == .pantry)
+                    .accessibilityHidden(selectedTab != .pantry)
+                    .transformPreference(HideTabBarKey.self) { if selectedTab != .pantry { $0 = false } }
                 }
-                .opacity(selectedTab == .pantry ? 1 : 0)
-                .allowsHitTesting(selectedTab == .pantry)
 
-                NavigationStack(path: $recipesPath) {
-                    RecipesView()
-                        .navigationDestination(isPresented: notificationBinding(for: .recipes)) {
-                            NotificationListView()
-                        }
-                        .navigationDestination(isPresented: profileBinding(for: .recipes)) {
-                            AccountSettingsView()
-                        }
+                if visitedTabs.contains(.recipes) {
+                    NavigationStack(path: $recipesPath) {
+                        RecipesView(isActiveTab: selectedTab == .recipes)
+                            .navigationDestination(isPresented: notificationBinding(for: .recipes)) {
+                                NotificationListView()
+                            }
+                            .navigationDestination(isPresented: profileBinding(for: .recipes)) {
+                                AccountSettingsView()
+                            }
+                    }
+                    .opacity(selectedTab == .recipes ? 1 : 0)
+                    .allowsHitTesting(selectedTab == .recipes)
+                    .accessibilityHidden(selectedTab != .recipes)
+                    .transformPreference(HideTabBarKey.self) { if selectedTab != .recipes { $0 = false } }
                 }
-                .opacity(selectedTab == .recipes ? 1 : 0)
-                .allowsHitTesting(selectedTab == .recipes)
 
-                NavigationStack(path: $generatePath) {
-                    GenerateView(recipeGenerator: recipeGenerator)
-                        .navigationDestination(isPresented: notificationBinding(for: .generate)) {
-                            NotificationListView()
-                        }
-                        .navigationDestination(isPresented: profileBinding(for: .generate)) {
-                            AccountSettingsView()
-                        }
+                if visitedTabs.contains(.generate) {
+                    NavigationStack(path: $generatePath) {
+                        GenerateView(recipeGenerator: recipeGenerator, isActiveTab: selectedTab == .generate)
+                            .navigationDestination(isPresented: notificationBinding(for: .generate)) {
+                                NotificationListView()
+                            }
+                            .navigationDestination(isPresented: profileBinding(for: .generate)) {
+                                AccountSettingsView()
+                            }
+                    }
+                    .opacity(selectedTab == .generate ? 1 : 0)
+                    .allowsHitTesting(selectedTab == .generate)
+                    .accessibilityHidden(selectedTab != .generate)
+                    .transformPreference(HideTabBarKey.self) { if selectedTab != .generate { $0 = false } }
                 }
-                .opacity(selectedTab == .generate ? 1 : 0)
-                .allowsHitTesting(selectedTab == .generate)
             }
             .onChange(of: selectedTab) { _, _ in
                 homePath = NavigationPath()

@@ -37,10 +37,6 @@ struct UseUp: App {
                     activityStore.userId = session.currentUserId
                     statsStore.userId = session.currentUserId
 
-                    if session.isAuthenticated, let userId = session.currentUserId {
-                        await revenueCatManager.logIn(userId: userId.uuidString)
-                    }
-
                     session.isCheckingSession = false
 
                     if session.isAuthenticated {
@@ -70,8 +66,9 @@ struct UseUp: App {
                     statsStore.userId = newId
                     if let newId {
                         Task {
-                            await revenueCatManager.logIn(userId: newId.uuidString)
-                            await savedRecipesStore.fetchRecipes()
+                            async let login: Void = revenueCatManager.logIn(userId: newId.uuidString)
+                            async let recipes: Void = savedRecipesStore.fetchRecipes()
+                            _ = await (login, recipes)
                         }
                     } else {
                         pantryStore.clearForSignOut()

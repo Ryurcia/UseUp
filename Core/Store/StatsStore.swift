@@ -15,7 +15,16 @@ struct PantryEvent: Identifiable {
 
 @MainActor
 final class StatsStore: ObservableObject {
-    @Published private(set) var events: [PantryEvent] = []
+    @Published private(set) var events: [PantryEvent] = [] {
+        didSet { eventsRevision &+= 1 }
+    }
+    private var eventsRevision: UInt64 = 0
+    private let snapshotCache = StatsSnapshotCache()
+
+    func snapshot(period: StatsPeriod, selectedIndex: Int?, now: Date = Date()) -> StatsSnapshot {
+        snapshotCache.snapshot(events: events, revision: eventsRevision, period: period,
+                               selectedIndex: selectedIndex, now: now)
+    }
     @Published private(set) var isLoading = false
 
     var userId: UUID?

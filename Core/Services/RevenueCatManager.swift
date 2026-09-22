@@ -2,7 +2,7 @@ import Foundation
 import RevenueCat
 
 enum RevenueCatConstants {
-    static let entitlementID = "UseUp Pro"
+    static let entitlementID = "useup_pro"
 }
 
 /// Configuration, identity, and entitlement-sync only — RevenueCatUI's `PaywallView` owns
@@ -14,6 +14,10 @@ final class RevenueCatManager: NSObject, ObservableObject {
     static let shared = RevenueCatManager()
 
     @Published private(set) var isPremium = false
+    @Published private(set) var identifiedUserId: String?
+    private var identityTask: Task<Void, Never>?
+    private var requestedUserId: String?
+    private var identityToken = UUID()
     /// Set by `UseUp.swift` after `AppSession` is constructed — lets entitlement changes push
     /// straight into `session.isPremium` for instant on-device sync, same hybrid pattern as every
     /// prior purchase SDK integration here (Supabase `profiles.subscription_type`, updated
@@ -25,9 +29,11 @@ final class RevenueCatManager: NSObject, ObservableObject {
     }
 
     func configure() {
-        #if DEBUG
+        // Unconditional (not just Debug) while the app is still TestFlight-only — RevenueCat's
+        // own SDK logging (network calls, logIn/purchase outcomes) is otherwise silently
+        // discarded on Release-configuration builds, which is exactly where it's needed most.
+        // Dial back to `.warn` before public launch.
         Purchases.logLevel = .debug
-        #endif
         Purchases.configure(
             with: .builder(withAPIKey: RevenueCatConfig.apiKey)
                 .with(storeKitVersion: .storeKit2)
@@ -37,31 +43,68 @@ final class RevenueCatManager: NSObject, ObservableObject {
     }
 
     func logIn(userId: String) async {
-        do {
-            let (customerInfo, _) = try await Purchases.shared.logIn(userId)
-            await updatePremiumState(from: customerInfo)
-        } catch {
-            // Non-critical — user stays on free tier
+        guard session?.currentUserId?.uuidString == userId else { return }
+        if let identityTask, requestedUserId == userId {
+            await identityTask.value
+            return
         }
+        if identifiedUserId == userId, identityTask == nil { return }
+        let previous = identityTask
+        let token = UUID()
+        identityToken = token
+        requestedUserId = userId
+        identifiedUserId = nil
+        isPremium = false
+        // Identity transitions are serialized even if a caller disappears or signs out mid-login.
+        let task = Task {
+            await previous?.value
+            guard identityToken == token, session?.currentUserId?.uuidString == userId else { return }
+            do {
+                let (customerInfo, _) = try await Purchases.shared.logIn(userId)
+                guard identityToken == token, session?.currentUserId?.uuidString == userId else { return }
+                identifiedUserId = userId
+                await updatePremiumState(from: customerInfo)
+            } catch {
+                // Leave identity unresolved so the paywall can offer a retry.
+            }
+        }
+        identityTask = task
+        await task.value
+        if identityToken == token { identityTask = nil }
     }
 
     func logOut() async {
-        do {
-            let customerInfo = try await Purchases.shared.logOut()
-            await updatePremiumState(from: customerInfo)
-        } catch {
-            isPremium = false
-            session?.isPremium = false
+        guard session?.currentUserId == nil else { return }
+        let previous = identityTask
+        let token = UUID()
+        identityToken = token
+        requestedUserId = nil
+        identifiedUserId = nil
+        isPremium = false
+        let task = Task {
+            await previous?.value
+            guard identityToken == token, session?.currentUserId == nil else { return }
+            _ = try? await Purchases.shared.logOut()
         }
+        identityTask = task
+        await task.value
+        if identityToken == token { identityTask = nil }
     }
 
     func checkEntitlements() async {
-        if let customerInfo = try? await Purchases.shared.customerInfo() {
+        guard let userId = session?.currentUserId?.uuidString else { return }
+        await logIn(userId: userId)
+        guard identifiedUserId == userId else { return }
+        if let customerInfo = try? await Purchases.shared.customerInfo(),
+           identifiedUserId == userId, session?.currentUserId?.uuidString == userId {
             await updatePremiumState(from: customerInfo)
         }
     }
 
     private func updatePremiumState(from customerInfo: CustomerInfo) async {
+        guard let identifiedUserId,
+              identifiedUserId == session?.currentUserId?.uuidString,
+              Purchases.shared.appUserID == identifiedUserId else { return }
         // Any active entitlement counts — avoids breakage if the entitlement ID in the dashboard
         // doesn't exactly match RevenueCatConstants.entitlementID.
         let hasActiveEntitlement = !customerInfo.entitlements.active.isEmpty

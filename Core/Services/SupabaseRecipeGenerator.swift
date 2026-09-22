@@ -19,15 +19,6 @@ final class SupabaseRecipeGenerator: RecipeGenerating {
         return recipes
     }
 
-    func snapChefRecipe(for ingredientNames: [String], options: GenerationOptions) async throws -> SnapChefGeneration {
-        let response = try await invoke(ingredientNames, options: options, count: 1)
-        guard let recipe = response.recipes.first?.toRecipe(
-            dietType: options.dietType.rawValue.lowercased(),
-            dietaryRestrictions: options.dietaryRestrictions.map(\.rawValue)
-        ) else { throw RecipeGenerationError.emptyResponse }
-        return SnapChefGeneration(recipe: recipe)
-    }
-
     private func invoke(
         _ ingredientNames: [String],
         options: GenerationOptions,

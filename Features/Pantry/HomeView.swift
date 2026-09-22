@@ -20,7 +20,6 @@ struct HomeView: View {
     @State private var ingredientBeingUsed: Ingredient?
     @State private var selectedIngredient: Ingredient?
     @State private var showingExpiredItems = false
-    @State private var isExpiringListExpanded = false
     @State private var selectedCookTodayRecipe: Recipe?
     @State private var allergenPendingCookTodayRecipe: Recipe?
     @State private var allergenWarningDetected: [String] = []
@@ -57,16 +56,19 @@ struct HomeView: View {
 
     var body: some View {
         withSheets
-            .task {
+            .task(id: isActiveTab) {
+                guard isActiveTab else { return }
                 await pantryStore.fetchIngredients()
+                guard !Task.isCancelled else { return }
                 refreshQuickSuggestionsIfNeeded()
                 refreshCookTodayIfNeeded()
             }
             .onChange(of: pantryStore.ingredients) { _, _ in
+                guard isActiveTab else { return }
                 refreshQuickSuggestionsIfNeeded()
                 refreshCookTodayIfNeeded()
             }
-            .onChange(of: savedRecipesStore.communityRecipes) { _, _ in refreshCookTodayIfNeeded() }
+            .onChange(of: savedRecipesStore.communityRecipes) { _, _ in if isActiveTab { refreshCookTodayIfNeeded() } }
             .onChange(of: isActiveTab) { _, active in
                 if !active, isSearchActive { dismissSearch() }
             }
@@ -85,6 +87,8 @@ struct HomeView: View {
                             estimatedTotalCost: recomputedCost(for: ingredient, newAmount: amount, newUnitCount: unitCount)
                         )
                     }
+                } onMedicationDetected: {
+                    withAnimation { pantryStore.deleteIngredient(id: ingredient.id) }
                 }
             }
             .sheet(item: $ingredientBeingUsed) { ingredient in
@@ -281,11 +285,15 @@ struct HomeView: View {
         .opacity(isDisabled ? 0.5 : 1)
     }
 
+    /// Soonest-to-expire first, since `expiringSoonForQuickGenerate` is already sorted that way —
+    /// capped here (not on the shared property) so Quick Generate/Cook Today still get the full
+    /// up-to-15 pool to match against; only this preview card is limited to 4.
+    private static let expiringSoonPreviewLimit = 4
+
     private var expiringSoonPreview: some View {
         let expiring = expiringSoonForQuickGenerate
         let isFallback = expiring.isEmpty
-        let items = isFallback ? quickSuggestionIngredients : expiring
-        let visible = isFallback ? items : (isExpiringListExpanded ? items : Array(items.prefix(3)))
+        let items = isFallback ? quickSuggestionIngredients : Array(expiring.prefix(Self.expiringSoonPreviewLimit))
 
         return VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {
             Text(isFallback ? "Quick Suggestions" : "Use These Up Soon")
@@ -293,7 +301,7 @@ struct HomeView: View {
                 .sourdoughTextStyle(.sectionHead)
 
             VStack(spacing: Sourdough.Spacing.insideChip) {
-                ForEach(visible) { item in
+                ForEach(items) { item in
                     IngredientRowContent(item: item)
                         .background(Sourdough.Colors.card)
                         .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
@@ -301,19 +309,6 @@ struct HomeView: View {
                         .contentShape(Rectangle())
                         .onTapGesture { selectedIngredient = item }
                 }
-            }
-
-            if !isFallback && items.count > 3 {
-                Button {
-                    withAnimation(.easeInOut(duration: DS.Motion.normal)) {
-                        isExpiringListExpanded.toggle()
-                    }
-                } label: {
-                    Text(isExpiringListExpanded ? "Show less" : "Show \(items.count - 3) more")
-                        .foregroundStyle(Sourdough.Colors.actionInk)
-                        .sourdoughTextStyle(.subhead)
-                }
-                .buttonStyle(.plain)
             }
         }
     }

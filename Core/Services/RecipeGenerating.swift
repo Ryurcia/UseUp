@@ -2,19 +2,12 @@ import Foundation
 
 protocol RecipeGenerating {
     func generateRecipes(for ingredientNames: [String], options: GenerationOptions, count: Int) async throws -> [Recipe]
-
-    /// Snap Chef — one recipe from the current (possibly user-edited) detected ingredient list.
-    func snapChefRecipe(for ingredientNames: [String], options: GenerationOptions) async throws -> SnapChefGeneration
 }
 
 extension RecipeGenerating {
     func generateRecipes(for ingredientNames: [String], options: GenerationOptions) async throws -> [Recipe] {
         try await generateRecipes(for: ingredientNames, options: options, count: recipesPerGeneration)
     }
-}
-
-struct SnapChefGeneration {
-    let recipe: Recipe
 }
 
 /// Every generation request produces exactly this many recipes. The count is also baked into the

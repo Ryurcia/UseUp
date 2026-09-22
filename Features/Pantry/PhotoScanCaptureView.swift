@@ -19,7 +19,10 @@ struct PhotoScanCaptureView: View {
     @State private var pendingRetryItem: BatchScanItem?
     @State private var retakeTargetItem: BatchScanItem?
     @State private var isTorchOn = false
-    @State private var showBarcodeScanner = false
+    @State private var scanMode: ScanMode = .photo
+    @Namespace private var scanModeNamespace
+    @State private var isLookingUpBarcode = false
+    @State private var barcodeLookupError: String?
     @State private var showTipsReference = false
     @State private var showPhotosPicker = false
     @State private var selectedPhoto: PhotosPickerItem?
@@ -33,6 +36,8 @@ struct PhotoScanCaptureView: View {
     @State private var didPassTips = false
 
     private let foodPhotoScanner: FoodPhotoIdentifying = TestingMode.isEnabled ? MockFoodPhotoScanner() : SupabaseFoodPhotoScanner()
+
+    enum ScanMode { case photo, barcode }
 
     init(onComplete: @escaping () -> Void) {
         self.onComplete = onComplete
@@ -58,8 +63,14 @@ struct PhotoScanCaptureView: View {
     private var cameraFlow: some View {
         NavigationStack {
             ZStack {
-                PhotoScanCameraRepresentable(captureRequested: $captureRequested, torchOn: isTorchOn, onCapture: handleCapture)
-                    .ignoresSafeArea()
+                if scanMode == .photo {
+                    PhotoScanCameraRepresentable(captureRequested: $captureRequested, torchOn: isTorchOn, onCapture: handleCapture)
+                        .ignoresSafeArea()
+                } else {
+                    DataScannerRepresentable(onScan: handleBarcode)
+                        .ignoresSafeArea()
+                    barcodeScanOverlay
+                }
 
                 VStack(spacing: 0) {
                     topBar
@@ -77,6 +88,8 @@ struct PhotoScanCaptureView: View {
                 }, onRetakeRequested: { item in
                     retakeTargetItem = item
                     navigateToReview = false
+                }, onAddMoreRequested: {
+                    navigateToReview = false
                 })
             }
             .photosPicker(isPresented: $showPhotosPicker, selection: $selectedPhoto, matching: .images)
@@ -87,11 +100,6 @@ struct PhotoScanCaptureView: View {
                         handleCapture(image)
                     }
                     selectedPhoto = nil
-                }
-            }
-            .fullScreenCover(isPresented: $showBarcodeScanner) {
-                QuickBarcodeScannerView { product in
-                    items.append(BatchScanItem(offProduct: product, captureToken: UUID(), thumbnail: nil, sessionStorageDefault: storageDefault))
                 }
             }
             .fullScreenCover(isPresented: $showTipsReference) {
@@ -183,63 +191,140 @@ struct PhotoScanCaptureView: View {
 
     private var bottomControls: some View {
         VStack(spacing: Sourdough.Spacing.rowInternals) {
-            if let lastCaptureToken {
-                HStack {
-                    Spacer()
-                    Button {
+            HStack {
+                scanModeToggle
+                Spacer()
+                if let lastCaptureToken {
+                    pillButton(icon: Ph.arrowClockwise.regular, label: "Undo last capture") {
                         items.removeAll { $0.captureToken == lastCaptureToken }
                         self.lastCaptureToken = nil
-                    } label: {
-                        HStack(spacing: 4) {
-                            Ph.arrowClockwise.regular.frame(width: 14, height: 14)
-                            Text("Undo last capture").font(.system(size: 13))
-                        }
-                        .foregroundStyle(.white.opacity(0.85))
+                    }
+                }
+            }
+            .padding(.horizontal, Sourdough.Spacing.screenMargin)
+
+            ZStack {
+                HStack {
+                    Button { showPhotosPicker = true } label: {
+                        Ph.image.regular
+                            .frame(width: 20, height: 20)
+                            .foregroundStyle(.white)
+                            .frame(width: 48, height: 48)
+                            .background(Color.black.opacity(0.35))
+                            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.input, style: .continuous))
                     }
                     .buttonStyle(.plain)
+
+                    Spacer()
+
+                    Button {
+                        captureRequested = true
+                    } label: {
+                        ZStack {
+                            Circle().stroke(.white.opacity(0.5), lineWidth: 3).frame(width: 76, height: 76)
+                            Circle().fill(.white).frame(width: 64, height: 64)
+                        }
+                    }
+                    .buttonStyle(.plain)
+
+                    Spacer()
+
+                    Color.clear.frame(width: 48, height: 48)
                 }
                 .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                .opacity(scanMode == .photo ? 1 : 0)
+                .allowsHitTesting(scanMode == .photo)
+
+                barcodeStatusContent
+                    .padding(.vertical, Sourdough.Spacing.rowInternals)
+                    .opacity(scanMode == .barcode ? 1 : 0)
+                    .allowsHitTesting(scanMode == .barcode)
             }
-
-            HStack {
-                pillButton(icon: Ph.plus.bold, label: "Add manually") { navigateToReview = true }
-                Spacer()
-                pillButton(icon: Ph.barcode.bold, label: "Barcode") { showBarcodeScanner = true }
-            }
-            .padding(.horizontal, Sourdough.Spacing.screenMargin)
-
-            HStack {
-                Button { showPhotosPicker = true } label: {
-                    Ph.image.regular
-                        .frame(width: 20, height: 20)
-                        .foregroundStyle(.white)
-                        .frame(width: 48, height: 48)
-                        .background(Color.black.opacity(0.35))
-                        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.input, style: .continuous))
-                }
-                .buttonStyle(.plain)
-
-                Spacer()
-
-                Button {
-                    captureRequested = true
-                } label: {
-                    ZStack {
-                        Circle().stroke(.white.opacity(0.5), lineWidth: 3).frame(width: 76, height: 76)
-                        Circle().fill(.white).frame(width: 64, height: 64)
-                    }
-                }
-                .buttonStyle(.plain)
-
-                Spacer()
-
-                Color.clear.frame(width: 48, height: 48)
-            }
-            .padding(.horizontal, Sourdough.Spacing.screenMargin)
 
             statusBar
         }
         .padding(.bottom, Sourdough.Spacing.betweenBlocks)
+    }
+
+    private var scanModeToggle: some View {
+        HStack(spacing: 4) {
+            ForEach([ScanMode.photo, .barcode], id: \.self) { mode in
+                let isSelected = scanMode == mode
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { scanMode = mode }
+                } label: {
+                    (mode == .photo ? Ph.camera.fill : Ph.barcode.bold)
+                        .frame(width: 22, height: 22)
+                        .foregroundStyle(isSelected ? .black : .white.opacity(0.75))
+                        .frame(width: 48, height: 36)
+                        .background {
+                            if isSelected {
+                                Capsule()
+                                    .fill(Color.white)
+                                    .matchedGeometryEffect(id: "scanModeSelection", in: scanModeNamespace)
+                            }
+                        }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(4)
+        .background(Color.black.opacity(0.4))
+        .clipShape(Capsule())
+    }
+
+    /// Scan-frame cutout, ported from the old `QuickBarcodeScannerView` modal — purely visual, the
+    /// status text lives in `bottomControls` alongside the rest of the screen's bottom chrome.
+    private var barcodeScanOverlay: some View {
+        Canvas { ctx, size in
+            let w: CGFloat = 280, h: CGFloat = 120
+            let rect = CGRect(x: (size.width - w) / 2, y: (size.height - h) / 2, width: w, height: h)
+            let path = Path(roundedRect: rect, cornerRadius: 12)
+            ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.black.opacity(0.55)))
+            ctx.blendMode = .clear
+            ctx.fill(path, with: .color(.white))
+            ctx.blendMode = .normal
+            ctx.stroke(path, with: .color(.white), lineWidth: 2)
+        }
+        .ignoresSafeArea()
+        .opacity(isLookingUpBarcode ? 0.4 : 1)
+        .allowsHitTesting(false)
+    }
+
+    @ViewBuilder
+    private var barcodeStatusContent: some View {
+        if isLookingUpBarcode {
+            VStack(spacing: Sourdough.Spacing.rowInternals) {
+                ProgressView().tint(.white)
+                Text("Fetching product info…")
+                    .foregroundStyle(.white)
+                    .font(.system(size: 15))
+            }
+        } else if let barcodeLookupError {
+            VStack(spacing: Sourdough.Spacing.rowInternals) {
+                Text(barcodeLookupError)
+                    .foregroundStyle(.white)
+                    .font(.system(size: 15))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, Sourdough.Spacing.betweenBlocks)
+                Button("Try Again") { self.barcodeLookupError = nil }
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, Sourdough.Spacing.rowInternals)
+                    .padding(.vertical, Sourdough.Spacing.iconToLabel)
+                    .background(.white.opacity(0.2))
+                    .clipShape(Capsule())
+            }
+        } else {
+            VStack(spacing: Sourdough.Spacing.insideChip) {
+                Text("Aim at a barcode to scan")
+                    .foregroundStyle(.white.opacity(0.85))
+                    .font(.system(size: 15))
+                Text("It'll be added straight to your capture queue.")
+                    .foregroundStyle(.white.opacity(0.55))
+                    .font(.system(size: 12))
+            }
+        }
     }
 
     private func pillButton(icon: Image, label: String, action: @escaping () -> Void) -> some View {
@@ -300,12 +385,35 @@ struct PhotoScanCaptureView: View {
         Task { await runIdentification(on: image, replacing: placeholder.id, captureToken: token) }
     }
 
+    /// VisionKit reports a freshly-recognized barcode payload; looks it up and appends straight to
+    /// the batch queue (no modal, no dismiss — the scanner keeps running for the next item).
+    private func handleBarcode(_ barcode: String) {
+        guard !isLookingUpBarcode, barcodeLookupError == nil else { return }
+        isLookingUpBarcode = true
+        Task {
+            do {
+                let info = try await OpenFoodFactsService.lookup(barcode: barcode)
+                await MainActor.run {
+                    let token = UUID()
+                    lastCaptureToken = token
+                    items.append(BatchScanItem(offProduct: info, captureToken: token, thumbnail: nil, sessionStorageDefault: storageDefault))
+                    isLookingUpBarcode = false
+                }
+            } catch {
+                await MainActor.run {
+                    isLookingUpBarcode = false
+                    barcodeLookupError = "Product not found. Try again or switch to Photo."
+                }
+            }
+        }
+    }
+
     /// Gemini-only identification pipeline, used both for a fresh capture and for retrying a
     /// failed one (on the same original photo). `id` is the queue entry being resolved — replaced
     /// in place with the final result(s), or with a `.failed` item that also pops the
-    /// retry/cancel modal via `pendingRetryItem`. Barcode identification is a separate, explicit
-    /// flow (`QuickBarcodeScannerView`, via the "Barcode" button) — regular captures never look
-    /// for a barcode, so the two entry points can't be confused with each other.
+    /// retry/cancel modal via `pendingRetryItem`. Barcode identification is a separate mode
+    /// (`scanMode == .barcode`, see `handleBarcode(_:)`) with its own VisionKit-driven detection —
+    /// regular captures never look for a barcode, so the two entry points can't be confused.
     private func runIdentification(on image: UIImage, replacing id: UUID, captureToken: UUID) async {
         replacePlaceholder(id: id, with: [BatchScanItem(id: id, captureToken: captureToken, thumbnail: image, name: "Identifying…", storageLocation: storageDefault, status: .processing)])
 

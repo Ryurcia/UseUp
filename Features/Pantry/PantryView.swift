@@ -7,6 +7,7 @@ import PhosphorSwift
 /// into a separate `LocationDetailView`); that screen's search/sort/filter/pagination logic has
 /// been folded directly into this one, flattened (no more "Expiring Soon"/"Still Good" sections).
 struct PantryView: View {
+    var isActiveTab: Bool = true
     @EnvironmentObject private var pantryStore: PantryStore
     @EnvironmentObject private var activityStore: UserActivityStore
     @EnvironmentObject private var session: AppSession
@@ -104,17 +105,24 @@ struct PantryView: View {
                         estimatedTotalCost: ingredient.estimatedTotalCost
                     )
                 }
+            } onMedicationDetected: {
+                withAnimation { pantryStore.deleteIngredient(id: ingredient.id) }
             }
         }
         .onChange(of: selectedLocation) { _, _ in visibleCount = Self.pageSize }
         .onChange(of: selectedCategories) { _, _ in visibleCount = Self.pageSize }
         .onChange(of: searchText) { _, _ in visibleCount = Self.pageSize }
-        .onChange(of: session.requestedPantryLocation) { _, location in
-            guard let location else { return }
+        .onChange(of: session.requestedPantryLocation, initial: true) { _, location in
+            guard isActiveTab, let location else { return }
             withAnimation(.easeInOut(duration: DS.Motion.fast)) { selectedLocation = location }
             session.requestedPantryLocation = nil
         }
-        .task {
+        .task(id: isActiveTab) {
+            guard isActiveTab else { return }
+            if let location = session.requestedPantryLocation {
+                selectedLocation = location
+                session.requestedPantryLocation = nil
+            }
             await pantryStore.fetchIngredients()
         }
     }

@@ -6,7 +6,15 @@ struct GenerateView: View {
     @EnvironmentObject private var savedRecipesStore: SavedRecipesStore
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var activityStore: UserActivityStore
+    @Environment(\.colorScheme) private var colorScheme
     let recipeGenerator: RecipeGenerating
+    var isActiveTab: Bool = true
+
+    /// Selected-row fill/text for ingredient and filter selection — `Sourdough.Ramp.sage100` is a
+    /// fixed, non-adaptive brand color, so in dark mode it reads as a pale patch on the dark
+    /// canvas unless swapped for a genuinely dark sage fill with light text.
+    private var selectedFillColor: Color { colorScheme == .dark ? Sourdough.Ramp.sage600 : Sourdough.Ramp.sage100 }
+    private var selectedTextColor: Color { colorScheme == .dark ? Sourdough.Ramp.sage100 : Sourdough.Ramp.sage600 }
 
     @State private var selectedIngredientIDs: Set<UUID> = []
     @State private var searchText = ""
@@ -47,6 +55,7 @@ struct GenerateView: View {
     // Cached filter result — recomputed via recomputeFilteredIngredients() on relevant changes,
     // not on every body render (filter + O(n log n) sort).
     private func recomputeFilteredIngredients() {
+        guard isActiveTab else { return }
         cachedFilteredIngredients = pantryStore.ingredients
             .filter { ingredient in
                 let trimmed = debouncedSearch.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -126,9 +135,18 @@ struct GenerateView: View {
                 showSnapChef = false
             })
         }
-        .onAppear {
-            seedOptionsFromProfile()
+        .onAppear { seedOptionsFromProfile() }
+        .onChange(of: isActiveTab, initial: true) { _, active in
+            guard active else { searchDebounceTask?.cancel(); return }
+            debouncedSearch = searchText
             recomputeFilteredIngredients()
+            consumeRequestedIngredientID()
+            consumeRequestedQuickGenerateIngredientID()
+            consumeRequestedQuickGenerateIngredientIDs()
+        }
+        .onChange(of: session.requestedGenerateReset) { _, _ in
+            generationTask?.cancel()
+            goToStep(.selectIngredients, forward: false)
         }
         .onChange(of: pantryStore.ingredients) { _, _ in
             recomputeFilteredIngredients()
@@ -142,41 +160,9 @@ struct GenerateView: View {
         .onChange(of: selectedStorageFilters) { _, _ in
             recomputeFilteredIngredients()
         }
-        .onChange(of: session.requestedIngredientID) { _, id in
-            guard let id else { return }
-            session.requestedIngredientID = nil
-            guard let ingredient = pantryStore.ingredients.first(where: { $0.id == id }), !ingredient.isExpired else { return }
-            selectedIngredientIDs = [id]
-        }
-        .onChange(of: session.requestedQuickGenerateIngredientID) { _, id in
-            guard let id else { return }
-            session.requestedQuickGenerateIngredientID = nil
-            guard let ingredient = pantryStore.ingredients.first(where: { $0.id == id }), !ingredient.isExpired else { return }
-
-            // Quick Generation always starts from the baseline defaults — not whatever the user
-            // last left `options` at in a manual session — then layers on saved profile prefs,
-            // same as a fresh visit to this tab would.
-            options = GenerationOptions()
-            seedOptionsFromProfile()
-            selectedIngredientIDs = [id]
-
-            generationTask?.cancel()
-            generationTask = Task { await runGeneration() }
-        }
-        .onChange(of: session.requestedQuickGenerateIngredientIDs) { _, ids in
-            guard let ids, !ids.isEmpty else { return }
-            session.requestedQuickGenerateIngredientIDs = nil
-            let valid = Set(pantryStore.ingredients.filter { ids.contains($0.id) && !$0.isExpired }.map(\.id))
-            guard !valid.isEmpty else { return }
-
-            // Same "start from baseline defaults" rule as the single-ingredient quick generate above.
-            options = GenerationOptions()
-            seedOptionsFromProfile()
-            selectedIngredientIDs = valid
-
-            generationTask?.cancel()
-            generationTask = Task { await runGeneration() }
-        }
+        .onChange(of: session.requestedIngredientID) { _, _ in consumeRequestedIngredientID() }
+        .onChange(of: session.requestedQuickGenerateIngredientID) { _, _ in consumeRequestedQuickGenerateIngredientID() }
+        .onChange(of: session.requestedQuickGenerateIngredientIDs) { _, _ in consumeRequestedQuickGenerateIngredientIDs() }
         .onChange(of: searchText) { _, newValue in
             searchDebounceTask?.cancel()
             searchDebounceTask = Task {
@@ -186,6 +172,48 @@ struct GenerateView: View {
             }
         }
     }
+
+    private func consumeRequestedIngredientID() {
+        guard isActiveTab else { return }
+        guard let id = session.requestedIngredientID else { return }
+        session.requestedIngredientID = nil
+        guard let ingredient = pantryStore.ingredients.first(where: { $0.id == id }), !ingredient.isExpired else { return }
+        selectedIngredientIDs = [id]
+    }
+
+    private func consumeRequestedQuickGenerateIngredientID() {
+        guard isActiveTab else { return }
+        guard let id = session.requestedQuickGenerateIngredientID else { return }
+        session.requestedQuickGenerateIngredientID = nil
+        guard let ingredient = pantryStore.ingredients.first(where: { $0.id == id }), !ingredient.isExpired else { return }
+
+        // Quick Generation always starts from the baseline defaults — not whatever the user
+        // last left `options` at in a manual session — then layers on saved profile prefs,
+        // same as a fresh visit to this tab would.
+        options = GenerationOptions()
+        seedOptionsFromProfile()
+        selectedIngredientIDs = [id]
+
+        generationTask?.cancel()
+        generationTask = Task { await runGeneration() }
+    }
+
+    private func consumeRequestedQuickGenerateIngredientIDs() {
+        guard isActiveTab else { return }
+        guard let ids = session.requestedQuickGenerateIngredientIDs, !ids.isEmpty else { return }
+        session.requestedQuickGenerateIngredientIDs = nil
+        let valid = Set(pantryStore.ingredients.filter { ids.contains($0.id) && !$0.isExpired }.map(\.id))
+        guard !valid.isEmpty else { return }
+
+        // Same "start from baseline defaults" rule as the single-ingredient quick generate above.
+        options = GenerationOptions()
+        seedOptionsFromProfile()
+        selectedIngredientIDs = valid
+
+        generationTask?.cancel()
+        generationTask = Task { await runGeneration() }
+    }
+
 
     private var pageTransition: AnyTransition {
         .asymmetric(
@@ -238,7 +266,7 @@ struct GenerateView: View {
             LinearGradient(
                 stops: [
                     .init(color: .black, location: 0),
-                    .init(color: .black, location: 0.8),
+                    .init(color: .black, location: 0.94),
                     .init(color: .clear, location: 1.0)
                 ],
                 startPoint: .leading,
@@ -399,11 +427,11 @@ struct GenerateView: View {
                     }
                 }
                 .frame(width: 22, height: 22)
-                .foregroundStyle(isSelected ? Sourdough.Ramp.sage500 : Sourdough.Colors.faintInk)
+                .foregroundStyle(isSelected ? selectedTextColor : Sourdough.Colors.faintInk)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.name.capitalized)
-                        .foregroundStyle(Sourdough.Colors.ink)
+                        .foregroundStyle(isSelected ? selectedTextColor : Sourdough.Colors.ink)
                         .sourdoughTextStyle(.body)
 
                     HStack(spacing: Sourdough.Spacing.insideChip) {
@@ -447,7 +475,7 @@ struct GenerateView: View {
                 }
             }
         }
-        .background(isSelected ? Sourdough.Ramp.sage100 : Sourdough.Colors.card)
+        .background(isSelected ? selectedFillColor : Sourdough.Colors.card)
         .overlay(
             RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous)
                 .stroke(isSelected ? Sourdough.Ramp.sage500.opacity(0.3) : Sourdough.Colors.interactiveBorder, lineWidth: 1)
@@ -525,9 +553,17 @@ struct GenerateView: View {
 
                 Button { goToStep(.selectIngredients, forward: false) } label: {
                     Text("Back")
-                        .foregroundStyle(Sourdough.Colors.mutedInk)
-                        .sourdoughTextStyle(.caption)
-                        .padding(.vertical, Sourdough.Spacing.rowInternals)
+                        .foregroundStyle(Sourdough.Colors.ink)
+                        .sourdoughTextStyle(.rowTitle)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 52)
+                        .background(Color.clear)
+                        .contentShape(Rectangle())
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous)
+                                .stroke(Sourdough.Colors.ink, lineWidth: 1.5)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
                 }
                 .buttonStyle(.plain)
             }
@@ -918,7 +954,12 @@ struct GenerateView: View {
 
     // MARK: - Loading
 
-    private var generatingView: some View { RecipeGenerationLoadingView() }
+    private var generatingView: some View {
+        RecipeGenerationLoadingView {
+            generationTask?.cancel()
+            goToStep(.selectIngredients, forward: false)
+        }
+    }
 
     // MARK: - Results
 
@@ -937,26 +978,6 @@ struct GenerateView: View {
                     Spacer()
 
                     Button {
-                        generationTask?.cancel()
-                        generationTask = Task { await runGeneration() }
-                    } label: {
-                        Label {
-                            Text("Regenerate")
-                                .foregroundStyle(Sourdough.Colors.mutedInk)
-                                .sourdoughTextStyle(.subhead)
-                        } icon: {
-                            Ph.arrowClockwise.regular.frame(width: 15, height: 15)
-                        }
-                            .foregroundStyle(Sourdough.Colors.mutedInk)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
-                            .background(Sourdough.Colors.sunken)
-                            .clipShape(Capsule())
-                            .overlay(Capsule().stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1))
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
                         goToStep(.selectIngredients, forward: false)
                         recipes = []
                         generationError = nil
@@ -964,17 +985,16 @@ struct GenerateView: View {
                     } label: {
                         Label {
                             Text("Generate new")
-                                .foregroundStyle(Sourdough.Colors.mutedInk)
+                                .foregroundStyle(Sourdough.Colors.onAction)
                                 .sourdoughTextStyle(.subhead)
                         } icon: {
                             Ph.sparkle.regular.frame(width: 15, height: 15)
                         }
-                            .foregroundStyle(Sourdough.Colors.mutedInk)
+                            .foregroundStyle(Sourdough.Colors.onAction)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 10)
-                            .background(Sourdough.Colors.sunken)
+                            .background(Sourdough.Ramp.sage500)
                             .clipShape(Capsule())
-                            .overlay(Capsule().stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1))
                     }
                     .buttonStyle(.plain)
                 }
@@ -1143,6 +1163,8 @@ struct GenerateView: View {
                 options: options
             )
             goToStep(.results)
+        } catch is CancellationError {
+            return
         } catch {
             recipes = []
             generationError = error
@@ -1300,12 +1322,18 @@ private enum GenCategory: String, CaseIterable, Identifiable {
 
 private struct GenFilterSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
     @Binding var selectedStorageFilters: Set<IngredientStorageFilter>
     @Binding var selectedCategories: Set<GenCategory>
 
     private var hasActiveFilters: Bool {
         !selectedStorageFilters.isEmpty || !selectedCategories.isEmpty
     }
+
+    /// See `GenerateView`'s matching pair — `sage100` isn't dark-mode adaptive, so a dark fill
+    /// with light text is swapped in for dark mode instead of the pale light-mode tint.
+    private var selectedFillColor: Color { colorScheme == .dark ? Sourdough.Ramp.sage600 : Sourdough.Ramp.sage100 }
+    private var selectedTextColor: Color { colorScheme == .dark ? Sourdough.Ramp.sage100 : Sourdough.Ramp.sage600 }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1416,14 +1444,14 @@ private struct GenFilterSheet: View {
                     .frame(width: 24)
 
                 Text(label)
-                    .foregroundStyle(Sourdough.Colors.ink)
+                    .foregroundStyle(isSelected ? selectedTextColor : Sourdough.Colors.ink)
                     .sourdoughTextStyle(.body)
 
                 Spacer()
             }
             .padding(.horizontal, Sourdough.Spacing.screenMargin)
             .frame(height: 48)
-            .background(isSelected ? Sourdough.Ramp.sage100 : Sourdough.Colors.sunken)
+            .background(isSelected ? selectedFillColor : Sourdough.Colors.sunken)
             .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous)

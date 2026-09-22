@@ -8,6 +8,8 @@ struct StatsSection: View {
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var pantryStore: PantryStore
     @EnvironmentObject private var statsStore: StatsStore
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var referenceDate = Date()
 
     @State private var period: StatsPeriod = .monthly
     @State private var selectedBar: Int?
@@ -18,13 +20,12 @@ struct StatsSection: View {
     @State private var showExportShare = false
     @State private var showExportError = false
 
-    private var events: [PantryEvent] { statsStore.events }
-    private var hasData: Bool { StatsReadiness.hasData(events) }
-    private var yearlyAvailable: Bool { StatsReadiness.yearlyAvailable(events) }
-
-    private var stats: PeriodStats {
-        PeriodStats.make(events: events, period: period, selectedIndex: selectedBar)
+    private var snapshot: StatsSnapshot {
+        statsStore.snapshot(period: period, selectedIndex: selectedBar, now: referenceDate)
     }
+    private var hasData: Bool { snapshot.hasData }
+    private var yearlyAvailable: Bool { snapshot.yearlyAvailable }
+    private var stats: PeriodStats { snapshot.stats }
 
     private var isolatedSlice: StatsSlice? {
         guard let i = isolatedCategory, stats.slices.indices.contains(i) else { return nil }
@@ -57,6 +58,19 @@ struct StatsSection: View {
             }
         }
         .task { await statsStore.refresh() }
+        .onAppear { referenceDate = Date() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { referenceDate = Date() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in
+            referenceDate = Date()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
+            referenceDate = Date()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSLocale.currentLocaleDidChangeNotification)) { _ in
+            referenceDate = Date()
+        }
         .sheet(isPresented: $showExportShare) { ShareSheet(items: exportURLs) }
         .alert("Export Failed", isPresented: $showExportError) {
             Button("OK") {}

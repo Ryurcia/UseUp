@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import VisionKit
 
 /// Live rear-camera preview with a shutter + torch, shared by the pantry Photo Scan flow
 /// (`PhotoScanCaptureView`) and Snap Chef (`SnapChefFlow`). Flip `captureRequested` to take a
@@ -95,5 +96,42 @@ final class PhotoScanCameraViewController: UIViewController, AVCapturePhotoCaptu
               let data = photo.fileDataRepresentation(),
               let image = UIImage(data: data) else { return }
         DispatchQueue.main.async { self.onCapture?(image) }
+    }
+}
+
+// MARK: - Barcode scanner (VisionKit)
+
+/// Live barcode detection via VisionKit's `DataScannerViewController` — meaningfully faster/more
+/// accurate for "I know this is a barcode" than snap-a-photo-then-detect. Shared by Photo Scan's
+/// Barcode mode toggle; `onScan` fires once per newly-recognized barcode payload.
+struct DataScannerRepresentable: UIViewControllerRepresentable {
+    let onScan: (String) -> Void
+
+    func makeUIViewController(context: Context) -> DataScannerViewController {
+        let vc = DataScannerViewController(
+            recognizedDataTypes: [.barcode(symbologies: [.ean8, .ean13, .upce, .code128])],
+            qualityLevel: .balanced,
+            recognizesMultipleItems: false,
+            isHighlightingEnabled: true
+        )
+        vc.delegate = context.coordinator
+        DispatchQueue.main.async { try? vc.startScanning() }
+        return vc
+    }
+
+    func updateUIViewController(_ uiViewController: DataScannerViewController, context: Context) {}
+    func makeCoordinator() -> Coordinator { Coordinator(onScan: onScan) }
+
+    final class Coordinator: NSObject, DataScannerViewControllerDelegate {
+        let onScan: (String) -> Void
+        init(onScan: @escaping (String) -> Void) { self.onScan = onScan }
+
+        func dataScanner(_ dataScanner: DataScannerViewController,
+                         didAdd addedItems: [RecognizedItem],
+                         allItems: [RecognizedItem]) {
+            guard case .barcode(let item) = addedItems.first,
+                  let payload = item.payloadStringValue else { return }
+            onScan(payload)
+        }
     }
 }

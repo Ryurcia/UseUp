@@ -877,7 +877,7 @@ struct ShareRecipeSheet: View {
 
 // MARK: - Camera Image Picker
 
-private struct CameraImagePicker: UIViewControllerRepresentable {
+struct CameraImagePicker: UIViewControllerRepresentable {
     @Binding var imageData: Data?
     @Environment(\.dismiss) private var dismiss
 

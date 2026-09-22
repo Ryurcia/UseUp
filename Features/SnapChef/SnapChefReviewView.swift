@@ -11,7 +11,7 @@ struct SnapChefIngredient: Identifiable, Equatable {
 }
 
 /// Name-only review of what the photo picked up. Edit inline, add a missed item, remove a wrong
-/// one, then confirm to generate a single recipe. Deliberately has no price / storage / date fields
+/// one, then confirm to generate recipes. Deliberately has no price / storage / date fields
 /// (that's the pantry flow).
 struct SnapChefReviewView: View {
     @Binding var ingredients: [SnapChefIngredient]
@@ -20,6 +20,7 @@ struct SnapChefReviewView: View {
     let onCancel: () -> Void
 
     @FocusState private var focusedID: UUID?
+    @State private var showMedicationAlert = false
 
     private var hasUsableIngredient: Bool {
         ingredients.contains { !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -47,6 +48,11 @@ struct SnapChefReviewView: View {
         }
         .background(Sourdough.Colors.canvas)
         .safeAreaInset(edge: .bottom) { footer }
+        .alert("Medication Detected", isPresented: $showMedicationAlert) {
+            Button("OK") { ingredients.removeAll { MedicationDetector.isMedication($0.name) } }
+        } message: {
+            Text("UseUp only tracks food. This item will be removed.")
+        }
     }
 
     // MARK: Header
@@ -56,7 +62,7 @@ struct SnapChefReviewView: View {
             VStack(alignment: .leading, spacing: Sourdough.Spacing.iconToLabel) {
                 Text("Confirm ingredients")
                     .sourdoughTextStyle(.title2, color: Sourdough.Colors.ink)
-                Text("Fix anything we misread — we'll build one recipe from this list.")
+                Text("Fix anything we misread — we'll build recipes from this list.")
                     .sourdoughTextStyle(.subhead, color: Sourdough.Colors.mutedInk)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -164,8 +170,14 @@ struct SnapChefReviewView: View {
 
     private var footer: some View {
         VStack(spacing: Sourdough.Spacing.insideChip) {
-            Button { onConfirm() } label: {
-                Text("Get my recipe")
+            Button {
+                if ingredients.contains(where: { MedicationDetector.isMedication($0.name) }) {
+                    showMedicationAlert = true
+                } else {
+                    onConfirm()
+                }
+            } label: {
+                Text("Get my recipes")
                     .foregroundStyle(Sourdough.Colors.onAction)
                     .sourdoughTextStyle(.rowTitle)
                     .frame(maxWidth: .infinity)

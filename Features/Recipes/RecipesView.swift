@@ -13,6 +13,7 @@ import PhosphorSwift
 
 // MARK: - Image Cache
 
+@MainActor
 final class RecipeImageCache {
     static let shared = RecipeImageCache()
 
@@ -36,11 +37,24 @@ final class RecipeImageCache {
     }
 
     func clear() {
+        for entry in inFlight.values { entry.task.cancel() }
+        inFlight.removeAll()
+        sourceFingerprints.removeAll()
         fullCache.removeAllObjects()
         thumbCache.removeAllObjects()
     }
 
-    func setImage(_ image: UIImage, for id: UUID, thumbnail: Bool = false, cost: Int = 0) {
+    func removeImage(for id: UUID) {
+        inFlight.removeValue(forKey: id)?.task.cancel()
+        sourceFingerprints[id] = nil
+        let key = id.uuidString as NSString
+        fullCache.removeObject(forKey: key)
+        thumbCache.removeObject(forKey: key)
+    }
+
+    func setImage(_ image: UIImage, for id: UUID, thumbnail: Bool = false) {
+        let cost = image.cgImage.map { $0.bytesPerRow * $0.height }
+            ?? Int(image.size.width * image.scale * image.size.height * image.scale * 4)
         let key = id.uuidString as NSString
         if thumbnail {
             thumbCache.setObject(image, forKey: key, cost: cost)
@@ -49,11 +63,84 @@ final class RecipeImageCache {
         }
     }
 
-    static func generateThumbnail(from data: Data, maxPixelSize: Int = 800) -> UIImage? {
+    private struct LoadedImages {
+        let full: UIImage
+        let thumbnail: UIImage
+    }
+    private struct ImageRequest {
+        let token: UUID
+        let path: String?
+        let data: Data?
+        let task: Task<LoadedImages?, Never>
+    }
+    private var inFlight: [UUID: ImageRequest] = [:]
+    private var sourceFingerprints: [UUID: Int] = [:]
+
+    func load(id: UUID, path: String?, data: Data?, thumbnail: Bool) async -> UIImage? {
+        // A recipe can receive a new path or local image without changing its ID.
+        var hasher = Hasher()
+        hasher.combine(path)
+        hasher.combine(data)
+        let fingerprint = hasher.finalize()
+        if let previous = sourceFingerprints[id], previous != fingerprint { removeImage(for: id) }
+        sourceFingerprints[id] = fingerprint
+        if let cached = image(for: id, thumbnail: thumbnail) { return cached }
+        let request: ImageRequest
+        if let existing = inFlight[id], existing.path == path, existing.data == data {
+            request = existing
+        } else {
+            inFlight[id]?.task.cancel()
+            let task = Task.detached(priority: .userInitiated) { () -> LoadedImages? in
+                do {
+                    let source: Data
+                    let downloaded: Bool
+                    if let data {
+                        source = data
+                        downloaded = false
+                    } else if let path, let cached = RecipeImageDiskCache.load(for: path) {
+                        source = cached
+                        downloaded = false
+                    } else if let path, !path.isEmpty {
+                        source = try await SupabaseManager.client.storage.from("recipe-images").download(path: path)
+                        downloaded = true
+                    } else { return nil }
+                    try Task.checkCancellation()
+                    guard let full = Self.generateThumbnail(from: source, maxPixelSize: 1600) else { return nil }
+                    let diskThumb = data == nil ? path.flatMap { RecipeImageDiskCache.loadThumb(for: $0) } : nil
+                    guard let thumb = diskThumb.flatMap({ Self.generateThumbnail(from: $0) })
+                        ?? Self.generateThumbnail(from: source) else { return nil }
+                    try Task.checkCancellation()
+                    if let path, downloaded {
+                        RecipeImageDiskCache.save(source, for: path)
+                    }
+                    if let path, diskThumb == nil, data == nil,
+                       let encoded = thumb.jpegData(compressionQuality: 0.7) {
+                        try Task.checkCancellation()
+                        RecipeImageDiskCache.saveThumb(encoded, for: path)
+                    }
+                    return LoadedImages(full: full, thumbnail: thumb)
+                } catch { return nil }
+            }
+            request = ImageRequest(token: UUID(), path: path, data: data, task: task)
+            inFlight[id] = request
+        }
+        let loaded = await request.task.value
+        guard inFlight[id]?.token == request.token else {
+            return request.task.isCancelled ? nil : image(for: id, thumbnail: thumbnail)
+        }
+        inFlight[id] = nil
+        guard let loaded, !request.task.isCancelled else { return nil }
+        setImage(loaded.full, for: id)
+        setImage(loaded.thumbnail, for: id, thumbnail: true)
+        return thumbnail ? loaded.thumbnail : loaded.full
+    }
+
+    nonisolated static func generateThumbnail(from data: Data, maxPixelSize: Int = 800) -> UIImage? {
         let options: [CFString: Any] = [
             kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
             kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true
         ]
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
@@ -111,80 +198,21 @@ struct CachedRecipeImage: View {
                 RecipeImagePlaceholder()
             }
         }
-        .task(id: recipeID) {
-            // 1. Check in-memory cache
-            if let cached = RecipeImageCache.shared.image(for: recipeID, thumbnail: thumbnail) {
-                uiImage = cached
-                return
-            }
-
-            // 2. Check disk cache
-            if let path = imagePath, !path.isEmpty {
-                let diskData = thumbnail
-                    ? RecipeImageDiskCache.loadThumb(for: path)
-                    : RecipeImageDiskCache.load(for: path)
-                if let diskData {
-                    let id = recipeID
-                    let isThumbnail = thumbnail
-                    let decoded = await Task.detached {
-                        UIImage(data: diskData)
-                    }.value
-                    if let decoded {
-                        RecipeImageCache.shared.setImage(decoded, for: id, thumbnail: isThumbnail, cost: diskData.count)
-                        withAnimation(.easeIn(duration: 0.2)) { uiImage = decoded }
-                    }
-                    return
-                }
-            }
-
-            // 3. Try local imageData
-            if let data = imageData {
-                let id = recipeID
-                let isThumbnail = thumbnail
-                let decoded = await Task.detached {
-                    isThumbnail
-                        ? RecipeImageCache.generateThumbnail(from: data)
-                        : UIImage(data: data)
-                }.value
-                if let decoded {
-                    RecipeImageCache.shared.setImage(decoded, for: id, thumbnail: isThumbnail)
-                    withAnimation(.easeIn(duration: 0.2)) { uiImage = decoded }
-                }
-                return
-            }
-
-            // 4. Download from Supabase storage
-            if let path = imagePath, !path.isEmpty {
-                let id = recipeID
-                let isThumbnail = thumbnail
-                do {
-                    let data = try await SupabaseManager.client.storage
-                        .from("recipe-images")
-                        .download(path: path)
-
-                    // Save full image to disk
-                    RecipeImageDiskCache.save(data, for: path)
-
-                    // Generate and save thumbnail
-                    if let thumbImage = RecipeImageCache.generateThumbnail(from: data),
-                       let thumbData = thumbImage.jpegData(compressionQuality: 0.7) {
-                        RecipeImageDiskCache.saveThumb(thumbData, for: path)
-                    }
-
-                    let decoded = await Task.detached {
-                        isThumbnail
-                            ? RecipeImageCache.generateThumbnail(from: data)
-                            : UIImage(data: data)
-                    }.value
-                    if let decoded {
-                        RecipeImageCache.shared.setImage(decoded, for: id, thumbnail: isThumbnail, cost: data.count)
-                        withAnimation(.easeIn(duration: 0.2)) { uiImage = decoded }
-                    }
-                } catch {
-                    // Fall through to placeholder
-                }
-            }
+        .task(id: ImageIdentity(id: recipeID, path: imagePath, data: imageData, thumbnail: thumbnail)) {
+            uiImage = nil
+            let loaded = await RecipeImageCache.shared.load(
+                id: recipeID, path: imagePath, data: imageData, thumbnail: thumbnail
+            )
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeIn(duration: 0.2)) { uiImage = loaded }
         }
+    }
+
+    private struct ImageIdentity: Equatable {
+        let id: UUID
+        let path: String?
+        let data: Data?
+        let thumbnail: Bool
     }
 }
 
@@ -379,6 +407,7 @@ struct RecipeCard: View, Equatable {
 }
 
 struct RecipesView: View {
+    var isActiveTab: Bool = true
     @EnvironmentObject private var session: AppSession
     @EnvironmentObject private var savedRecipesStore: SavedRecipesStore
     @EnvironmentObject private var pantryStore: PantryStore
@@ -648,25 +677,35 @@ struct RecipesView: View {
                 await savedRecipesStore.searchRecipes(query: newValue)
             }
         }
-        .task {
+        .task(id: isActiveTab) {
+            guard isActiveTab else {
+                searchDebounceTask?.cancel()
+                return
+            }
+            let built = buildCategories(from: filteredCommunityRecipes)
+            cachedGeneralCategories = reconcile(existing: cachedGeneralCategories, updated: built.general)
+            cachedCuisineCategories = reconcile(existing: cachedCuisineCategories, updated: built.cuisine)
+            recomputeUseUpMatches()
             async let recipesTask: Void = savedRecipesStore.fetchRecipes()
             async let discoveryTask: Void = savedRecipesStore.fetchDiscoverySections()
             _ = await (recipesTask, discoveryTask)
+            guard !Task.isCancelled else { return }
+            if searchText != debouncedSearch {
+                debouncedSearch = searchText
+                await savedRecipesStore.searchRecipes(query: searchText)
+                guard !Task.isCancelled else { return }
+            }
             recomputeUseUpMatches()
             seedCategoriesFromDiscovery()
         }
-        .onAppear {
-            let built = buildCategories(from: filteredCommunityRecipes)
-            cachedGeneralCategories = built.general
-            cachedCuisineCategories = built.cuisine
-            recomputeUseUpMatches()
-        }
         .onChange(of: filteredCommunityRecipes) { _, newRecipes in
+            guard isActiveTab else { return }
             let built = buildCategories(from: newRecipes)
             cachedGeneralCategories = reconcile(existing: cachedGeneralCategories, updated: built.general)
             cachedCuisineCategories = reconcile(existing: cachedCuisineCategories, updated: built.cuisine)
         }
         .onChange(of: pantryStore.ingredients) { _, _ in
+            guard isActiveTab else { return }
             recomputeUseUpMatches()
         }
     }
@@ -838,8 +877,9 @@ struct RecipesView: View {
                                 ProgressView().padding(.vertical, Sourdough.Spacing.screenMargin)
                                 Spacer()
                             }
-                            .onAppear {
-                                Task { await savedRecipesStore.fetchMoreCommunityRecipes() }
+                            .task(id: isActiveTab) {
+                                guard isActiveTab else { return }
+                                await savedRecipesStore.fetchMoreCommunityRecipes()
                             }
                         }
                     }
@@ -918,8 +958,9 @@ struct RecipesView: View {
                                 ProgressView().padding(.vertical, Sourdough.Spacing.screenMargin)
                                 Spacer()
                             }
-                            .onAppear {
-                                Task { await savedRecipesStore.fetchMoreSearchResults(query: debouncedSearch) }
+                            .task(id: isActiveTab) {
+                                guard isActiveTab else { return }
+                                await savedRecipesStore.fetchMoreSearchResults(query: debouncedSearch)
                             }
                         }
                     }

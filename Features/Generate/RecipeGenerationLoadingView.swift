@@ -4,6 +4,8 @@ import Lottie
 /// The recipe-generation loading state — the `LOADING_ANIMATION` Lottie loop with utensils tinted
 /// to the current scheme, plus a rotating phrase. Shared by `GenerateView` and `SnapChefFlow`.
 struct RecipeGenerationLoadingView: View {
+    var onCancel: (() -> Void)? = nil
+
     @Environment(\.colorScheme) private var colorScheme
     @State private var phraseIndex = 0
 
@@ -48,6 +50,25 @@ struct RecipeGenerationLoadingView: View {
                 .foregroundStyle(Sourdough.Colors.mutedInk)
                 .sourdoughTextStyle(.body)
                 .multilineTextAlignment(.center)
+
+            if let onCancel {
+                Button(action: onCancel) {
+                    Text("Cancel")
+                        .foregroundStyle(Sourdough.Colors.ink)
+                        .sourdoughTextStyle(.rowTitle)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 44)
+                        .background(Color.clear)
+                        .contentShape(Rectangle())
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous)
+                                .stroke(Sourdough.Colors.ink, lineWidth: 1.5)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .padding(.top, Sourdough.Spacing.rowInternals)
+            }
 
             Spacer()
         }

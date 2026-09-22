@@ -1,5 +1,7 @@
 import SwiftUI
 import PhosphorSwift
+import PhotosUI
+import AVFoundation
 
 #Preview("Recipe Detail") {
     PreviewContainer {
@@ -33,6 +35,16 @@ struct RecipeDetailView: View {
     @State private var showDeleteAlert = false
     @State private var showBlockAlert = false
     @State private var blockError: String?
+    @State private var showingImageSourcePicker = false
+    @State private var showingPhotoPicker = false
+    @State private var showingCamera = false
+    @State private var showingCameraDeniedAlert = false
+    @State private var selectedPhoto: PhotosPickerItem?
+    @State private var capturedImageData: Data?
+    @State private var pickedImageData: Data?
+    @State private var imageRefreshID = UUID()
+    @State private var isUpdatingImage = false
+    @State private var imageUpdateError: String?
 
     private enum RecipeTab: CaseIterable {
         case ingredients, instructions
@@ -201,6 +213,44 @@ struct RecipeDetailView: View {
         } message: {
             Text("\"\(recipe.title)\" will be permanently deleted and cannot be recovered.")
         }
+        .confirmationDialog("Add Photo", isPresented: $showingImageSourcePicker) {
+            Button("Take Photo") { requestCameraAccess() }
+            Button("Choose from Library") { showingPhotoPicker = true }
+            Button("Cancel", role: .cancel) {}
+        }
+        .photosPicker(isPresented: $showingPhotoPicker, selection: $selectedPhoto, matching: .images)
+        .onChange(of: selectedPhoto) { _, newItem in
+            Task {
+                if let data = try? await newItem?.loadTransferable(type: Data.self) {
+                    applyPickedImage(data)
+                }
+            }
+        }
+        .fullScreenCover(isPresented: $showingCamera) {
+            CameraImagePicker(imageData: $capturedImageData)
+                .ignoresSafeArea()
+        }
+        .onChange(of: capturedImageData) { _, newData in
+            if let newData { applyPickedImage(newData) }
+        }
+        .alert("Camera Access", isPresented: $showingCameraDeniedAlert) {
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("UseUp needs camera access to take photos of your recipes. You can enable this in Settings.")
+        }
+        .alert("Couldn't Update Picture", isPresented: Binding(
+            get: { imageUpdateError != nil },
+            set: { if !$0 { imageUpdateError = nil } }
+        )) {
+            Button("OK") { imageUpdateError = nil }
+        } message: {
+            if let imageUpdateError { Text(imageUpdateError) }
+        }
         .reportErrorAlert($reportError)
         .alert("Block \(recipe.createdByName ?? "this user")?", isPresented: $showBlockAlert) {
             Button("Block", role: .destructive) {
@@ -228,6 +278,43 @@ struct RecipeDetailView: View {
         }
     }
 
+    private func requestCameraAccess() {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            showingCamera = true
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { granted in
+                DispatchQueue.main.async {
+                    if granted {
+                        showingCamera = true
+                    } else {
+                        showingCameraDeniedAlert = true
+                    }
+                }
+            }
+        case .denied, .restricted:
+            showingCameraDeniedAlert = true
+        @unknown default:
+            showingCameraDeniedAlert = true
+        }
+    }
+
+    private func applyPickedImage(_ data: Data) {
+        isUpdatingImage = true
+        Task {
+            do {
+                try await savedRecipesStore.updateRecipeImage(recipe, imageData: data)
+                pickedImageData = data
+                imageRefreshID = UUID()
+            } catch {
+                imageUpdateError = "Failed to update the picture. Please try again."
+            }
+            isUpdatingImage = false
+            selectedPhoto = nil
+            capturedImageData = nil
+        }
+    }
+
     // MARK: - Hero Section
 
     private var heroSection: some View {
@@ -235,14 +322,15 @@ struct RecipeDetailView: View {
             ZStack(alignment: .bottom) {
                 // Full-bleed image
                 Group {
-                    if recipe.isAIGenerated && recipe.imageData == nil && recipe.imagePath == nil {
+                    if recipe.isAIGenerated && pickedImageData == nil && recipe.imageData == nil && recipe.imagePath == nil {
                         RecipeImagePlaceholder()
                     } else {
                         CachedRecipeImage(
                             recipeID: recipe.id,
-                            imageData: recipe.imageData,
+                            imageData: pickedImageData ?? recipe.imageData,
                             imagePath: recipe.imagePath
                         )
+                        .id(imageRefreshID)
                     }
                 }
                 .frame(width: proxy.size.width, height: 320 + topSafeInset)
@@ -338,7 +426,40 @@ struct RecipeDetailView: View {
                     .buttonStyle(.plain)
 
                     let isOwner = recipe.createdBy == savedRecipesStore.userId?.uuidString
-                    if isOwner {
+                    let isSavedGenerated = recipe.isAIGenerated && savedRecipesStore.isSaved(recipe)
+                    if isSavedGenerated {
+                        Menu {
+                            Button {
+                                showingImageSourcePicker = true
+                            } label: {
+                                Label {
+                                    Text("Change Picture")
+                                } icon: {
+                                    Ph.camera.regular
+                                        .frame(width: 16, height: 16)
+                                }
+                            }
+
+                            Button(role: .destructive) {
+                                showDeleteAlert = true
+                            } label: {
+                                Label {
+                                    Text("Delete")
+                                } icon: {
+                                    Ph.trash.regular
+                                        .frame(width: 16, height: 16)
+                                }
+                            }
+                        } label: {
+                            Ph.dotsThree.regular
+                                .rotationEffect(.degrees(90))
+                                .frame(width: 16, height: 16)
+                                .foregroundStyle(Sourdough.Ramp.linen900)
+                                .frame(width: 40, height: 40)
+                                .background(Sourdough.Ramp.linen0)
+                                .clipShape(Circle())
+                        }
+                    } else if isOwner {
                         Button { showDeleteAlert = true } label: {
                             Ph.trash.regular
                                 .frame(width: 16, height: 16)

@@ -76,6 +76,12 @@ Rules:
 - If multiple of the same item are visible, return ONE entry with
   quantity reflecting the count, not duplicate entries.
 - Omit non-food objects (hands, countertop, packaging materials) entirely.
+- STRICTLY food and beverage items only. Never identify medications, vitamins,
+  supplements, or any over-the-counter or prescription drug product — pills, capsules,
+  tablets, syrups, lozenges, ointments, medicine bottles, or supplement containers.
+  Omit these entirely from the results, even if packaged similarly to food (a bottle or
+  box on a shelf). This applies regardless of category — do not place them in "other"
+  or any other category.
 - Only return items actually visible — do not infer items that might
   logically be nearby but aren't shown.`
 

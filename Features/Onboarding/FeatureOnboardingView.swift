@@ -12,17 +12,22 @@ struct FeatureOnboardingView: View {
 
     private let pages: [OnboardingPage] = [
         OnboardingPage(
-            imageName: "PANTRY_MOCKUP",
-            title: "Keep Track of Your Pantry",
-            description: "Log what you have and know when it expires."
+            imageName: "SCAN",
+            title: "Snap and Log",
+            description: "Keep track of your pantry by just snapping a pic"
         ),
         OnboardingPage(
-            imageName: "RECIPES_MOCKUP",
+            imageName: "PANTRY",
+            title: "Keep Track of Your Food",
+            description: "Know when it expires and use it before it does"
+        ),
+        OnboardingPage(
+            imageName: "RECIPE",
             title: "Generate Recipes",
             description: "Get recipes using stuff you already have"
         ),
         OnboardingPage(
-            imageName: "COMMUNITY_MOCKUP",
+            imageName: "DISCOVER",
             title: "Discover & Share",
             description: "Browse for recipes shared by the community or share your own recipes"
         ),

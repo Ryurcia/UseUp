@@ -359,6 +359,41 @@ enum StatsReadiness {
     }
 }
 
+// One snapshot serves every card in a render. Donut highlighting and export UI do not
+// change these inputs, so they can reuse the same aggregation without rescanning events.
+struct StatsSnapshot {
+    let stats: PeriodStats
+    let hasData: Bool
+    let yearlyAvailable: Bool
+}
+
+final class StatsSnapshotCache {
+    private struct Key: Equatable {
+        let revision: UInt64
+        let period: StatsPeriod
+        let selectedIndex: Int?
+        let day: Date
+        let calendar: Calendar
+        let localeIdentifier: String
+    }
+    private var cached: (key: Key, snapshot: StatsSnapshot)?
+
+    func snapshot(events: [PantryEvent], revision: UInt64, period: StatsPeriod,
+                  selectedIndex: Int?, now: Date, calendar: Calendar = .current) -> StatsSnapshot {
+        let key = Key(revision: revision, period: period, selectedIndex: selectedIndex,
+                      day: calendar.startOfDay(for: now), calendar: calendar,
+                      localeIdentifier: Locale.current.identifier)
+        if let cached, cached.key == key { return cached.snapshot }
+        let snapshot = StatsSnapshot(
+            stats: PeriodStats.make(events: events, period: period, selectedIndex: selectedIndex, now: now, calendar: calendar),
+            hasData: StatsReadiness.hasData(events),
+            yearlyAvailable: StatsReadiness.yearlyAvailable(events, now: now, calendar: calendar)
+        )
+        cached = (key, snapshot)
+        return snapshot
+    }
+}
+
 // MARK: - Date helpers
 
 enum StatsDates {

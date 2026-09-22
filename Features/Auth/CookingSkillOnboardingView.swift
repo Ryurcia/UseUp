@@ -47,11 +47,6 @@ struct CookingSkillOnboardingView: View {
                                         .sourdoughTextStyle(.rowTitle)
 
                                     Spacer()
-
-                                    Ph.checkCircle.fill
-                                        .frame(width: 20, height: 20)
-                                        .foregroundStyle(Sourdough.Colors.onAction)
-                                        .opacity(isSelected ? 1 : 0)
                                 }
                                 .padding(.horizontal, Sourdough.Spacing.screenMargin)
                                 .padding(.vertical, 20)

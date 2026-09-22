@@ -154,6 +154,7 @@ struct IngredientEntryFormContent: View {
     let canSave: Bool
     let onCancel: () -> Void
     let onSave: () -> Void
+    let onMedicationDetected: () -> Void
 
     @Binding var page: IngredientEntryPage
     @Binding var name: String
@@ -173,12 +174,32 @@ struct IngredientEntryFormContent: View {
     var onCategoryPicked: () -> Void
     var onStoragePicked: () -> Void
 
+    /// Shown above the name field on the main page when set — the "this looks off, fix it or
+    /// keep it" prompt from a flagged batch-scan item. `nil` (the default) renders nothing, so
+    /// `EditIngredientSheet` (which has no such concept) is unaffected.
+    struct WarningBanner {
+        let title: String
+        let body: String
+        let fixLabel: String
+        let fix: () -> Void
+        /// `nil` renders a single full-width `fix` button instead of a Fix/Keep as is pair — for
+        /// warnings with no distinct second action.
+        let keep: (() -> Void)?
+    }
+    var warningBanner: WarningBanner? = nil
+    /// Small text link shown under the warning banner when set — batch-scan's "retake photo"
+    /// escape hatch for a misidentified flagged item. `nil` renders nothing.
+    var onRetakePhoto: (() -> Void)? = nil
+    /// When set, renders a bordered trash icon button next to Save instead of Save alone.
+    var onDelete: (() -> Void)? = nil
+
     var suggestionsProvider: ((String) async -> [IngredientSuggestion])? = nil
 
     @State private var iconSearchText = ""
     @State private var showingAllIcons = false
     @State private var nameSuggestions: [IngredientSuggestion] = []
     @State private var suggestionsTask: Task<Void, Never>?
+    @State private var showMedicationAlert = false
     @FocusState private var isNameFieldFocused: Bool
 
     // Amount sub-sheet draft — only committed to the bound values above on "Save amount".
@@ -222,6 +243,11 @@ struct IngredientEntryFormContent: View {
         }
         .frame(maxHeight: .infinity)
         .background(Sourdough.Colors.canvas)
+        .alert("Medication Detected", isPresented: $showMedicationAlert) {
+            Button("OK") { onMedicationDetected() }
+        } message: {
+            Text("UseUp only tracks food. This item will be removed.")
+        }
     }
 
     // MARK: Main
@@ -240,9 +266,31 @@ struct IngredientEntryFormContent: View {
             .padding(.horizontal, Sourdough.Spacing.screenMargin)
             .padding(.bottom, Sourdough.Spacing.rowInternals)
 
+            if let warningBanner {
+                warningBannerView(warningBanner)
+                    .padding(.horizontal, Sourdough.Spacing.screenMargin)
+                    .padding(.bottom, Sourdough.Spacing.rowInternals)
+            }
+
             ScrollView(showsIndicators: false) {
             VStack(spacing: Sourdough.Spacing.betweenBlocks) {
                 nameField
+
+                if let onRetakePhoto {
+                    Button(action: onRetakePhoto) {
+                        HStack(spacing: Sourdough.Spacing.iconToLabel) {
+                            Ph.camera.regular.frame(width: 14, height: 14)
+                            Text("Retake photo")
+                                .sourdoughTextStyle(.subhead)
+                        }
+                        .foregroundStyle(Sourdough.Colors.actionInk)
+                        .padding(.horizontal, Sourdough.Spacing.rowInternals)
+                        .frame(height: 36)
+                        .background(Sourdough.Colors.sunken)
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
 
                 VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
                     Text("Details")
@@ -313,9 +361,98 @@ struct IngredientEntryFormContent: View {
             .frame(maxHeight: .infinity)
             .scrollDismissesKeyboard(.immediately)
 
-            saveButton(label: saveLabel, enabled: canSave, action: onSave)
+            if let onDelete {
+                HStack(spacing: Sourdough.Spacing.insideChip) {
+                    Button(action: onDelete) {
+                        Ph.trash.regular
+                            .frame(width: 17, height: 17)
+                            .foregroundStyle(Sourdough.Colors.action)
+                            .frame(width: 54, height: 52)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous)
+                                    .stroke(Sourdough.Colors.interactiveBorder, lineWidth: 1.5)
+                            )
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        if MedicationDetector.isMedication(name) {
+                            showMedicationAlert = true
+                        } else {
+                            onSave()
+                        }
+                    } label: {
+                        Text(saveLabel)
+                            .sourdoughTextStyle(.rowTitle, color: Sourdough.Colors.onAction)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 52)
+                            .background(canSave ? Sourdough.Ramp.sage500 : Sourdough.Ramp.sage500.opacity(0.35))
+                            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+                            .sourdoughElevation(.lifted)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canSave)
+                }
+                .padding(.horizontal, Sourdough.Spacing.screenMargin)
                 .padding(.top, Sourdough.Spacing.betweenBlocks - Sourdough.Spacing.insideChip)
+                .padding(.bottom, Sourdough.Spacing.betweenBlocks - Sourdough.Spacing.insideChip)
+            } else {
+                saveButton(label: saveLabel, enabled: canSave) {
+                    if MedicationDetector.isMedication(name) {
+                        showMedicationAlert = true
+                    } else {
+                        onSave()
+                    }
+                }
+                .padding(.top, Sourdough.Spacing.betweenBlocks - Sourdough.Spacing.insideChip)
+            }
         }
+    }
+
+    private func warningBannerView(_ banner: WarningBanner) -> some View {
+        VStack(alignment: .leading, spacing: Sourdough.Spacing.insideChip) {
+            (Text(banner.title).fontWeight(.bold) + Text(" " + banner.body))
+                .sourdoughTextStyle(.caption, color: Sourdough.Ramp.honey700)
+
+            if let keep = banner.keep {
+                HStack(spacing: Sourdough.Spacing.insideChip) {
+                    Button(action: banner.fix) {
+                        Text(banner.fixLabel)
+                            .sourdoughTextStyle(.subhead, color: Sourdough.Ramp.onFilled)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 46)
+                            .background(Sourdough.Ramp.terracotta500)
+                            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+
+                    Button(action: keep) {
+                        Text("Keep as is")
+                            .sourdoughTextStyle(.subhead, color: Sourdough.Ramp.honey700)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 46)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous)
+                                    .stroke(Sourdough.Ramp.honey300, lineWidth: 1.5)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+            } else {
+                Button(action: banner.fix) {
+                    Text(banner.fixLabel)
+                        .sourdoughTextStyle(.subhead, color: Sourdough.Ramp.onFilled)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 46)
+                        .background(Sourdough.Ramp.terracotta500)
+                        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.pill, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(Sourdough.Spacing.rowInternals)
+        .background(Sourdough.Ramp.honey100)
+        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
     }
 
     private var rowDivider: some View {
@@ -868,6 +1005,7 @@ struct EditIngredientSheet: View {
 
     let ingredient: Ingredient
     let onSave: (String, String?, Int, Ingredient.QuantityEstimate?, Ingredient.QuantitySource?, Ingredient.Category, Ingredient.StorageLocation, Date?, String?) -> Void
+    let onMedicationDetected: () -> Void
 
     @State private var page: IngredientEntryPage = .main
     @State private var name: String
@@ -882,10 +1020,12 @@ struct EditIngredientSheet: View {
 
     init(
         ingredient: Ingredient,
-        onSave: @escaping (String, String?, Int, Ingredient.QuantityEstimate?, Ingredient.QuantitySource?, Ingredient.Category, Ingredient.StorageLocation, Date?, String?) -> Void
+        onSave: @escaping (String, String?, Int, Ingredient.QuantityEstimate?, Ingredient.QuantitySource?, Ingredient.Category, Ingredient.StorageLocation, Date?, String?) -> Void,
+        onMedicationDetected: @escaping () -> Void
     ) {
         self.ingredient = ingredient
         self.onSave = onSave
+        self.onMedicationDetected = onMedicationDetected
         _name = State(initialValue: ingredient.name)
         _icon = State(initialValue: ingredient.icon ?? ingredient.category.icon)
         _category = State(initialValue: ingredient.category)
@@ -929,6 +1069,10 @@ struct EditIngredientSheet: View {
             onCancel: { dismiss() },
             onSave: {
                 onSave(name, formattedAmount, unitCount, nil, resolvedQuantitySource, category, location, expirationDate, icon)
+                dismiss()
+            },
+            onMedicationDetected: {
+                onMedicationDetected()
                 dismiss()
             },
             page: $page,

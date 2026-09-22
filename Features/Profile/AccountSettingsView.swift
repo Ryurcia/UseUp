@@ -120,6 +120,7 @@ struct AccountSettingsView: View {
                     moreGroup
                     footerLinks
                     dangerZone
+                    versionSection
                 }
                 .padding(.horizontal, Sourdough.Spacing.screenMargin)
                 .padding(.top, Sourdough.Spacing.betweenBlocks)
@@ -236,6 +237,8 @@ struct AccountSettingsView: View {
 
                 Spacer()
 
+                colorSchemeToggle
+
                 if !session.isPremium {
                     Button { showPaywall = true } label: {
                         Text("Go Pro")
@@ -259,6 +262,32 @@ struct AccountSettingsView: View {
         .overlay(alignment: .bottom) {
             Rectangle().fill(Sourdough.Colors.hairline).frame(height: 1)
         }
+    }
+
+    private var colorSchemeToggle: some View {
+        HStack(spacing: 2) {
+            colorSchemeIcon(Ph.sun.fill, isActive: session.colorSchemePreference == .light) {
+                session.colorSchemePreference = .light
+            }
+            colorSchemeIcon(Ph.moon.fill, isActive: session.colorSchemePreference == .dark) {
+                session.colorSchemePreference = .dark
+            }
+        }
+        .padding(3)
+        .background(Sourdough.Colors.sunken)
+        .clipShape(Capsule())
+    }
+
+    private func colorSchemeIcon(_ icon: Image, isActive: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            icon
+                .frame(width: 14, height: 14)
+                .foregroundStyle(isActive ? Sourdough.Colors.onAction : Sourdough.Colors.mutedInk)
+                .frame(width: 26, height: 24)
+                .background(isActive ? Sourdough.Ramp.sage500 : Color.clear)
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 
     private var avatarButton: some View {
@@ -449,6 +478,13 @@ struct AccountSettingsView: View {
     }
 
     // MARK: Footer + Danger Zone
+
+    private var versionSection: some View {
+        Text("1.0.0")
+            .sourdoughTextStyle(.subhead, color: Sourdough.Colors.faintInk)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 4)
+    }
 
     private var footerLinks: some View {
         VStack(alignment: .leading, spacing: Sourdough.Spacing.rowInternals) {

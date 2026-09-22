@@ -8,6 +8,7 @@ struct BatchScanReviewView: View {
     @Binding var items: [BatchScanItem]
     let onSaved: () -> Void
     let onRetakeRequested: (BatchScanItem) -> Void
+    let onAddMoreRequested: () -> Void
 
     @EnvironmentObject private var pantryStore: PantryStore
     @State private var editingItem: BatchScanItem?
@@ -46,20 +47,32 @@ struct BatchScanReviewView: View {
                     allClearBanner
                 }
 
-                Button {
-                    isAddingManually = true
-                } label: {
-                    HStack(spacing: Sourdough.Spacing.iconToLabel) {
-                        Ph.plus.bold.frame(width: 16, height: 16)
-                        Text("Add Item Manually")
+                HStack(spacing: Sourdough.Spacing.insideChip) {
+                    Button {
+                        isAddingManually = true
+                    } label: {
+                        HStack(spacing: Sourdough.Spacing.iconToLabel) {
+                            Ph.plus.bold.frame(width: 16, height: 16)
+                            Text("Add Item Manually")
+                        }
+                        .sourdoughTextStyle(.rowTitle, color: Sourdough.Ramp.sage500)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 52)
+                        .background(Sourdough.Colors.sunken)
+                        .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.tile + 2, style: .continuous))
                     }
-                    .sourdoughTextStyle(.rowTitle, color: Sourdough.Ramp.sage500)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 52)
-                    .background(Sourdough.Colors.sunken)
-                    .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.tile + 2, style: .continuous))
+                    .buttonStyle(.plain)
+
+                    Button(action: onAddMoreRequested) {
+                        Ph.camera.regular
+                            .frame(width: 20, height: 20)
+                            .foregroundStyle(Sourdough.Ramp.sage500)
+                            .frame(width: 52, height: 52)
+                            .background(Sourdough.Colors.sunken)
+                            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.tile + 2, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
             .padding(.horizontal, Sourdough.Spacing.screenMargin)
             .padding(.top, Sourdough.Spacing.rowInternals)
@@ -76,14 +89,24 @@ struct BatchScanReviewView: View {
             saveAllButton
         }
         .sheet(item: $editingItem) { item in
-            BatchItemEditSheet(existing: item) { updated in
-                setItem(updated.id) { $0 = updated }
-            }
+            BatchItemEditSheet(
+                existing: item,
+                onSave: { updated in setItem(updated.id) { $0 = updated } },
+                onMedicationDetected: { items.removeAll { $0.id == item.id } },
+                onDeleteRequested: { itemPendingRemoval = item },
+                onRetakeRequested: { onRetakeRequested(item) },
+                warningBanner: item.isFlagged ? sheetWarningBanner(for: item) : nil
+            )
         }
         .sheet(isPresented: $isAddingManually) {
-            BatchItemEditSheet(existing: nil) { newItem in
-                items.append(newItem)
-            }
+            BatchItemEditSheet(
+                existing: nil,
+                onSave: { items.append($0) },
+                onMedicationDetected: {},
+                onDeleteRequested: {},
+                onRetakeRequested: {},
+                warningBanner: nil
+            )
         }
         .alert("Remove item?", isPresented: Binding(
             get: { itemPendingRemoval != nil },
@@ -138,16 +161,15 @@ struct BatchScanReviewView: View {
         }
     }
 
-    /// User corrected the cost chip: that total is theirs. Store it as a `personal` cost on the
-    /// item and stop re-resolving it; it gets upserted to `ingredient_price_history` on save.
-    private func confirmCost(for item: BatchScanItem, newTotal: Double) {
+    /// User corrected the per-unit cost chip: that price is theirs. Store it as a `personal` cost
+    /// on the item and stop re-resolving it; it gets upserted to `ingredient_price_history` on save.
+    private func confirmUnitCost(for item: BatchScanItem, newUnitPrice: Double) {
         let (quantity, _) = item.costQuantityUnit
         let denom = quantity * Double(max(item.unitCount, 1))
-        let unitPrice = denom > 0 ? newTotal / denom : newTotal
         setItem(item.id) {
             $0.cost = IngredientCost(
-                unitPriceUsd: (unitPrice * 100).rounded() / 100,
-                totalPriceUsd: newTotal,
+                unitPriceUsd: (newUnitPrice * 100).rounded() / 100,
+                totalPriceUsd: ((newUnitPrice * denom) * 100).rounded() / 100,
                 source: .personal,
                 conversionApplied: false,
                 confidence: 1
@@ -177,8 +199,8 @@ struct BatchScanReviewView: View {
                 .frame(width: 20, height: 20)
 
                 Text(flaggedCount == 0
-                     ? "Dates and storage confirmed on all \(items.count) items."
-                     : "Dates and amounts are estimates. These need a second look before saving.")
+                     ? "All checked. Tap a card again to change anything."
+                     : "Tap a card to check or fix it.")
                     .sourdoughTextStyle(.caption, color: flaggedCount == 0 ? Sourdough.Colors.fresh.label : Sourdough.Colors.soon.label)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .multilineTextAlignment(.leading)
@@ -223,154 +245,116 @@ struct BatchScanReviewView: View {
     // MARK: - Row
 
     private func row(for item: BatchScanItem) -> some View {
-        VStack(spacing: 0) {
-            HStack(spacing: Sourdough.Spacing.insideChip) {
-                Button {
-                    editingItem = item
-                } label: {
-                    HStack(spacing: Sourdough.Spacing.rowInternals) {
-                        thumbnail(for: item)
-
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(item.name)
-                                .sourdoughTextStyle(.rowTitle, color: Sourdough.Colors.ink)
-                                .lineLimit(1)
-
-                            HStack(spacing: Sourdough.Spacing.iconToLabel) {
-                                Text(item.category.icon + " " + item.category.title)
-                                if let amountText = item.amountText, !amountText.isEmpty {
-                                    Text(item.unitCount > 1 ? "· \(item.unitCount) × \(amountText)" : "· \(amountText)")
-                                }
-                                Text("· \(item.storageLocation.title)")
-                            }
-                            .sourdoughTextStyle(.caption, color: Sourdough.Colors.mutedInk)
-                            .lineLimit(1)
-
-                            if item.suggestBarcodeRescan {
-                                Text("Scan barcode instead?")
-                                    .sourdoughTextStyle(.caption, color: Sourdough.Ramp.honeyDark)
-                            } else if case .failed(let message) = item.status {
-                                Text(message)
-                                    .sourdoughTextStyle(.caption, color: Sourdough.Colors.destructive)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-                .buttonStyle(.plain)
-
-                VStack(spacing: Sourdough.Spacing.insideChip) {
-                    Button {
-                        editingItem = item
-                    } label: {
-                        Ph.pencil.regular
-                            .frame(width: 16, height: 16)
-                            .foregroundStyle(Sourdough.Colors.mutedInk)
-                            .frame(width: 38, height: 38)
-                            .background(Sourdough.Colors.sunken)
-                            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.thumbnail, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        itemPendingRemoval = item
-                    } label: {
-                        Ph.trash.regular
-                            .frame(width: 16, height: 16)
-                            .foregroundStyle(Sourdough.Colors.onDestructive)
-                            .frame(width: 38, height: 38)
-                            .background(Sourdough.Colors.destructive)
-                            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.thumbnail, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                }
+        VStack(alignment: .leading, spacing: 6) {
+            card(for: item)
+            IngredientCostChip(cost: item.cost) { newUnitPrice in
+                confirmUnitCost(for: item, newUnitPrice: newUnitPrice)
             }
-            .padding(Sourdough.Spacing.rowInternals)
-
-            HStack {
-                IngredientCostChip(cost: item.cost) { newTotal in
-                    confirmCost(for: item, newTotal: newTotal)
-                }
-                Spacer()
-            }
-            .padding(.horizontal, Sourdough.Spacing.rowInternals)
-            .padding(.bottom, Sourdough.Spacing.insideChip)
-
-            dateStrip(for: item)
-
-            if item.isFlagged, !item.suggestBarcodeRescan {
-                warningStrip(for: item)
-            }
+            .padding(.horizontal, Sourdough.Spacing.insideChip)
         }
+    }
+
+    private func card(for item: BatchScanItem) -> some View {
+        let wasFlagged = item.needsAttention || item.hasStorageMismatch
+        let resolved = wasFlagged && item.warningDismissed
+        let state = item.freshnessState
+        return Button {
+            editingItem = item
+        } label: {
+            HStack(spacing: Sourdough.Spacing.rowInternals) {
+                ZStack {
+                    categoryTint(for: item.category)
+                    Text(item.icon ?? item.category.icon).font(.system(size: 25))
+                }
+                .frame(width: 48, height: 48)
+                .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.thumbnail, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.name)
+                        .sourdoughTextStyle(.rowTitle, color: Sourdough.Colors.ink)
+                        .lineLimit(1)
+
+                    Text(rowMeta(for: item))
+                        .sourdoughTextStyle(.caption, color: Sourdough.Colors.mutedInk)
+                        .lineLimit(1)
+
+                    if state.dotColor == nil {
+                        if item.suggestBarcodeRescan {
+                            Text("Scan barcode instead?")
+                                .sourdoughTextStyle(.caption, color: Sourdough.Ramp.honeyDark)
+                        } else if case .failed(let message) = item.status {
+                            Text(message)
+                                .sourdoughTextStyle(.caption, color: Sourdough.Colors.destructive)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                if let dot = state.dotColor {
+                    VStack(alignment: .trailing, spacing: 3) {
+                        HStack(spacing: 6) {
+                            Circle().fill(dot).frame(width: 5, height: 5)
+                            Text(IngredientRowContent.chipText(state: state, days: item.daysUntilExpiration))
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(state.style.label)
+                        }
+                        if let date = item.expirationDate {
+                            Text(IngredientRowContent.formatExpiration(date))
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(Sourdough.Colors.mutedInk)
+                        }
+                    }
+                }
+
+                if resolved {
+                    statusBadge(background: Sourdough.Ramp.sage500) {
+                        Ph.check.bold.frame(width: 13, height: 13)
+                    }
+                }
+            }
+            .padding(.vertical, 11)
+            .padding(.leading, 11)
+            .padding(.trailing, 13)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
         .background(Sourdough.Colors.card)
         .overlay(
             RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous)
-                .stroke(item.isFlagged ? Sourdough.Ramp.honeyDark : Sourdough.Colors.hairline, lineWidth: item.isFlagged ? 1.5 : 1)
+                .stroke(
+                    item.isFlagged ? Sourdough.Ramp.terracotta500 : resolved ? Sourdough.Ramp.sage200 : Sourdough.Colors.hairline,
+                    lineWidth: item.isFlagged ? 2 : 1.5
+                )
         )
         .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.card, style: .continuous))
     }
 
-    private func dateStrip(for item: BatchScanItem) -> some View {
-        let state = item.freshnessState
-        return Button {
-            setItem(item.id) { $0.warningDismissed = true }
-        } label: {
-            HStack(spacing: Sourdough.Spacing.iconToLabel) {
-                if let dot = state.dotColor {
-                    Circle().fill(dot).frame(width: 5, height: 5)
-                }
-                Text(IngredientRowContent.chipText(state: state, days: item.daysUntilExpiration))
-                    .font(.system(size: 11, weight: .bold))
-                Spacer()
-                if let date = item.expirationDate {
-                    Text(IngredientRowContent.formatExpiration(date))
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .opacity(0.8)
-                }
-            }
-            .foregroundStyle(state.style.label)
-            .padding(.horizontal, Sourdough.Spacing.rowInternals)
-            .padding(.vertical, 7)
-            .frame(maxWidth: .infinity)
-            .background(state.style.tint)
+    /// `"qty · storage"`, matching the caption line the old row used.
+    private func rowMeta(for item: BatchScanItem) -> String {
+        var parts: [String] = []
+        if let amountText = item.amountText, !amountText.isEmpty {
+            parts.append(item.unitCount > 1 ? "\(item.unitCount) × \(amountText)" : amountText)
         }
-        .buttonStyle(.plain)
+        parts.append(item.storageLocation.title)
+        return parts.joined(separator: " · ")
     }
 
-    private func warningStrip(for item: BatchScanItem) -> some View {
-        let copy = warningCopy(for: item)
-        return HStack(alignment: .top, spacing: Sourdough.Spacing.iconToLabel) {
-            (Text(copy.title).fontWeight(.bold) + Text(" " + copy.body))
-                .sourdoughTextStyle(.caption, color: Sourdough.Ramp.honey700)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            HStack(spacing: 6) {
-                Button(action: copy.fix) {
-                    Text(copy.fixLabel)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(Sourdough.Ramp.onFilled)
-                        .padding(.horizontal, 11)
-                        .frame(height: 28)
-                        .background(Sourdough.Colors.action)
-                        .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    setItem(item.id) { $0.warningDismissed = true }
-                } label: {
-                    Text("Keep")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Sourdough.Ramp.honey700)
-                        .padding(.horizontal, 10)
-                        .frame(height: 28)
-                        .overlay(Capsule().stroke(Sourdough.Ramp.honey300, lineWidth: 1))
-                }
-                .buttonStyle(.plain)
-            }
+    private func categoryTint(for category: Ingredient.Category) -> Color {
+        switch category {
+        case .produce, .vegetables, .fruits: return Sourdough.Ramp.sage100
+        case .proteins, .seafood: return Sourdough.Ramp.terracotta100
+        case .dairy: return Sourdough.Colors.canvas
+        case .carbs, .condiments, .other: return Sourdough.Ramp.honey100
         }
-        .padding(Sourdough.Spacing.rowInternals)
-        .background(Sourdough.Ramp.honey100)
+    }
+
+    @ViewBuilder
+    private func statusBadge<Content: View>(background: Color, @ViewBuilder content: () -> Content) -> some View {
+        ZStack {
+            Circle().fill(background)
+            content().foregroundStyle(Sourdough.Ramp.onFilled)
+        }
+        .frame(width: 26, height: 26)
     }
 
     /// A single, honest warning per flagged item. Storage mismatch is a real, independently
@@ -398,43 +382,34 @@ struct BatchScanReviewView: View {
         return (
             "Worth a second look.",
             "Confidence was low on this one — check the name, category, and amount.",
-            "Review",
+            "Looks good",
             { editingItem = item }
         )
     }
 
-    @ViewBuilder
-    private func thumbnail(for item: BatchScanItem) -> some View {
-        ZStack(alignment: .bottomTrailing) {
-            Group {
-                if let image = item.thumbnail {
-                    Image(uiImage: image).resizable().scaledToFill()
-                } else {
-                    ZStack {
-                        Sourdough.Colors.sunken
-                        Text(item.icon ?? item.category.icon).font(.system(size: 22))
-                    }
-                }
-            }
-            .frame(width: 54, height: 54)
-            .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.input, style: .continuous))
-
-            if item.isFlagged {
-                Button {
-                    onRetakeRequested(item)
-                } label: {
-                    Ph.camera.fill
-                        .frame(width: 11, height: 11)
-                        .foregroundStyle(.white)
-                        .frame(width: 20, height: 20)
-                        .background(Sourdough.Colors.ink)
-                        .clipShape(Circle())
-                        .overlay(Circle().stroke(Sourdough.Colors.card, lineWidth: 1.5))
-                }
-                .buttonStyle(.plain)
-                .offset(x: 4, y: 4)
-            }
+    /// Adapts `warningCopy(for:)` for use inside the edit sheet itself. Storage-mismatch and
+    /// estimated-date warnings have a real, distinct fix, so they keep the Fix/Keep as is pair.
+    /// The generic low-confidence fallback has no automated fix — its `fix` normally opens the
+    /// edit sheet (`editingItem = item`), which is meaningless when already inside it — so it
+    /// collapses to a single "Looks good" button that just acknowledges the warning.
+    private func sheetWarningBanner(for item: BatchScanItem) -> IngredientEntryFormContent.WarningBanner {
+        let copy = warningCopy(for: item)
+        guard item.hasStorageMismatch || item.freshnessState != .fresh else {
+            return IngredientEntryFormContent.WarningBanner(
+                title: copy.title,
+                body: copy.body,
+                fixLabel: "Looks good",
+                fix: { setItem(item.id) { $0.warningDismissed = true } },
+                keep: nil
+            )
         }
+        return IngredientEntryFormContent.WarningBanner(
+            title: copy.title,
+            body: copy.body,
+            fixLabel: copy.fixLabel,
+            fix: copy.fix,
+            keep: { setItem(item.id) { $0.warningDismissed = true } }
+        )
     }
 
     private var saveAllButton: some View {
@@ -498,6 +473,10 @@ private struct BatchItemEditSheet: View {
 
     let existing: BatchScanItem?
     let onSave: (BatchScanItem) -> Void
+    let onMedicationDetected: () -> Void
+    let onDeleteRequested: () -> Void
+    let onRetakeRequested: () -> Void
+    let warningBanner: IngredientEntryFormContent.WarningBanner?
 
     @State private var page: IngredientEntryPage = .main
     @State private var name: String
@@ -509,9 +488,20 @@ private struct BatchItemEditSheet: View {
     @State private var amountUnit: UnitMeasurement
     @State private var unitCount: Int
 
-    init(existing: BatchScanItem?, onSave: @escaping (BatchScanItem) -> Void) {
+    init(
+        existing: BatchScanItem?,
+        onSave: @escaping (BatchScanItem) -> Void,
+        onMedicationDetected: @escaping () -> Void,
+        onDeleteRequested: @escaping () -> Void,
+        onRetakeRequested: @escaping () -> Void,
+        warningBanner: IngredientEntryFormContent.WarningBanner?
+    ) {
         self.existing = existing
         self.onSave = onSave
+        self.onMedicationDetected = onMedicationDetected
+        self.onDeleteRequested = onDeleteRequested
+        self.onRetakeRequested = onRetakeRequested
+        self.warningBanner = warningBanner
 
         if let existing {
             _name = State(initialValue: existing.name)
@@ -586,6 +576,10 @@ private struct BatchItemEditSheet: View {
                 onSave(result)
                 dismiss()
             },
+            onMedicationDetected: {
+                onMedicationDetected()
+                dismiss()
+            },
             page: $page,
             name: $name,
             icon: $icon,
@@ -597,7 +591,18 @@ private struct BatchItemEditSheet: View {
             unitCount: $unitCount,
             onIconPicked: {},
             onCategoryPicked: {},
-            onStoragePicked: {}
+            onStoragePicked: {},
+            warningBanner: warningBanner.map { banner in
+                IngredientEntryFormContent.WarningBanner(
+                    title: banner.title,
+                    body: banner.body,
+                    fixLabel: banner.fixLabel,
+                    fix: { banner.fix(); dismiss() },
+                    keep: banner.keep.map { keepFn in { keepFn(); dismiss() } }
+                )
+            },
+            onRetakePhoto: (existing?.isFlagged == true) ? { onRetakeRequested(); dismiss() } : nil,
+            onDelete: existing != nil ? { onDeleteRequested(); dismiss() } : nil
         )
         .ingredientSheetChrome()
     }

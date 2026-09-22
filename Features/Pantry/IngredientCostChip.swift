@@ -1,20 +1,21 @@
 import SwiftUI
 import PhosphorSwift
 
-/// Compact editable cost chip shown on scan-review cards and the edit sheet. Default state reads
-/// `Est. $X.XX` with a pencil; tap to swap in an inline decimal field (no modal, matching how the
-/// date strip and category chip stay inline). A crowdsourced (`openfoodfacts`) price gets a
-/// subtler tag so users read it as a real price, not a guess.
+/// Editable per-unit cost row shown under each scan-review card and in the edit sheet. A static
+/// "Est Price per unit" caption sits on the left; the value pill on the right reads `$X.XX` with a
+/// pencil, tap to swap in an inline decimal field (no modal, matching how the date strip and
+/// category chip stay inline). A crowdsourced (`openfoodfacts`) price gets a subtler tag so users
+/// read it as a real price, not a guess.
 struct IngredientCostChip: View {
     let cost: IngredientCost?
-    /// Called with the user's corrected **total** price. The caller back-calculates the unit price.
+    /// Called with the user's corrected **per-unit** price.
     let onConfirm: (Double) -> Void
 
     @State private var isEditing = false
     @State private var draft = ""
     @FocusState private var fieldFocused: Bool
 
-    private var total: Double? { cost?.totalPriceUsd }
+    private var unitPrice: Double? { cost?.unitPriceUsd }
 
     private var isCrowdsourced: Bool { cost?.source == .openfoodfacts }
 
@@ -23,27 +24,34 @@ struct IngredientCostChip: View {
     }
 
     var body: some View {
-        Group {
-            if isEditing {
-                editingField
-            } else {
-                chip
+        HStack(spacing: Sourdough.Spacing.rowInternals) {
+            Text("Est Price per unit")
+                .sourdoughTextStyle(.caption, color: Sourdough.Colors.mutedInk)
+
+            Spacer()
+
+            Group {
+                if isEditing {
+                    editingField
+                } else {
+                    chip
+                }
             }
+            .font(.system(size: 14, weight: .semibold))
+            .padding(.horizontal, Sourdough.Spacing.rowInternals)
+            .frame(height: 34)
+            .background(Sourdough.Colors.sunken)
+            .overlay(
+                Capsule().stroke(unitPrice == nil ? Color.clear : tint.opacity(0.35), lineWidth: 1)
+            )
+            .clipShape(Capsule())
         }
-        .font(.system(size: 14, weight: .semibold))
-        .padding(.horizontal, Sourdough.Spacing.rowInternals)
-        .frame(height: 34)
-        .background(Sourdough.Colors.sunken)
-        .overlay(
-            Capsule().stroke(total == nil ? Color.clear : tint.opacity(0.35), lineWidth: 1)
-        )
-        .clipShape(Capsule())
     }
 
     private var chip: some View {
         Button {
-            guard total != nil else { return }
-            draft = total.map { String(format: "%.2f", $0) } ?? ""
+            guard let unitPrice else { return }
+            draft = String(format: "%.2f", unitPrice)
             isEditing = true
             fieldFocused = true
         } label: {
@@ -52,19 +60,19 @@ struct IngredientCostChip: View {
                     Ph.tag.fill.frame(width: 12, height: 12)
                 }
                 Text(label)
-                if total != nil {
+                if unitPrice != nil {
                     Ph.pencil.fill.frame(width: 12, height: 12)
                 }
             }
-            .foregroundStyle(total == nil ? Sourdough.Colors.faintInk : tint)
+            .foregroundStyle(unitPrice == nil ? Sourdough.Colors.faintInk : tint)
         }
         .buttonStyle(.plain)
-        .disabled(total == nil)
+        .disabled(unitPrice == nil)
     }
 
     private var label: String {
-        guard let total else { return cost == nil ? "Est. …" : "No price" }
-        return "Est. $\(String(format: "%.2f", total))"
+        guard let unitPrice else { return cost == nil ? "Est. …" : "No price" }
+        return "$\(String(format: "%.2f", unitPrice))"
     }
 
     private var editingField: some View {

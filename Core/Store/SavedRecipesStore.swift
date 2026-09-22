@@ -44,6 +44,7 @@ private struct RecipeRowWithRelations: Decodable {
     let steps: [String]
     let cuisine: String
     let isUserShared: Bool
+    let isAIGenerated: Bool
     let imagePath: String?
     let calories: Int
     let proteinG: Int
@@ -64,6 +65,7 @@ private struct RecipeRowWithRelations: Decodable {
         case timeMinutes = "time_minutes"
         case servings, steps, cuisine
         case isUserShared = "is_user_shared"
+        case isAIGenerated = "is_ai_generated"
         case imagePath = "image_path"
         case calories
         case proteinG = "protein_g"
@@ -111,7 +113,8 @@ private struct RecipeRowWithRelations: Decodable {
             rating: avgRating,
             dietType: dietType ?? "any",
             dietaryRestrictions: dietaryRestrictions ?? [],
-            tags: tags ?? []
+            tags: tags ?? [],
+            isAIGenerated: isAIGenerated
         )
     }
 }
@@ -400,9 +403,38 @@ final class SavedRecipesStore: ObservableObject {
     @Published private(set) var discoveryCuisineOrder: [Cuisine] = []
     @Published private(set) var isLoadingDiscoverySections = false
 
-    var userId: UUID?
+    var userId: UUID? {
+        didSet {
+            guard oldValue != userId else { return }
+            if oldValue != nil {
+                savedRecipes = []
+                sharedRecipes = []
+                communityRecipes = []
+                collections = []
+                savedRecipeCollections = [:]
+                collectionRecipeCache = [:]
+            }
+            fetchGeneration = UUID()
+            fetchTask?.cancel()
+            fetchTask = nil
+            lastFetchedAt = nil
+            isLoading = false
+
+            discoveryTask?.cancel()
+            discoveryTask = nil
+            discoverySectionsFetchedAt = nil
+            discoveryGeneralRecipes = [:]
+            discoveryCuisineRecipes = [:]
+            discoveryCuisineOrder = []
+            isLoadingDiscoverySections = false
+        }
+    }
+    private var fetchGeneration = UUID()
+    private var fetchTask: Task<Void, Never>?
+
     var currentUserNickname: String?
     private var lastFetchedAt: Date?
+    private var discoveryTask: Task<Void, Never>?
     private var discoverySectionsFetchedAt: Date?
     private var reviewsFetchedAt: [UUID: Date] = [:]
     private let client = SupabaseManager.client
@@ -529,10 +561,21 @@ final class SavedRecipesStore: ObservableObject {
     }
 
     func fetchRecipes() async {
-        if let last = lastFetchedAt, Date().timeIntervalSince(last) < 60, !communityRecipes.isEmpty || !savedRecipes.isEmpty || !sharedRecipes.isEmpty { return }
-        guard let userId = getUserId() else { return }
+        guard let userId else { return }
+        if let fetchTask { await fetchTask.value; return }
+        if let last = lastFetchedAt, Date().timeIntervalSince(last) < 60 { return }
+        let generation = fetchGeneration
+        let task = Task { await self.loadInitialData(userId: userId, generation: generation) }
+        fetchTask = task
+        await task.value
+        if fetchGeneration == generation { fetchTask = nil }
+    }
+
+    private func loadInitialData(userId: UUID, generation: UUID) async {
+        guard fetchGeneration == generation, !Task.isCancelled else { return }
         isLoading = true
         error = nil
+        defer { if fetchGeneration == generation { isLoading = false } }
 
         do {
             // Fetch community recipes and bookmark IDs in parallel
@@ -553,6 +596,7 @@ final class SavedRecipesStore: ObservableObject {
 
             let (communityRows, bookmarkRows) = try await (communityRowsTask, bookmarkRowsTask)
 
+            guard fetchGeneration == generation, !Task.isCancelled else { return }
             // Collections is a secondary feature layered on top of the recipe list. Fetch it
             // separately so a failure here (RLS hiccup, schema-cache lag, etc.) can't take down
             // the primary recipe list, which is load-bearing for the whole Recipes screen. A miss
@@ -561,6 +605,7 @@ final class SavedRecipesStore: ObservableObject {
             // appears, so it self-heals the next time the user actually looks at collections.
             do {
                 let (fetchedCollections, membership, memberRecipes) = try await fetchCollectionsAndMembership(userId: userId)
+                guard fetchGeneration == generation, !Task.isCancelled else { return }
                 collections = fetchedCollections
                 savedRecipeCollections = membership
                 collectionRecipeCache = memberRecipes
@@ -587,6 +632,7 @@ final class SavedRecipesStore: ObservableObject {
                 .union(Set(savedRows.map { $0.createdBy }))
             let nicknameMap = await fetchNicknames(for: allCreatorIds)
 
+            guard fetchGeneration == generation, !Task.isCancelled else { return }
             communityRecipes = communityRows.map { $0.toRecipe(nicknameMap: nicknameMap) }
             hasMoreCommunityRecipes = communityRows.count == recipePageSize
             sharedRecipes = communityRecipes.filter { $0.createdBy == userId.uuidString }
@@ -605,9 +651,10 @@ final class SavedRecipesStore: ObservableObject {
             }
 
             // Fetch user's own ratings for all loaded recipes
-            let allRecipeIds = communityRecipes.map(\.id) + savedRecipes.filter { r in !communityRecipes.contains(where: { $0.id == r.id }) }.map(\.id)
+            let allRecipeIds = Array(Set(communityRecipes.map(\.id) + savedRecipes.map(\.id)))
             let userRatings = await fetchUserRatings(for: allRecipeIds, userId: userId)
 
+            guard fetchGeneration == generation, !Task.isCancelled else { return }
             // Merge user ratings onto recipe arrays.
             // Build id→index maps once to avoid O(ratings × recipes) firstIndex scans.
             let communityIndex = Dictionary(communityRecipes.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
@@ -631,10 +678,10 @@ final class SavedRecipesStore: ObservableObject {
 
             lastFetchedAt = Date()
         } catch {
+            guard fetchGeneration == generation, !Task.isCancelled else { return }
             self.error = error.localizedDescription
         }
 
-        isLoading = false
     }
 
     /// Appends the next page of the community feed onto `communityRecipes`, same filter/sort as
@@ -772,38 +819,40 @@ final class SavedRecipesStore: ObservableObject {
 
     func fetchCategoryRecipes(filter: CategoryFilter, limit: Int = 30, offset: Int = 0) async -> [Recipe] {
         do {
-            var query = client
-                .from("recipes")
-                .select("*, recipe_ingredients(*), source_links(*)")
-                .eq("is_user_shared", value: true)
-
-            switch filter {
-            case .cuisine(let cuisine):
-                query = query.eq("cuisine", value: cuisine.databaseValue)
-            case .cuisineGroup(let cuisines):
-                query = query.in("cuisine", values: cuisines.map { $0.databaseValue })
-            case .lowCalorie(let max):
-                query = query.lte("calories", value: max)
-            case .highProtein(let min):
-                query = query.gte("protein_g", value: min)
-            case .quick(let max):
-                query = query.lte("time_minutes", value: max)
-            case .tag(let tag):
-                query = query.contains("tags", value: [tag])
-            case .tagGroup(let tags):
-                query = query.overlaps("tags", value: Array(tags))
-            }
-
-            let rows: [RecipeRowWithRelations] = try await query
-                .order("created_at", ascending: false)
-                .range(from: offset, to: offset + limit - 1)
-                .execute()
-                .value
-
+            let rows = try await fetchCategoryRows(filter: filter, limit: limit, offset: offset)
             return await hydrateRecipes(from: rows)
-        } catch {
-            return []
+        } catch { return [] }
+    }
+
+    private func fetchCategoryRows(filter: CategoryFilter, limit: Int, offset: Int = 0) async throws -> [RecipeRowWithRelations] {
+        var query = client
+            .from("recipes")
+            .select("*, recipe_ingredients(*), source_links(*)")
+            .eq("is_user_shared", value: true)
+
+        switch filter {
+        case .cuisine(let cuisine):
+            query = query.eq("cuisine", value: cuisine.databaseValue)
+        case .cuisineGroup(let cuisines):
+            query = query.in("cuisine", values: cuisines.map { $0.databaseValue })
+        case .lowCalorie(let max):
+            query = query.lte("calories", value: max)
+        case .highProtein(let min):
+            query = query.gte("protein_g", value: min)
+        case .quick(let max):
+            query = query.lte("time_minutes", value: max)
+        case .tag(let tag):
+            query = query.contains("tags", value: [tag])
+        case .tagGroup(let tags):
+            query = query.overlaps("tags", value: Array(tags))
         }
+
+        return try await query
+            .order("created_at", ascending: false)
+            .range(from: offset, to: offset + limit - 1)
+            .execute()
+            .value
+
     }
 
     // MARK: - Discovery Sections (server-driven cuisine/category rows)
@@ -837,42 +886,69 @@ final class SavedRecipesStore: ObservableObject {
     /// Populates `discoveryGeneralRecipes`/`discoveryCuisineRecipes`/`discoveryCuisineOrder`
     /// for the default (no-filter) Recipes tab state. Throttled like `fetchRecipes()`.
     func fetchDiscoverySections(force: Bool = false) async {
+        guard userId != nil else { return }
+        if let discoveryTask { await discoveryTask.value; return }
         if !force, let last = discoverySectionsFetchedAt, Date().timeIntervalSince(last) < 60 { return }
+        let generation = fetchGeneration
+        let task = Task { await self.loadDiscoverySections(generation: generation) }
+        discoveryTask = task
+        await task.value
+        if fetchGeneration == generation { discoveryTask = nil }
+    }
+
+    private func loadDiscoverySections(generation: UUID) async {
+        guard let userId, fetchGeneration == generation, !Task.isCancelled else { return }
         isLoadingDiscoverySections = true
-        defer { isLoadingDiscoverySections = false }
-
+        defer { if fetchGeneration == generation { isLoadingDiscoverySections = false } }
         let counts = await fetchCuisineCounts()
-        let topCuisines = counts.filter { $0.value > 0 }
-            .sorted { $0.value > $1.value }
-            .prefix(8)
-            .map(\.key)
-
-        let generalResults: [(String, [Recipe])] = await withTaskGroup(of: (String, [Recipe]).self) { group in
-            for spec in Self.generalCategorySpecs {
-                group.addTask { [self] in
-                    (spec.title, await fetchCategoryRecipes(filter: spec.filter, limit: 6))
+        guard fetchGeneration == generation, !Task.isCancelled else { return }
+        let cuisines = counts.filter { $0.value > 0 }
+            .sorted { $0.value == $1.value ? $0.key.rawValue < $1.key.rawValue : $0.value > $1.value }
+            .prefix(8).map(\.key)
+        let filters = Self.generalCategorySpecs.map(\.filter) + cuisines.map { CategoryFilter.cuisine($0) }
+        // Keep at most four section queries in flight, then hydrate all unique rows together.
+        let results = await withTaskGroup(of: (Int, [RecipeRowWithRelations]?).self) { group in
+            var next = 0
+            var results: [Int: [RecipeRowWithRelations]] = [:]
+            for _ in 0..<min(4, filters.count) {
+                let index = next
+                group.addTask { (index, try? await self.fetchCategoryRows(filter: filters[index], limit: 6)) }
+                next += 1
+            }
+            for await (index, rows) in group {
+                if let rows { results[index] = rows }
+                if next < filters.count, !Task.isCancelled {
+                    let index = next
+                    group.addTask { (index, try? await self.fetchCategoryRows(filter: filters[index], limit: 6)) }
+                    next += 1
                 }
             }
-            var results: [(String, [Recipe])] = []
-            for await result in group { results.append(result) }
             return results
         }
-
-        let cuisineRecipes: [(Cuisine, [Recipe])] = await withTaskGroup(of: (Cuisine, [Recipe]).self) { group in
-            for cuisine in topCuisines {
-                group.addTask { [self] in
-                    (cuisine, await fetchCategoryRecipes(filter: .cuisine(cuisine), limit: 6))
-                }
+        guard fetchGeneration == generation, !Task.isCancelled else { return }
+        let uniqueRows = Dictionary(results.values.flatMap { $0 }.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        async let nicknames = fetchNicknames(for: Set(uniqueRows.values.map(\.createdBy)))
+        async let ratings = fetchUserRatings(for: Array(uniqueRows.keys), userId: userId)
+        let (nicknameMap, ratingMap) = await (nicknames, ratings)
+        guard fetchGeneration == generation, !Task.isCancelled else { return }
+        let recipes = uniqueRows.mapValues { row in
+            var recipe = row.toRecipe(nicknameMap: nicknameMap)
+            if let rating = ratingMap[row.id] {
+                recipe.userRating = rating.rating
+                recipe.review = rating.review
             }
-            var results: [(Cuisine, [Recipe])] = []
-            for await result in group { results.append(result) }
-            return results
+            return recipe
         }
-
-        discoveryGeneralRecipes = Dictionary(uniqueKeysWithValues: generalResults)
-        discoveryCuisineRecipes = Dictionary(uniqueKeysWithValues: cuisineRecipes)
-        discoveryCuisineOrder = Array(topCuisines)
-        discoverySectionsFetchedAt = Date()
+        for (index, spec) in Self.generalCategorySpecs.enumerated() {
+            if let rows = results[index] { discoveryGeneralRecipes[spec.title] = rows.compactMap { recipes[$0.id] } }
+        }
+        for (index, cuisine) in cuisines.enumerated() {
+            if let rows = results[index + Self.generalCategorySpecs.count] {
+                discoveryCuisineRecipes[cuisine] = rows.compactMap { recipes[$0.id] }
+            }
+        }
+        discoveryCuisineOrder = cuisines
+        if results.count == filters.count { discoverySectionsFetchedAt = Date() }
     }
 
     // MARK: - Fetch Community Reviews
@@ -1421,6 +1497,51 @@ final class SavedRecipesStore: ObservableObject {
     /// navigating back from a collection's detail view, or across app relaunches.
     func collectionCoverRecipes(for collectionId: UUID, limit: Int = 3) -> [Recipe] {
         Array(recipes(in: collectionId).prefix(limit))
+    }
+
+    // MARK: - Update Recipe Image
+
+    func updateRecipeImage(_ recipe: Recipe, imageData: Data) async throws {
+        guard let userId = getUserId() else {
+            throw NSError(domain: "SavedRecipesStore", code: 0, userInfo: [NSLocalizedDescriptionKey: "Not signed in."])
+        }
+        let compressedData = await Task.detached(priority: .userInitiated) {
+            Self.compressImage(imageData)
+        }.value
+        let path = "\(userId.uuidString.lowercased())/\(recipe.id.uuidString.lowercased()).jpg"
+        let options = FileOptions(contentType: "image/jpeg", upsert: false)
+
+        // update() replaces existing; upload() creates for first-time (mirrors ProfileService.uploadAvatar)
+        do {
+            try await client.storage.from("recipe-images").update(path, data: compressedData, options: options)
+        } catch {
+            try await client.storage.from("recipe-images").upload(path, data: compressedData, options: options)
+        }
+
+        try await client
+            .from("recipes")
+            .update(["image_path": path])
+            .eq("id", value: recipe.id.uuidString)
+            .execute()
+
+        // The filename is deterministic (reused across edits), so stale cache entries
+        // under the old path/recipeID must be evicted or every other screen keeps
+        // showing the previous photo.
+        RecipeImageCache.shared.removeImage(for: recipe.id)
+        RecipeImageDiskCache.remove(for: path)
+
+        for index in savedRecipes.indices where savedRecipes[index].id == recipe.id {
+            savedRecipes[index].imagePath = path
+            savedRecipes[index].imageData = compressedData
+        }
+        for index in sharedRecipes.indices where sharedRecipes[index].id == recipe.id {
+            sharedRecipes[index].imagePath = path
+            sharedRecipes[index].imageData = compressedData
+        }
+        for index in communityRecipes.indices where communityRecipes[index].id == recipe.id {
+            communityRecipes[index].imagePath = path
+            communityRecipes[index].imageData = compressedData
+        }
     }
 
     func deleteRecipe(_ recipe: Recipe) {

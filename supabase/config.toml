@@ -1,0 +1,7 @@
+# RevenueCat calls this function directly with its own shared-secret Authorization header
+# (checked in the function's own code), not a Supabase-issued JWT — so Supabase's default
+# platform-level JWT verification must be disabled here, or every webhook delivery gets
+# rejected with 401 before the function code ever runs. Every other function keeps the
+# default (verify_jwt = true) since those are called from the app with a real Supabase JWT.
+[functions.revenuecat-webhook]
+verify_jwt = false

@@ -87,6 +87,8 @@ struct ExpiredItemsView: View {
                         estimatedTotalCost: ingredient.estimatedTotalCost
                     )
                 }
+            } onMedicationDetected: {
+                withAnimation { pantryStore.deleteIngredient(id: ingredient.id) }
             }
         }
     }

@@ -365,7 +365,7 @@ struct NotificationListView: View {
                 Text(item.icon ?? item.category.icon)
                     .font(.system(size: 22))
                     .frame(width: 50, height: 50)
-                    .background(Sourdough.Colors.sunken)
+                    .background(Sourdough.Colors.canvas)
                     .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.tile, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 3) {
@@ -463,7 +463,7 @@ struct NotificationListView: View {
                         }
                     }
                     .frame(width: 50, height: 50)
-                    .background(Sourdough.Colors.sunken)
+                    .background(Sourdough.Colors.canvas)
                     .clipShape(RoundedRectangle(cornerRadius: Sourdough.Radius.tile, style: .continuous))
 
                     VStack(alignment: .leading, spacing: 3) {
